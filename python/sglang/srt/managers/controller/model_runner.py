@@ -9,12 +9,6 @@ from typing import Optional, Type
 
 import torch
 import torch.nn as nn
-from flashinfer import (
-    BatchDecodeWithPagedKVCacheWrapper,
-    BatchPrefillWithPagedKVCacheWrapper,
-    BatchPrefillWithRaggedKVCacheWrapper,
-)
-from flashinfer.decode import _grouped_size_compiled_for_decode_kernels
 from vllm.config import DeviceConfig, LoadConfig
 from vllm.config import ModelConfig as VllmModelConfig
 from vllm.distributed import (
@@ -234,6 +228,13 @@ class ModelRunner:
             self.flashinfer_decode_wrapper = None
             return
 
+        from flashinfer import (
+            BatchDecodeWithPagedKVCacheWrapper,
+            BatchPrefillWithPagedKVCacheWrapper,
+            BatchPrefillWithRaggedKVCacheWrapper,
+        )
+        from flashinfer.decode import _grouped_size_compiled_for_decode_kernels
+
         if not _grouped_size_compiled_for_decode_kernels(
             self.model_config.num_attention_heads // self.tp_size,
             self.model_config.get_num_kv_heads(self.tp_size),
@@ -258,11 +259,11 @@ class ModelRunner:
         )
 
     def init_cuda_graphs(self):
-        from sglang.srt.managers.controller.cuda_graph_runner import CudaGraphRunner
-
         if self.server_args.disable_cuda_graph or self.server_args.disable_flashinfer:
             self.cuda_graph_runner = None
             return
+
+        from sglang.srt.managers.controller.cuda_graph_runner import CudaGraphRunner
 
         logger.info(
             f"[gpu_id={self.gpu_id}] Capture cuda graph begin. This can take up to several minutes."

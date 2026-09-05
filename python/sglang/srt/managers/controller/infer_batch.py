@@ -7,7 +7,6 @@ from typing import List, Union
 
 import numpy as np
 import torch
-from flashinfer.sampling import top_k_top_p_sampling_from_probs
 
 from sglang.global_config import global_config
 from sglang.srt.constrained import RegexGuide
@@ -695,6 +694,8 @@ class Batch:
         probs = torch.softmax(logits, dim=-1)
 
         if not global_server_args_dict["disable_flashinfer_sampling"]:
+            from flashinfer.sampling import top_k_top_p_sampling_from_probs
+
             max_top_k_round, batch_size = 32, probs.shape[0]
             uniform_samples = torch.rand(
                 (max_top_k_round, batch_size), device=probs.device

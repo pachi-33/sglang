@@ -133,5 +133,9 @@ def start_detokenizer_process(
         pipe_writer.send(get_exception_traceback())
         raise
     pipe_writer.send("init ok")
-    loop = asyncio.get_event_loop()
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
     loop.run_until_complete(manager.handle_loop())

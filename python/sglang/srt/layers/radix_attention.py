@@ -1,7 +1,6 @@
 """Radix attention."""
 
 import torch
-from flashinfer.cascade import merge_state
 from torch import nn
 
 from sglang.global_config import global_config
@@ -113,6 +112,8 @@ class RadixAttention(nn.Module):
             if input_metadata.extend_no_prefix:
                 o = o1
             else:
+                from flashinfer.cascade import merge_state
+
                 o2, s2 = (
                     input_metadata.flashinfer_prefill_wrapper_paged.forward_return_lse(
                         q.contiguous().view(-1, self.tp_q_head_num, self.head_dim),

@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyairports"
+version = "0.0.1+sglang.v100.1"
+description = "Compatibility shim for the pyairports API used by Outlines 0.0.46"
+requires-python = ">=3.9"
+dependencies = ["airportsdata==20260315"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
