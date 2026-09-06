@@ -217,9 +217,23 @@ class Qwen35Checkpoint:
             "mlp.shared_expert.down_proj": Weight("fp16", down, tuple(down.shape)),
         }
 
+    @staticmethod
+    def _move_weight(weight: Weight, device: torch.device | str) -> Weight:
+        return Weight(
+            weight.kind, weight.data.to(device, non_blocking=True), weight.logical_shape,
+            None if weight.block_scale is None else weight.block_scale.to(device, non_blocking=True),
+            None if weight.global_scale is None else weight.global_scale.to(device, non_blocking=True),
+            None if weight.input_global_scale is None else weight.input_global_scale.to(device, non_blocking=True),
+        )
+
     def load_layer(self, layer: int, device: Optional[torch.device | str] = None) -> Dict[str, torch.Tensor | Weight]:
-        """Load exactly one layer and normalize its matrix representations."""
-        raw = self._read_layer(layer, device)
+        """Load one layer, pack on CPU, then make one compact device copy.
+
+        Packing compressed experts directly on GPU creates raw plus stacked plus
+        concatenated copies at once.  CPU packing keeps the V100 resident set
+        to the final compact layer representation.
+        """
+        raw = self._read_layer(layer, None)
         output: Dict[str, torch.Tensor | Weight] = self._pack_experts(raw, layer)
         output.update(self._pack_shared(raw))
         expert_prefix = "mlp.experts."
@@ -236,4 +250,10 @@ class Qwen35Checkpoint:
                 output[key[: -len(".weight")]] = Weight("fp16", value, tuple(value.shape))
             else:
                 output[key] = value
-        return output
+        if device is None:
+            return output
+        return {
+            key: self._move_weight(value, device) if isinstance(value, Weight)
+            else value.to(device, non_blocking=True)
+            for key, value in output.items()
+        }

@@ -148,3 +148,22 @@ FP32 scale formation uses reciprocal-multiply semantics
 payload quotient uses `div_rn`; replacing it with approximate division caused
 midpoint code differences during implementation and is not an allowed tuning
 change. NVFP4 MoE fusion, Full Attention and GDN remain unaccepted at this point.
+
+## M0b — selective loading without transient GPU weight copies
+
+Expert packing now runs on CPU before transferring each final compressed tensor
+to the V100. Loading a layer no longer allocates its raw, stacked and merged
+expert weights on the GPU simultaneously. FP8 payload/FP16 block-scale storage
+and NVFP4 packed bytes/local scales/FP32 global multipliers retain their dtypes.
+Astra reviewed the loader diff; the coordinator loaded real layers 0, 1 and 3
+individually on the required V100 and measured:
+
+| Original layer | Resident GiB | Peak allocated GiB |
+|---|---:|---:|
+| 0, FP16 routed experts / GDN | 1.538408 | 1.538408 |
+| 1, NVFP4 routed experts / GDN | 0.460290 | 0.460290 |
+| 3, NVFP4 routed experts / Full Attention | 0.454125 | 0.454125 |
+
+These measurements include each layer's complete 256 experts. They verify the
+loader's device allocation behavior; the four-layer integration peak is still
+a separate acceptance gate. Model/config registration remains pending.
