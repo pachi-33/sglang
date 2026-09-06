@@ -46,7 +46,7 @@ rounds to zero. Report max/P99 errors and non-finite values as well as NRMSE.
 |---|---|---|
 | M0 | Environment, SM70 baseline, manifest, interfaces | M0a passed; model/config interface pending |
 | M1 | Independent references and codec tests | Codec / activation contract passed |
-| M2a | Common layers, W8A8 and Full Attention | Common layers and W8A8 passed; attention pending |
+| M2a | Common layers, W8A8 and Full Attention | Common/W8A8/attention core passed; producer fusion pending |
 | M2b | Fused NVFP4 / FP16 routed MoE | Pending |
 | M2c | Stateless GDN recurrent and chunk paths | Pending |
 | M3 | All 40 real layers independently checked | Pending |
@@ -167,3 +167,42 @@ individually on the required V100 and measured:
 These measurements include each layer's complete 256 experts. They verify the
 loader's device allocation behavior; the four-layer integration peak is still
 a separate acceptance gate. Model/config registration remains pending.
+
+## M2a-attention-core — stateless causal GQA and partial NeoX RoPE
+
+Implemented SM70 Tensor Core QK/PV with K=512 online-softmax slabs. Each merge
+CTA owns the full D=256 row, including its scalar max/sum state. Splitting those
+scalar updates among dimension tiles caused a race in a discarded prototype.
+Both accepted QK/PV JIT kernels were inspected in the current V100 process:
+`.target sm_70` and `mma.sync.aligned.m8n8k4.row.col.f32.f16.f16.f32` are present.
+
+The coordinator reran `test.Qwen3_5MoECompat.unit.test_attention`: **10 tests
+passed** in 2.993 s. Tests cover lengths 1/17/65/129/2048, ragged total 2048,
+nonempty int64 sequence offsets, empty output identity, Q/K normalization,
+RoPE overlap rejection, supported layouts and metadata dtypes. GPU metadata
+contents are trusted: offsets start at zero, end at T, are nondecreasing and
+each sequence fits the CPU-supplied maximum length. Both total T and maximum
+sequence length are limited to 2048 in this delivery.
+
+| Attention case | NRMSE |
+|---|---:|
+| One sequence, T=2048 | 2.540e-4 |
+| Ragged lengths 1/17/65/129/1836 | 2.375e-4 |
+
+Additional RoPE comparison against a CPU FP64 mathematical oracle measured
+NRMSE 1.84e-5 / 3.18e-5 / 7.27e-4 at positions 2047 / 8192 / 262143.
+At position 262143 the maximum absolute error was 0.0177; large-position
+elementwise or bitwise parity is not claimed.
+
+Warm CUDA-event measurements from the implementation agent, excluding compile:
+
+| T | Triton slab ms / peak MiB | Test FP32 reference ms / peak MiB |
+|---|---:|---:|
+| 128 | 0.233 / 12.4 | 0.968 / 10.8 |
+| 512 | 0.825 / 57.8 | 1.339 / 20.4 |
+| 2048 | 12.240 / 206.6 | 9.825 / 96.1 |
+
+The 2048-token path is slower than this reference; performance optimization
+remains M5 work. This milestone accepts the attention core only. Projection
+packing, fused Q/gate split + Q/K norm/RoPE, gate+A8 producer fusion and real
+layer 3 end-to-end validation remain required before full M2a acceptance.
