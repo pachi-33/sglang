@@ -1,6 +1,7 @@
 flowchart TD
     TOK["Token IDs"] --> EMB["FP16 Embedding 248320 x 2048"]
     EMB --> X
+    HS["Optional hidden input T x 2048<br/>exclusive with Token IDs"] --> X
     subgraph DEC["Decoder x40: GDN,GDN,GDN,Full repeated x10"]
         X["Hidden T x 2048"] --> N1["Gemma RMSNorm: 1 + weight"]
         X --> R1["Add residual"]
@@ -9,18 +10,20 @@ flowchart TD
         GP --> CV["Causal depthwise Conv4 + SiLU on QKV"]
         CV --> QK["Q/K L2Norm: 16x128; V:32x128"]
         GP --> BG["beta=sigmoid(B); g=-exp(A_log)*softplus(A+dt_bias)"]
-        QK --> GD["Gated Delta Rule: FP32 state, zero initial state"]
+        QK --> GD["Gated Delta Rule: short FP32 recurrence / BT16 WY<br/>call-local FP32 state, zero initial state"]
         BG --> GD
         GD --> GN["Ordinary RMSNorm x SiLU(Z)"]
         GP -->|Z| GN
-        GN --> GO["W8A8 output 4096 to 2048"]
+        GN --> GA8["FP16 boundary + fused A8 group128"]
+        GA8 --> GO["W8A8 output 4096 to 2048"]
         GO --> R1
         KIND -->|Full| FP["W8A8 Q+gate8192 / K512 / V512"]
         FP --> QR["Per-head split; Q/K Gemma Norm; NeoX RoPE64/256"]
         QR --> AT["Stateless causal GQA: Q16, KV2, D256"]
         AT --> GT["Multiply sigmoid(gate)"]
         FP -->|gate| GT
-        GT --> FO["W8A8 output 4096 to 2048"]
+        GT --> FA8["FP16 boundary + fused A8 group128"]
+        FA8 --> FO["W8A8 output 4096 to 2048"]
         FO --> R1
         R1 --> N2["Gemma RMSNorm"]
         R1 --> R2["Add residual"]
@@ -41,6 +44,8 @@ flowchart TD
         SM --> CO
         CO --> R2
     end
-    R2 -->|After last layer| FN["Final Gemma RMSNorm"]
+    R2 --> NEXT{"More selected decoder layers?"}
+    NEXT -->|Yes| X
+    NEXT -->|No| FN["Final Gemma RMSNorm"]
     FN --> HD["Separate FP16 LM head 2048 to 248320"]
     HD --> LO["Selected token logits"]

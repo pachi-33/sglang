@@ -44,13 +44,13 @@ rounds to zero. Report max/P99 errors and non-finite values as well as NRMSE.
 
 | ID | Deliverable | Status |
 |---|---|---|
-| M0 | Environment, SM70 baseline, manifest, interfaces | M0a passed; model/config interface pending |
+| M0 | Environment, SM70 baseline, manifest, interfaces | Baseline / aggregate audit / config and interface passed; exact per-name manifest pending |
 | M1 | Independent references and codec tests | Codec / activation contract passed |
-| M2a | Common layers, W8A8 and Full Attention | Common/W8A8/attention core passed; producer fusion pending |
+| M2a | Common layers, W8A8 and Full Attention | Common / W8A8 / attention / producers passed; projection packing and tuning remain M5 |
 | M2b | Fused NVFP4 / FP16 routed MoE | Core fusion and real-layer precision passed; M5 tuning pending |
-| M2c | Stateless GDN recurrent and chunk paths | Pending |
+| M2c | Stateless GDN recurrent and chunk paths | FP32 recurrent and bounded streamed BT16 WY passed |
 | M3 | All 40 real layers independently checked | Pending |
-| M4 | Real layers 0-3 integration | Pending |
+| M4 | Real layers 0-3 integration | T1 / T3 / T65 smoke passed; complete integration acceptance pending |
 | M5 | Performance / backend audit and documentation | Pending |
 
 ## Pre-implementation feasibility evidence
@@ -263,3 +263,66 @@ Performance tuning is still pending: the current stable scatter is quadratic
 in route count, and the fixed persistent grid is a correctness baseline.
 Kernel-count/latency comparisons, longer-token MoE sweeps, backend profiling,
 all 40 layers and four-layer integration remain later acceptance gates.
+
+## M2c / M2a producers / stateless assembly — 2026-09-07
+
+Implemented the true BT16 WY pipeline: isolated Gram, one FP32 register solve
+per A column, FP16 A/U/W/H/R boundaries, FP32 R and state update, and separated
+QK/decay/prior/local/output kernels. Public `chunk_gdn` streams one BT16 through
+all stages before reusing `[B,1,...]` scratch. `token_offset` is a runtime value
+and is separate from the fixed scratch slot. H16 snapshots the old state before
+its update. There is no recurrence or Torch-matmul substitution for WY.
+Rectangular diagnostic stage helpers are used only by component tests.
+
+The streamed design removes `B * max_chunks` state-history amplification. The
+suite includes the skewed packed lengths `[1]*127 + [1921]`, long slow decay
+`g=-1e-4` at T2048, lengths 16/128/512, ragged tails, int64 offsets, empty
+segments, repeated calls, 8192-channel Conv with no bias, stable softplus
+negative tails and independent FP32 recurrence/state relative-L2 checks.
+Nonempty inputs with `max_seqlen=0` are rejected before launch. Offset contents
+remain documented, trusted device metadata.
+
+The model now has nested config registration before AutoConfig, selective
+original-layer assembly, global embedding/final-norm/head loading, `EntryClass`,
+`forward_layer`, and `forward_no_cache`. Full Attention fuses the per-head
+Q/gate split with Gemma Q/K normalization and partial NeoX RoPE. Both normalized
+Q and K round to FP16 before rotation, and each K output has one writing CTA.
+Full sigmoid-multiply and GDN ordinary-norm/SiLU producers directly emit A8;
+residual add + post-attention Gemma norm retains the FP16 sum boundary.
+
+Astra ultra reviewed the equations, casts, streamed addressing, scratch reuse,
+state ordering, padding masks and model interfaces, and approved this
+incremental milestone. Coordinator verification on the required V100:
+
+| Verification | Result |
+|---|---|
+| `unit.test_gdn` | 15 passed, 6.561 s |
+| `unit.test_reference_codec`, `unit.test_quantization`, `unit.test_model_ops` | 13 passed, 20.656 s |
+| `unit.test_moe` after reference scale correction | 11 passed, 13.938 s |
+| Earlier config + producer + T1/T3 four-layer suite | 8 passed, 7.768 s |
+| Coordinator real layer 0, T2, complete GDN + MoE | finite FP16 `[2,2048]`, repeat bitwise equal; peak 1.593444 GiB |
+| Coordinator real layers 0–3, T65, embedding/final norm/head | hidden `[65,2048]`, logits `[1,248320]`, finite, repeat bitwise equal; peak 4.878265 GiB |
+| Same four-layer model, empty input | hidden `[0,2048]`, logits `[0,248320]` |
+
+Agent warm CUDA measurement for isolated streamed GDN T2048, excluding
+compilation: **43.890 ms**, peak allocated **72,453,632 bytes**. This is not a
+full-layer latency or the final benchmark sweep. Earlier 136-second GDN test
+time included compilation and repeated per-chunk specializations; it must not
+be used as the denominator of a kernel speedup claim.
+
+Review also caught a fused-A8 scale inconsistency: direct RN division by 448
+differs from the frozen FP32 reciprocal multiply. On the coordinator's exact
+half-boundary case (zero sigmoid gate, T17, seed 179), the rejected version had
+319/544 differing scales and 13 differing payload bytes. Both producers now
+use reciprocal multiplication; CPU A8/A4 references explicitly construct FP32
+reciprocals of 448/6, so their scale rule is independent of CPU/CUDA constant
+division lowering. The added regression passes exact scale and payload checks.
+The real layer-3 attention oracle now uses independent A8 encoding throughout.
+
+The complete M0 exact-name/shape manifest, all-40-layer scan, full M4 sequence
+isolation and long-input memory acceptance, M5 projection packing, performance
+sweep and profiler audit are still required. The four-layer smoke results do
+not establish complete-model quality or cache-backed serving support.
+
+`DESIGN.md` and `model_design.mmd` now document the quantized stateless design;
+the earlier external architecture reports point to these maintained sources.

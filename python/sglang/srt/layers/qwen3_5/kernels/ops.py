@@ -1,5 +1,6 @@
 """Elementwise and normalization Triton kernels used by Qwen3.5."""
 
+import torch
 import triton
 import triton.language as tl
 
@@ -101,6 +102,35 @@ def residual_add(x, residual, out=None):
         raise ValueError("residual output must be contiguous and match x")
     _binary_kernel[(triton.cdiv(x.numel(), 256),)](x, residual, out, x.numel(), OP=0, BLOCK=256, num_warps=4)
     return out
+
+
+@triton.jit
+def _residual_gemma_kernel(x, residual, weight, summed, normalized,
+                           hidden: tl.constexpr, eps: tl.constexpr, BLOCK: tl.constexpr):
+    row = tl.program_id(0)
+    d = tl.arange(0, BLOCK)
+    # ``to(fp16)`` is an intentional model boundary, not just storage.
+    total = (tl.load(x + row * hidden + d, mask=d < hidden).to(tl.float32) +
+             tl.load(residual + row * hidden + d, mask=d < hidden).to(tl.float32)).to(tl.float16)
+    value = total.to(tl.float32)
+    inv = tl.math.rsqrt(tl.sum(value * value, axis=0) / hidden + eps)
+    scale = tl.load(weight + d, mask=d < hidden).to(tl.float32) + 1.0
+    tl.store(summed + row * hidden + d, total, mask=d < hidden)
+    tl.store(normalized + row * hidden + d, (value * inv * scale).to(tl.float16), mask=d < hidden)
+
+
+def residual_add_gemma_rms_norm(x, residual, weight, eps=1e-6):
+    """Return FP16 residual sum and Gemma-normalized sum from one Triton CTA."""
+    if (x.shape != residual.shape or x.ndim != 2 or x.shape[1] > 8192 or x.dtype != torch.float16 or residual.dtype != torch.float16 or
+            not all(t.is_cuda and t.is_contiguous() for t in (x, residual, weight)) or
+            residual.device != x.device or weight.device != x.device or weight.shape != (x.shape[1],) or weight.dtype != torch.float16):
+        raise ValueError("residual/norm inputs must be contiguous CUDA FP16 [T,H]")
+    summed = torch.empty_like(x)
+    normalized = torch.empty_like(x)
+    if x.shape[0]:
+        _residual_gemma_kernel[(x.shape[0],)](x, residual, weight, summed, normalized, x.shape[1], eps,
+                                               BLOCK=triton.next_power_of_2(x.shape[1]), num_warps=4, num_stages=1)
+    return summed, normalized
 
 
 def sigmoid_mul(x, gate, out=None):

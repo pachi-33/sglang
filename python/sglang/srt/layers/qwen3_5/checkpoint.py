@@ -15,6 +15,11 @@ from .weights import Weight
 
 
 MODEL_PREFIX = "model.language_model."
+GLOBAL_TENSORS = {
+    "embed_tokens": "model.language_model.embed_tokens.weight",
+    "final_norm": "model.language_model.norm.weight",
+    "lm_head": "lm_head.weight",
+}
 LAYER_RE = re.compile(r"^model\.language_model\.layers\.(\d+)\.(.+)$")
 EXPERT_RE = re.compile(r"^mlp\.experts\.(\d+)\.(gate_proj|up_proj|down_proj)\.(.+)$")
 
@@ -38,6 +43,7 @@ class Qwen35Checkpoint:
 
     def __init__(self, model_dir: str | Path):
         self.model_dir = Path(model_dir)
+        self.validate_config(self.model_dir)
         index_path = self.model_dir / "model.safetensors.index.json"
         if not index_path.is_file():
             raise FileNotFoundError(index_path)
@@ -49,6 +55,49 @@ class Qwen35Checkpoint:
             match = LAYER_RE.match(name)
             if match:
                 self._by_layer.setdefault(int(match.group(1)), {})[match.group(2)] = shard
+
+    @staticmethod
+    def validate_config(model_dir: str | Path) -> Mapping[str, object]:
+        """Validate only the fixed text-only shape contract before loading GBs.
+
+        This intentionally does not instantiate a Transformers config: 4.43
+        resolves unknown ``qwen3_5_moe`` model types before SGLang's old
+        registry has a chance to intervene.
+        """
+        path = Path(model_dir) / "config.json"
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        with path.open() as handle:
+            config: Mapping[str, object] = json.load(handle)
+        if config.get("model_type") != "qwen3_5_moe" or not config.get("language_model_only", False):
+            raise ValueError("only language_model_only qwen3_5_moe checkpoints are supported")
+        text = config.get("text_config")
+        if not isinstance(text, Mapping):
+            raise ValueError("qwen3_5_moe config must contain text_config")
+        expected = {
+            "vocab_size": 248320,
+            "hidden_size": 2048,
+            "num_hidden_layers": 40,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 2,
+            "head_dim": 256,
+            "num_experts": 256,
+            "num_experts_per_tok": 8,
+            "shared_expert_intermediate_size": 512,
+            "moe_intermediate_size": 512,
+            "rms_norm_eps": 1e-6,
+        }
+        for key, value in expected.items():
+            if text.get(key) != value:
+                raise ValueError(f"unsupported Qwen3.5 text_config {key}={text.get(key)!r}")
+        rope = text.get("rope_parameters") or text.get("rope_scaling") or {}
+        theta = rope.get("rope_theta", rope.get("theta", 10_000_000.0)) if isinstance(rope, Mapping) else None
+        if theta != 10_000_000.0:
+            raise ValueError(f"unsupported Qwen3.5 RoPE theta={theta!r}")
+        layers = text.get("layer_types")
+        if layers != ["linear_attention", "linear_attention", "linear_attention", "full_attention"] * 10:
+            raise ValueError("expected the fixed [GDN,GDN,GDN,Full] * 10 layer layout")
+        return config
 
     @property
     def layer_ids(self) -> tuple[int, ...]:
@@ -253,6 +302,10 @@ class Qwen35Checkpoint:
                 continue
             elif key.endswith(".weight") and value.ndim == 2:
                 output[key[: -len(".weight")]] = Weight("fp16", value, tuple(value.shape))
+            elif key == "linear_attn.conv1d.weight" and value.shape[1:2] == (1,):
+                # Checkpoint Conv1d storage [C,1,4] is a CPU setup view;
+                # runtime receives its direct [C,4] Triton layout.
+                output[key] = value[:, 0, :]
             else:
                 output[key] = value
         if device is None:
@@ -262,3 +315,31 @@ class Qwen35Checkpoint:
             else value.to(device, non_blocking=True)
             for key, value in output.items()
         }
+
+    def load_global_tensors(self, device: Optional[torch.device | str] = None) -> Dict[str, torch.Tensor | Weight]:
+        """Load embedding, final norm and LM head without reading every layer.
+
+        Matrix entries use the same ``Weight`` ABI as layers; final RMS weight
+        remains a vector.  Callers can request CUDA after this CPU read, which
+        avoids duplicate host/device payloads.
+        """
+        result: Dict[str, torch.Tensor | Weight] = {}
+        for public, name in GLOBAL_TENSORS.items():
+            shard = self._weight_map.get(name)
+            if shard is None:
+                raise KeyError(f"checkpoint is missing {name}")
+            with safe_open(str(self.model_dir / shard), framework="pt", device="cpu") as reader:
+                tensor = reader.get_tensor(name)
+            if tensor.dtype != torch.float16 or tensor.ndim not in (1, 2):
+                raise TypeError(f"{name} must be an FP16 vector or matrix")
+            expected_shape = (2048,) if public == "final_norm" else (248320, 2048)
+            if tuple(tensor.shape) != expected_shape:
+                raise ValueError(f"{name} has shape {tuple(tensor.shape)}, expected {expected_shape}")
+            if tensor.ndim == 2:
+                value: torch.Tensor | Weight = Weight("fp16", tensor, tuple(tensor.shape))
+            else:
+                value = tensor
+            if device is not None:
+                value = self._move_weight(value, device) if isinstance(value, Weight) else value.to(device, non_blocking=True)
+            result[public] = value
+        return result

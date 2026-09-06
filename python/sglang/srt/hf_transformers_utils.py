@@ -19,6 +19,22 @@ from vllm.transformers_utils.configs import ChatGLMConfig, DbrxConfig
 
 from sglang.srt.utils import is_multimodal_model
 
+
+def _register_qwen35_compat_config() -> None:
+    """Register the local Qwen3.5 schema before the first AutoConfig lookup.
+
+    Transformers 4.43 does not know ``qwen3_5_moe``.  Registration in the
+    usual post-load registry is too late because ``AutoConfig`` raises while
+    resolving ``model_type``.
+    """
+    try:
+        from sglang.srt.layers.qwen3_5.config import register_qwen3_5_moe_config
+        register_qwen3_5_moe_config()
+    except ImportError:
+        # This utility remains importable in reduced installations that do not
+        # ship the optional compatibility package.
+        pass
+
 _CONFIG_REGISTRY: Dict[str, Type[PretrainedConfig]] = {
     ChatGLMConfig.model_type: ChatGLMConfig,
     DbrxConfig.model_type: DbrxConfig,
@@ -44,6 +60,7 @@ def get_config(
     revision: Optional[str] = None,
     model_overide_args: Optional[dict] = None,
 ):
+    _register_qwen35_compat_config()
     config = AutoConfig.from_pretrained(
         model, trust_remote_code=trust_remote_code, revision=revision
     )

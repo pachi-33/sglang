@@ -89,7 +89,9 @@ def quantize_a8(x: torch.Tensor, group_size: int = 128):
     if x.ndim != 2 or x.shape[1] % group_size:
         raise ValueError("A8 reference expects [M,K] with K divisible by group size")
     shaped = x.float().reshape(x.shape[0], -1, group_size)
-    scale = shaped.abs().amax(dim=-1) / 448.0
+    # Keep this as a float32 reciprocal multiply.  The production kernels use
+    # the same frozen RN32 scale contract; division changes rare E4M3 ties.
+    scale = shaped.abs().amax(dim=-1).float() * torch.tensor(1.0 / 448.0, dtype=torch.float32, device=shaped.device)
     normalized = torch.where(scale[..., None] == 0, torch.zeros_like(shaped), shaped / scale[..., None])
     return encode_e4m3fn(normalized.reshape_as(x)), scale.float()
 
@@ -102,7 +104,7 @@ def quantize_a4(x: torch.Tensor, global_scale: torch.Tensor, group_size: int = 1
         raise ValueError("global_scale must be scalar or one value per row")
     u = x.float() * g
     shaped = u.reshape(x.shape[0], -1, group_size)
-    scale = encode_e4m3fn(shaped.abs().amax(dim=-1) / 6.0)
+    scale = encode_e4m3fn(shaped.abs().amax(dim=-1).float() * torch.tensor(1.0 / 6.0, dtype=torch.float32, device=shaped.device))
     decoded_scale = decode_e4m3fn(scale)[..., None]
     normalized = torch.where(decoded_scale == 0, torch.zeros_like(shaped), shaped / decoded_scale)
     q = encode_e2m1(normalized.reshape_as(x))
