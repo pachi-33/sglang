@@ -51,7 +51,7 @@ groups. Report max/P99 errors and non-finite values as well as NRMSE.
 | M2b | Fused NVFP4 / FP16 routed MoE | Core fusion and real-layer precision passed; M5 tuning pending |
 | M2c | Stateless GDN recurrent and chunk paths | FP32 recurrent and bounded streamed BT16 WY passed |
 | M3 | All 40 real layers independently checked | Pending |
-| M4 | Real layers 0-3 integration | T1 / T3 / T65 smoke passed; complete integration acceptance pending |
+| M4 | Real layers 0-3 integration | Passed, including natural sequence isolation and both T2048 memory gates |
 | M5 | Performance / backend audit and documentation | Pending |
 
 ## Pre-implementation feasibility evidence
@@ -366,3 +366,48 @@ on the required V100: **9 tests passed in 1.690 s**, including new CPU/GPU
 zero-group signed-zero fixtures. The three real-size W8A8 projection checks
 remain between **1.84e-4 and 2.07e-4 NRMSE**. The all-layer scan will be rerun
 with this corrected independent reference and fixed Top-8 accumulation order.
+
+## M4 — real four-layer stateless integration — 2026-09-07
+
+The model now chooses recurrent versus BT16 WY computation by each sequence's
+actual length, independently of the packed batch's maximum. For a mixed batch,
+WY output is followed by an output-only recurrent launch for lengths 1–64;
+long and empty sequences skip that launch's data accesses. All-short calls
+allocate no returned state. Public low-level recurrent/chunk APIs still return
+their own state. WY scratch is reused over tiles of at most 32 sequences.
+
+The original maximum-based selection produced 0.04382 hidden NRMSE and 0.05498
+logit NRMSE for packed `[17,65]` versus natural-length individual calls. The
+corrected path matches both outputs exactly. Tests retain natural maxima and
+also cover int64 offsets, empty sequences, lengths 63/64/65, and deliberately
+inflated maxima 65/2048; no test masks the original issue by changing inputs.
+
+Astra ultra approved state/output ownership, actual-length dispatch and scratch
+addressing. Coordinator verification used the required conda interpreter and
+isolated V100:
+
+```bash
+CUDA_VISIBLE_DEVICES=GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96 \
+PYTHONPATH=python:. \
+/home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python -u -m unittest \
+  test.Qwen3_5MoECompat.unit.test_gdn \
+  test.Qwen3_5MoECompat.integration.test_stateless_model -v
+```
+
+**27 tests passed in 41.353 s**. The integration loads real original layers 0–3,
+all experts, embedding, final norm and LM head, and separately validates layer
+39 with its FP16 experts. It includes repeated calls after unrelated input,
+embedding/head/norm local oracles, explicit/default logits selection and empty
+inputs. The complete command output is in `reports/m4_validation.txt`.
+
+| Four-layer case | CUDA peak allocated | Result |
+|---|---:|---|
+| One sequence, T=2048 | 5,458,663,424 B (5.08 GiB) | Finite `[2048,2048]` hidden and one logits row |
+| Lengths `[1]×1983 + [65]`, T=2048 | 9,595,500,544 B (8.94 GiB) | Finite output, below 12 GiB |
+| Packed `[17,65]` versus separate natural-max calls | — | Hidden and logits NRMSE exactly 0 |
+
+The memory cases explicitly select one logits row so output vocabulary storage
+does not grow with the number of empty/short sequences. Header validation now
+populates safetensors headers once per shard before selected-layer checks,
+avoiding one file open per tensor. No cache or full-40-layer quality claim is
+part of this milestone. M3 all-layer precision and M5 performance remain open.

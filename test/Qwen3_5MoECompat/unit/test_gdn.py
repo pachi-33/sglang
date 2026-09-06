@@ -2,7 +2,8 @@ import unittest
 
 import torch
 
-from sglang.srt.layers.qwen3_5.gdn import chunk_gdn, depthwise_conv4_silu, l2_normalize_qk, prepare_gates, recurrent_gdn
+from sglang.srt.layers.qwen3_5.gdn import (chunk_gdn, depthwise_conv4_silu, l2_normalize_qk,
+                                            prepare_gates, recurrent_gdn, recurrent_gdn_short_output)
 from sglang.srt.layers.qwen3_5.kernels.gdn_chunk import compute_gram_a16, compute_r_state16, compute_wy16
 from sglang.srt.layers.qwen3_5.runner import _validate_metadata
 from test.Qwen3_5MoECompat.reference.gdn import recurrent, recurrent_vectorized
@@ -116,6 +117,20 @@ class TestGDNRecurrent(V100TestCase):
         repeat, repeat_state = chunk_gdn(*inputs, max_seqlen=65)
         torch.testing.assert_close(repeat, actual, rtol=0, atol=0)
         torch.testing.assert_close(repeat_state, state, rtol=0, atol=0)
+
+    def test_short_output_overwrite_boundaries_and_int64_empty(self):
+        # The helper is used only after WY when a batch also contains a long
+        # sequence.  It must overwrite 63/64-token documents, leave 65 alone,
+        # and do nothing for an empty int64 segment.
+        lengths = [0, 63, 64, 65]
+        q, k, v, decay, beta, _ = self._inputs(lengths, 904)
+        cu = torch.tensor([0, 0, 63, 127, 192], device="cuda", dtype=torch.int64)
+        wy, _ = chunk_gdn(q, k, v, decay, beta, cu, 65)
+        before = wy.clone()
+        exact, _ = recurrent_gdn(q, k, v, decay, beta, cu, 65)
+        recurrent_gdn_short_output(q, k, v, decay, beta, cu, 65, wy)
+        torch.testing.assert_close(wy[:127], exact[:127], rtol=1e-4, atol=1e-4)
+        torch.testing.assert_close(wy[127:], before[127:], rtol=0, atol=0)
 
     def test_chunk_bt16_exact_block_multiples(self):
         for seed, length in enumerate((16, 128, 512), start=97):

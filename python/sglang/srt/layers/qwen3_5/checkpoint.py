@@ -334,6 +334,10 @@ class Qwen35Checkpoint:
         expected_names = {name for name in EXPECTED_HEADERS if name.startswith(f"{MODEL_PREFIX}layers.{layer}.")}
         if actual_names != expected_names:
             raise ValueError(f"layer {layer} header names differ before payload read")
+        # Header validation otherwise opens a shard once per tensor, which is
+        # especially costly for the thousands of expert tensors in a layer.
+        # This reads each safetensors header once, never its payload.
+        self._populate_headers()
         self._validate_headers(actual_names)
         raw = self._read_layer(layer, None)
         output: Dict[str, torch.Tensor | Weight] = self._pack_experts(raw, layer)

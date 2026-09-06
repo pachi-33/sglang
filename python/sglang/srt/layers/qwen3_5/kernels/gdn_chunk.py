@@ -322,7 +322,7 @@ def compute_output16(q, k, decay, cu, max_seqlen, history16, r16):
     return out
 
 
-def stream_gdn16(q, k, v, decay, beta, cu, max_seqlen):
+def stream_gdn16(q, k, v, decay, beta, cu, max_seqlen, *, out=None, state=None):
     """Run BT16 one token chunk at a time with O(B) workspace.
 
     ``token_offset`` selects the current sequence-local token chunk, while
@@ -334,8 +334,8 @@ def stream_gdn16(q, k, v, decay, beta, cu, max_seqlen):
 
     batches = cu.numel() - 1
     # All temporaries are the current [B, 1, ...] chunk and are reused by
-    # each ordered launch.  The FP32 state and packed output are the only
-    # full-result allocations.
+    # each ordered launch.  ``out`` may describe the whole packed input and
+    # ``state`` one sequence tile, so its absolute token indices remain valid.
     matrix_shape = (batches, 1, 32, 16, 16)
     vector_shape = (batches, 1, 32, 16, 128)
     gram = torch.empty(matrix_shape, device=q.device, dtype=torch.float32)
@@ -352,8 +352,10 @@ def stream_gdn16(q, k, v, decay, beta, cu, max_seqlen):
     coeff16 = torch.empty_like(qk32, dtype=torch.float16)
     prior32 = torch.empty(vector_shape, device=q.device, dtype=torch.float32)
     local32 = torch.empty_like(prior32)
-    state = torch.zeros((batches, 32, 128, 128), device=q.device, dtype=torch.float32)
-    out = torch.empty((q.shape[0], 32, 128), device=q.device, dtype=torch.float32)
+    if state is None:
+        state = torch.zeros((batches, 32, 128, 128), device=q.device, dtype=torch.float32)
+    if out is None:
+        out = torch.empty((q.shape[0], 32, 128), device=q.device, dtype=torch.float32)
 
     for token_chunk in range(triton.cdiv(max_seqlen, 16)):
         # Storage chunk is always 0; token_offset advances the packed input.

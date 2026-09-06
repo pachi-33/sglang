@@ -9,7 +9,7 @@ from .gdn_chunk import stream_gdn16
 
 
 @triton.jit
-def _conv4_silu(x, weight, bias, cu, out, channels: tl.constexpr, batch: tl.constexpr,
+def _conv4_silu(x, weight, bias, cu, out, channels: tl.constexpr, batch,
                 BLOCK: tl.constexpr, HAS_BIAS: tl.constexpr):
     token = tl.program_id(0)
     channel = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
@@ -61,30 +61,49 @@ def _prepare_gates(a, b, a_log, dt_bias, decay, beta, heads: tl.constexpr,
 
 @triton.jit
 def _recurrent(q, k, v, decay, beta, cu, out, state, hq: tl.constexpr, hv: tl.constexpr,
-               dim: tl.constexpr, max_seqlen: tl.constexpr, scale: tl.constexpr, BLOCK: tl.constexpr):
+               dim: tl.constexpr, max_seqlen: tl.constexpr, scale: tl.constexpr,
+               BLOCK: tl.constexpr, WRITE_STATE: tl.constexpr, SHORT_ONLY: tl.constexpr):
     b = tl.program_id(0)
     h = tl.program_id(1)
     row = tl.program_id(2)
     start = tl.load(cu + b)
     end = tl.load(cu + b + 1)
+    length = end - start
     kh = h // (hv // hq)
     d = tl.arange(0, BLOCK)
     s = tl.zeros((BLOCK,), tl.float32)
-    for local_t in range(0, max_seqlen):
-        token = start + local_t
-        valid = token < end
-        kv = tl.load(k + (token * hq + kh) * dim + d, mask=valid & (d < dim), other=0.0).to(tl.float32)
-        qv = tl.load(q + (token * hq + kh) * dim + d, mask=valid & (d < dim), other=0.0).to(tl.float32)
-        g = tl.load(decay + token * hv + h, mask=valid, other=0.0)
-        bt = tl.load(beta + token * hv + h, mask=valid, other=0.0).to(tl.float32)
-        decayed = s * tl.exp(g)
-        prediction = tl.sum(decayed * kv, axis=0)
-        vv = tl.load(v + (token * hv + h) * dim + row, mask=valid, other=0.0).to(tl.float32)
-        r = bt * (vv - prediction)
-        s = decayed + r * kv
-        result = tl.sum(s * qv, axis=0) * scale
-        tl.store(out + (token * hv + h) * dim + row, result, mask=valid)
-    tl.store(state + ((b * hv + h) * dim + row) * dim + d, s, mask=d < dim)
+    if SHORT_ONLY:
+        # Long CTAs exit before any q/k/v access.  Short CTAs use a dynamic
+        # bounded loop, so a length-one document performs one recurrence step.
+        if (length > 0) & (length <= 64):
+            for local_t in range(0, length):
+                token = start + local_t
+                kv = tl.load(k + (token * hq + kh) * dim + d).to(tl.float32)
+                qv = tl.load(q + (token * hq + kh) * dim + d).to(tl.float32)
+                g = tl.load(decay + token * hv + h)
+                bt = tl.load(beta + token * hv + h).to(tl.float32)
+                decayed = s * tl.exp(g)
+                prediction = tl.sum(decayed * kv, axis=0)
+                vv = tl.load(v + (token * hv + h) * dim + row).to(tl.float32)
+                s = decayed + (bt * (vv - prediction)) * kv
+                tl.store(out + (token * hv + h) * dim + row, tl.sum(s * qv, axis=0) * scale)
+    else:
+        for local_t in range(0, max_seqlen):
+            token = start + local_t
+            valid = token < end
+            kv = tl.load(k + (token * hq + kh) * dim + d, mask=valid & (d < dim), other=0.0).to(tl.float32)
+            qv = tl.load(q + (token * hq + kh) * dim + d, mask=valid & (d < dim), other=0.0).to(tl.float32)
+            g = tl.load(decay + token * hv + h, mask=valid, other=0.0)
+            bt = tl.load(beta + token * hv + h, mask=valid, other=0.0).to(tl.float32)
+            decayed = s * tl.exp(g)
+            prediction = tl.sum(decayed * kv, axis=0)
+            vv = tl.load(v + (token * hv + h) * dim + row, mask=valid, other=0.0).to(tl.float32)
+            r = bt * (vv - prediction)
+            s = decayed + r * kv
+            result = tl.sum(s * qv, axis=0) * scale
+            tl.store(out + (token * hv + h) * dim + row, result, mask=valid)
+    if WRITE_STATE:
+        tl.store(state + ((b * hv + h) * dim + row) * dim + d, s, mask=d < dim)
 
 
 def _check_cuda(tensor, name, dtype=None):
@@ -154,10 +173,36 @@ def recurrent_gdn(q, k, v, decay, beta, cu_seqlens, max_seqlen):
     out = torch.empty((tokens, hv, dim), device=q.device, dtype=torch.float32)
     state = torch.empty((cu_seqlens.numel() - 1, hv, dim, dim), device=q.device, dtype=torch.float32)
     if tokens:
-        _recurrent[(cu_seqlens.numel() - 1, hv, dim)](q, k, v, decay, beta, cu_seqlens, out, state, hq, hv, dim, max_seqlen, dim ** -0.5, BLOCK=128, num_warps=4, num_stages=1)
+        _recurrent[(cu_seqlens.numel() - 1, hv, dim)](
+            q, k, v, decay, beta, cu_seqlens, out, state, hq, hv, dim,
+            max_seqlen, dim ** -0.5, BLOCK=128, WRITE_STATE=True,
+            SHORT_ONLY=False, num_warps=4, num_stages=1,
+        )
     else:
         state.zero_()
     return out, state
+
+
+def recurrent_gdn_short_output(q, k, v, decay, beta, cu_seqlens, max_seqlen, out):
+    """In-place exact recurrence for only documents whose actual length <=64.
+
+    This is an internal adaptive-runner helper.  It deliberately has no state
+    result, so it cannot accidentally expose a WY state paired with recurrent
+    outputs.
+    """
+    _validate_gdn_inputs(q, k, v, decay, beta, cu_seqlens, max_seqlen)
+    _check_cuda(out, "out", torch.float32)
+    if out.shape != (q.shape[0], 32, 128) or out.device != q.device:
+        raise ValueError("out must be FP32 [T,32,128] on the GDN device")
+    if q.shape[0]:
+        # ``out`` is an unused pointer in the WRITE_STATE=False specialization;
+        # passing it avoids allocating a state-shaped placeholder.
+        _recurrent[(cu_seqlens.numel() - 1, 32, 128)](
+            q, k, v, decay, beta, cu_seqlens, out, out, 16, 32, 128, 64,
+            128 ** -0.5, BLOCK=128, WRITE_STATE=False, SHORT_ONLY=True,
+            num_warps=4, num_stages=1,
+        )
+    return out
 
 
 def _validate_gdn_inputs(q, k, v, decay, beta, cu_seqlens, max_seqlen):
@@ -200,4 +245,17 @@ def chunk_gdn(q, k, v, decay, beta, cu_seqlens, max_seqlen, chunk_size=16):
     if tokens == 0:
         return (torch.empty((0, 32, dim), device=q.device, dtype=torch.float32),
                 torch.zeros((batches, 32, dim, dim), device=q.device, dtype=torch.float32))
-    return stream_gdn16(q, k, v, decay, beta, cu_seqlens, max_seqlen)
+    # The persistent state necessarily scales with B.  Tile only the
+    # short-lived BT16 workspace so a highly ragged B=1984 batch does not
+    # multiply its scratch by every sequence.  cu slices retain absolute
+    # packed-token offsets, which stream_gdn16 intentionally consumes.
+    out = torch.empty((tokens, 32, dim), device=q.device, dtype=torch.float32)
+    state = torch.zeros((batches, 32, dim, dim), device=q.device, dtype=torch.float32)
+    sequence_tile = 32
+    for begin in range(0, batches, sequence_tile):
+        end = min(begin + sequence_tile, batches)
+        stream_gdn16(
+            q, k, v, decay, beta, cu_seqlens[begin : end + 1], max_seqlen,
+            out=out, state=state[begin:end],
+        )
+    return out, state

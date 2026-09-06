@@ -10,7 +10,8 @@ import torch
 from .attention import causal_gqa
 from .checkpoint import Qwen35Checkpoint
 from .dense import fp16_embedding, linear_fp16
-from .gdn import chunk_gdn, depthwise_conv4_silu, l2_normalize_qk, prepare_gates, recurrent_gdn
+from .gdn import (chunk_gdn, depthwise_conv4_silu, l2_normalize_qk, prepare_gates,
+                  recurrent_gdn_short_output)
 from .model_ops import full_qk_rope_gate, gated_attention_fp8, gated_gdn_fp8, gather_hidden, split_full_v, split_gdn_qkv
 from .moe import MoeWeights, fused_moe
 from .ops import gemma_rms_norm, residual_add, residual_add_gemma_rms_norm
@@ -72,9 +73,17 @@ class Qwen35StatelessRunner:
         q, k = l2_normalize_qk(q, k)
         decay, beta = prepare_gates(a, b, w["linear_attn.A_log"], w["linear_attn.dt_bias"])
         if max_seqlen <= 64:
-            attended, _ = recurrent_gdn(q, k, v, decay, beta, cu_seqlens, max_seqlen)
+            # The stateless runner only consumes output.  Avoid allocating a
+            # [B,32,128,128] state for the ordinary all-short prefill path.
+            attended = torch.empty((q.shape[0], 32, 128), device=q.device, dtype=torch.float32)
+            recurrent_gdn_short_output(q, k, v, decay, beta, cu_seqlens, max_seqlen, attended)
         else:
             attended, _ = chunk_gdn(q, k, v, decay, beta, cu_seqlens, max_seqlen)
+            # A ragged batch's longest document must not choose the numerical
+            # recurrence for its short neighbours.  This state-free launch
+            # replaces only actual 1..64-token documents in the WY output;
+            # long documents retain their WY result and no second state exists.
+            recurrent_gdn_short_output(q, k, v, decay, beta, cu_seqlens, max_seqlen, attended)
         out_a8 = gated_gdn_fp8(attended, z, w["linear_attn.norm.weight"])
         projected = linear_fp8(out_a8, w["linear_attn.out_proj"])
         return projected

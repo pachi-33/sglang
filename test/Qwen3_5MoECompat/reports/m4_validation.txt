@@ -1,0 +1,35 @@
+test_chunk_bt16_exact_block_multiples (test.Qwen3_5MoECompat.unit.test_gdn.TestGDNRecurrent) ... ok
+test_chunk_bt16_long_independent_recurrence (test.Qwen3_5MoECompat.unit.test_gdn.TestGDNRecurrent) ... ok
+test_chunk_bt16_ragged_tails_and_repeatability (test.Qwen3_5MoECompat.unit.test_gdn.TestGDNRecurrent) ... ok
+test_chunk_bt16_streamed_skewed_ragged (test.Qwen3_5MoECompat.unit.test_gdn.TestGDNRecurrent) ... ok
+test_conv4_silu_checkpoint_channel_width (test.Qwen3_5MoECompat.unit.test_gdn.TestGDNRecurrent) ... ok
+test_conv4_silu_ragged_boundaries (test.Qwen3_5MoECompat.unit.test_gdn.TestGDNRecurrent) ... ok
+test_gdn_and_runner_metadata_reject_invalid_max_or_cpu_metadata (test.Qwen3_5MoECompat.unit.test_gdn.TestGDNRecurrent) ... ok
+test_int64_cu_and_empty_segments (test.Qwen3_5MoECompat.unit.test_gdn.TestGDNRecurrent) ... ok
+test_prepare_gates_stable_softplus_and_l2 (test.Qwen3_5MoECompat.unit.test_gdn.TestGDNRecurrent) ... ok
+test_recurrent_ragged_sequence_isolation (test.Qwen3_5MoECompat.unit.test_gdn.TestGDNRecurrent) ... ok
+test_recurrent_relative_l2_and_state_precision (test.Qwen3_5MoECompat.unit.test_gdn.TestGDNRecurrent) ... ok
+test_recurrent_single_lengths (test.Qwen3_5MoECompat.unit.test_gdn.TestGDNRecurrent) ... ok
+test_separated_bt16_gram_and_inverse_four_chunks (test.Qwen3_5MoECompat.unit.test_gdn.TestGDNRecurrent) ... ok
+test_separated_bt16_residual_and_state_ragged (test.Qwen3_5MoECompat.unit.test_gdn.TestGDNRecurrent) ... ok
+test_separated_bt16_wy_real_dim_ragged (test.Qwen3_5MoECompat.unit.test_gdn.TestGDNRecurrent) ... ok
+test_short_output_overwrite_boundaries_and_int64_empty (test.Qwen3_5MoECompat.unit.test_gdn.TestGDNRecurrent) ... ok
+test_default_empty_logits_and_explicit_selection (test.Qwen3_5MoECompat.integration.test_stateless_model.TestStatelessFourLayerSlice) ... ok
+test_input_or_hidden_exclusive_and_packed_sequence_equivalence (test.Qwen3_5MoECompat.integration.test_stateless_model.TestStatelessFourLayerSlice) ... M4_METRIC={"case": "packed_vs_per_sequence", "hidden_nrmse": 0.0, "logits_nrmse": 0.0, "shape": [82, 2048]}
+ok
+test_int64_empty_and_63_64_65_sequence_isolation (test.Qwen3_5MoECompat.integration.test_stateless_model.TestStatelessFourLayerSlice) ... ok
+test_ragged_explicit_logits_indices (test.Qwen3_5MoECompat.integration.test_stateless_model.TestStatelessFourLayerSlice) ... ok
+test_real_chain_length_matrix_and_empty_batch (test.Qwen3_5MoECompat.integration.test_stateless_model.TestStatelessFourLayerSlice) ... ok
+test_repeat_after_distinct_call_and_independent_global_oracles (test.Qwen3_5MoECompat.integration.test_stateless_model.TestStatelessFourLayerSlice) ... ok
+test_short_sequences_ignore_an_inflated_batch_maximum (test.Qwen3_5MoECompat.integration.test_stateless_model.TestStatelessFourLayerSlice) ... ok
+test_single_sequence_t2048_peak (test.Qwen3_5MoECompat.integration.test_stateless_model.TestStatelessFourLayerSlice) ... M4_METRIC={"case": "single_sequence_t2048", "finite": true, "peak_bytes": 5458663424, "shape": [2048, 2048]}
+ok
+test_t1_default_last_token_logits (test.Qwen3_5MoECompat.integration.test_stateless_model.TestStatelessFourLayerSlice) ... ok
+test_worst_ragged_t2048_peak (test.Qwen3_5MoECompat.integration.test_stateless_model.TestStatelessFourLayerSlice) ... M4_METRIC={"case": "worst_ragged_t2048", "finite": true, "peak_bytes": 9595500544, "shape": [2048, 2048]}
+ok
+test_layer39_full_attention_fp16_expert_route (test.Qwen3_5MoECompat.integration.test_stateless_model.TestZZLayer39FullAttention) ... ok
+
+----------------------------------------------------------------------
+Ran 27 tests in 41.353s
+
+OK

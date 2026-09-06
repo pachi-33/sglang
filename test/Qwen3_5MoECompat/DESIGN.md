@@ -61,6 +61,7 @@ scale 形成使用 FP32 倒数乘法，A8 同理使用 `FP32(1/448)`；payload �
 round-to-nearest FP32 除法。CPU / CUDA reference 必须明确实现这些舍入点。
 FP4 偶数 K 在低 nibble；local scale 为零时整组编码归零。编码采用有限饱和、RNE，
 独立 codec 测试覆盖 signed zero、subnormal、midpoint、饱和和全部有效码。
+A8 保留负零编码，包括 scale 为零的整组；不能把 NVFP4 的零组规范套用到 A8。
 
 NVFP4 的 `decode(FP4) × decode(FP8 local scale)` 最大绝对值为 2688，能精确表示为 FP16，
 可直接形成片上 HMMA 操作数。global reciprocal 仍在 FP32 中施加。
@@ -77,8 +78,12 @@ Shared expert scalar gate 则先把 sigmoid 舍入 FP16，再乘 shared output�
 
 ## GDN 的两条路径
 
-短序列使用 FP32 recurrent kernel，作为独立 WY chunk 的精度对照。
-长序列使用真实 BT16 WY 分解，包含 Gram、FP32 三角求解、U/W、R、state 更新和输出。
+每条序列按实际长度选择算法：长度至多 64 使用 FP32 recurrent kernel，
+长度大于 64 使用真实 BT16 WY 分解，包含 Gram、FP32 三角求解、U/W、R、state 更新和输出。
+调用方提供的 `max_seqlen` 只控制工作范围，不能改变同一条序列的数值路径。
+混合 batch 先产生 WY 输出，再用无 state 输出的 recurrent kernel 覆盖短序列；
+该 kernel 跳过长序列和空序列，循环次数等于短序列实际长度。
+单独的 recurrent / chunk 接口仍返回各自的 output 和 state，用于精度对照。
 它不以 recurrent kernel 冒充 chunk，也不调用 PyTorch 矩阵计算。
 
 记 `G=cumsum(g)`、`D=exp(G)`、`S0[V,K]` 为当前 chunk 前的 state：
@@ -101,6 +106,8 @@ O16 = FP16((D*(Q16 @ H16.T) + C16 @ R16) / sqrt(128))
 V100 的 Triton 2.3 布局限制要求部分矩阵阶段通过独立 kernel 和临时工作区衔接。
 有界实现逐 BT16 完成 WY 和输出后复用当前 chunk 的工作区，保留本次调用的 FP32 state。
 工作区设计不应按 `batch × max_chunks` 保存所有序列的 state history。
+WY 临时工作区按至多 32 条序列复用，完整输出保留绝对 token offset；
+每条序列的 FP32 state 只属于当前调用。全短序列的模型路径直接使用无 state 输出的递推。
 
 ## 代码接口与主干对应
 
@@ -146,7 +153,8 @@ attention 按 query、head 按 vocab 分块，避免参考实现成为显存瓶�
 重复调用、原始第 39 层及实际 peak allocated。四层通过不能推断完整模型的生成质量。
 
 性能测量覆盖 T=1/4/32/128/512/2048，排除编译和加载，计入 quant、routing、GEMM、SwiGLU、combine。
-融合与未融合的比较必须保留相同量化和 FP16 边界。只有实际正确且有收益的配置进入默认调度；
+融合与未融合的比较必须保留相同量化和 FP16 边界。成对 GEMM1 / SwiGLU / A4 融合始终是默认要求；
+未融合路径仅用于明确指定的诊断比较。在满足融合要求的候选中，只有正确且实测有收益的配置进入默认调度；
 profiler 和当前 V100 进程编译的 PTX 用于核实 Triton / SM70 HMMA 覆盖。
 
 完整模型计算图见 [model_design.mmd](model_design.mmd)。

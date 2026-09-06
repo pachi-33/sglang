@@ -10,7 +10,7 @@ flowchart TD
         GP --> CV["Causal depthwise Conv4 + SiLU on QKV"]
         CV --> QK["Q/K L2Norm: 16x128; V:32x128"]
         GP --> BG["beta=sigmoid(B); g=-exp(A_log)*softplus(A+dt_bias)"]
-        QK --> GD["Gated Delta Rule: short FP32 recurrence / BT16 WY<br/>call-local FP32 state, zero initial state"]
+        QK --> GD["Gated Delta Rule: actual length <=64 FP32 recurrence, >64 BT16 WY<br/>call-local FP32 state, zero initial state; scratch tiled by 32 sequences"]
         BG --> GD
         GD --> GN["Ordinary RMSNorm x SiLU(Z)"]
         GP -->|Z| GN
