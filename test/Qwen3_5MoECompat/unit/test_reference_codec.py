@@ -8,6 +8,7 @@ from test.Qwen3_5MoECompat.reference.codec import (
     encode_e2m1,
     encode_e4m3fn,
     quantize_a4,
+    quantize_a8,
     unpack_a4,
 )
 
@@ -28,3 +29,9 @@ class TestReferenceCodec(unittest.TestCase):
         self.assertTrue(torch.equal(packed, torch.zeros_like(packed)))
         self.assertTrue(torch.equal(scale, torch.zeros_like(scale)))
         self.assertTrue(torch.equal(unpack_a4(packed, scale, global_scale), torch.zeros((2, 16))))
+
+    def test_a8_zero_scale_preserves_signed_zero_codes(self):
+        x = torch.tensor([[-0.0, 0.0] * 64], dtype=torch.float32)
+        data, scale = quantize_a8(x)
+        self.assertTrue(torch.equal(scale, torch.zeros_like(scale)))
+        self.assertEqual(data[0, :4].tolist(), [128, 0, 128, 0])

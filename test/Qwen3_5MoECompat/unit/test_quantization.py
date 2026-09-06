@@ -76,6 +76,15 @@ class TestQwen35Quantization(V100TestCase):
         self.assertEqual(q.block_scale.tolist(), [[0]])
         self.assertEqual(q.data.tolist(), [[0] * 8])
 
+    def test_fp8_zero_local_scale_preserves_signed_zero_codes(self):
+        x = torch.tensor([[-0.0, 0.0] * 64], dtype=torch.float16, device="cuda")
+        q = quantize_fp8(x)
+        expected_data, expected_scale = quantize_a8(x)
+        self.assertEqual(q.block_scale.tolist(), [[0.0]])
+        self.assertEqual(q.data[0, :4].tolist(), [128, 0, 128, 0])
+        self.assertTrue(torch.equal(q.data, expected_data))
+        self.assertTrue(torch.equal(q.block_scale, expected_scale))
+
 
     def test_fp8_quantization_and_block_gemm(self):
         torch.manual_seed(11)

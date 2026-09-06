@@ -37,8 +37,9 @@ relaxed by an optimization patch.
 
 Codec bytes, shape, scale mapping, route mapping and identical-logit Top-8 are
 exact checks. Native FlashInfer fast-math byte parity has not been established;
-the portable contract uses RNE finite saturation and zero codes when local SF
-rounds to zero. Report max/P99 errors and non-finite values as well as NRMSE.
+the portable contract uses RNE finite saturation. NVFP4 uses zero codes when
+local SF rounds to zero; A8 retains signed-zero codes, including all-zero K128
+groups. Report max/P99 errors and non-finite values as well as NRMSE.
 
 ## Milestone status
 
@@ -349,3 +350,19 @@ Coordinator rerun of `unit.test_checkpoint` and `unit.test_model_config`:
 synthetic wrong-name/shape/dtype/scale cases and incompatible config rejection.
 The real matrix counts remain **130 / 29,184 / 1,536**. This is structural
 checkpoint validation; execution of every real expert remains the M3 gate.
+
+## M1 signed-zero reference correction — 2026-09-07
+
+The real layer-17 scan found 65 A8 payload differences, all `0x80` versus
+`0x00` in a zero-scale K128 group. Captured FP16 producer values, activation
+scales, the fused producer and the standalone Triton quantizer agreed. The
+independent CPU A8 reference had incorrectly replaced negative zero by
+positive zero for that group. It now divides by a safe scale of one and
+preserves the sign. The separate NVFP4 zero-scale canonicalization remains
+unchanged. No production math or error budget was changed.
+
+Coordinator rerun of `unit.test_reference_codec` and `unit.test_quantization`
+on the required V100: **9 tests passed in 1.690 s**, including new CPU/GPU
+zero-group signed-zero fixtures. The three real-size W8A8 projection checks
+remain between **1.84e-4 and 2.07e-4 NRMSE**. The all-layer scan will be rerun
+with this corrected independent reference and fixed Top-8 accumulation order.

@@ -92,7 +92,11 @@ def quantize_a8(x: torch.Tensor, group_size: int = 128):
     # Keep this as a float32 reciprocal multiply.  The production kernels use
     # the same frozen RN32 scale contract; division changes rare E4M3 ties.
     scale = shaped.abs().amax(dim=-1).float() * torch.tensor(1.0 / 448.0, dtype=torch.float32, device=shaped.device)
-    normalized = torch.where(scale[..., None] == 0, torch.zeros_like(shaped), shaped / scale[..., None])
+    # A8 retains an IEEE signed zero even when its whole K128 scale is zero.
+    # This matches the CUDA producer/quantizer.  NVFP4 deliberately differs:
+    # its zero local-scale payload is canonically all-zero nibbles.
+    safe = torch.where(scale == 0, torch.ones_like(scale), scale)
+    normalized = shaped / safe[..., None]
     return encode_e4m3fn(normalized.reshape_as(x)), scale.float()
 
 
