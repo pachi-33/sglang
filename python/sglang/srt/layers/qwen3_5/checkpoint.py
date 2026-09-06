@@ -12,6 +12,7 @@ import torch
 from safetensors import safe_open
 
 from .weights import Weight
+from .manifest import EXPECTED_HEADERS, HeaderSpec
 
 
 MODEL_PREFIX = "model.language_model."
@@ -94,6 +95,20 @@ class Qwen35Checkpoint:
         theta = rope.get("rope_theta", rope.get("theta", 10_000_000.0)) if isinstance(rope, Mapping) else None
         if theta != 10_000_000.0:
             raise ValueError(f"unsupported Qwen3.5 RoPE theta={theta!r}")
+        required = {
+            "linear_conv_kernel_dim": 4, "linear_key_head_dim": 128,
+            "linear_num_key_heads": 16, "linear_num_value_heads": 32,
+            "linear_value_head_dim": 128, "attn_output_gate": True,
+            "output_gate_type": "swish", "hidden_act": "silu",
+            "attention_bias": False,
+        }
+        for key, value in required.items():
+            if text.get(key) != value:
+                raise ValueError(f"unsupported Qwen3.5 text_config {key}={text.get(key)!r}")
+        if config.get("tie_word_embeddings", False) or text.get("tie_word_embeddings", False):
+            raise ValueError("tied embeddings are unsupported")
+        if not isinstance(rope, Mapping) or rope.get("rope_type") != "default" or rope.get("partial_rotary_factor") != 0.25:
+            raise ValueError("expected default partial-0.25 RoPE")
         layers = text.get("layer_types")
         if layers != ["linear_attention", "linear_attention", "linear_attention", "full_attention"] * 10:
             raise ValueError("expected the fixed [GDN,GDN,GDN,Full] * 10 layer layout")
@@ -126,9 +141,30 @@ class Qwen35Checkpoint:
                     piece = reader.get_slice(name)
                     self._headers[name] = (tuple(piece.get_shape()), piece.get_dtype())
 
+    @staticmethod
+    def _dtype_name(dtype: object) -> str:
+        if isinstance(dtype, str):
+            return dtype
+        return {torch.float16: "F16", torch.float32: "F32", torch.float8_e4m3fn: "F8_E4M3", torch.uint8: "U8"}.get(dtype, str(dtype))
+
+    def _validate_headers(self, names: Iterable[str]) -> None:
+        for name in names:
+            spec = EXPECTED_HEADERS.get(name)
+            if spec is None:
+                raise ValueError(f"unexpected text checkpoint tensor: {name}")
+            shape, dtype = self._shape_dtype(name)
+            if shape != spec.shape or self._dtype_name(dtype) != spec.dtype:
+                raise ValueError(f"invalid header for {name}: {(shape, self._dtype_name(dtype))}, expected {(spec.shape, spec.dtype)}")
+
     def audit(self) -> CheckpointAudit:
         """Check all quantized matrix companions without loading their payload."""
         self._populate_headers()
+        actual = {name for name in self._weight_map if name.startswith(MODEL_PREFIX) or name == "lm_head.weight"}
+        expected = set(EXPECTED_HEADERS)
+        if actual != expected:
+            missing, extra = expected - actual, actual - expected
+            raise ValueError(f"text checkpoint header names differ; missing={sorted(missing)[:3]}, extra={sorted(extra)[:3]}")
+        self._validate_headers(expected)
         if self.layer_ids != tuple(range(40)):
             raise ValueError(f"expected layers 0..39, got {self.layer_ids}")
         fp8 = nvfp4 = fp16_experts = 0
@@ -171,7 +207,7 @@ class Qwen35Checkpoint:
                     scale_shape, scale_dtype = self._shape_dtype(
                         f"{MODEL_PREFIX}layers.{layer}.{relative}_scale"
                     )
-                    if dtype not in (torch.float8_e4m3fn, "F8_E4M3") or scale_dtype not in (torch.float16, torch.float32, "F16", "F32"):
+                    if dtype not in (torch.float8_e4m3fn, "F8_E4M3") or scale_dtype not in (torch.float16, "F16"):
                         raise TypeError(f"invalid FP8 storage for layer {layer}: {relative}")
                     if len(shape) != 2 or scale_shape != ((shape[0] + 127) // 128, (shape[1] + 127) // 128):
                         raise ValueError(f"invalid FP8 scale shape for layer {layer}: {relative}")
@@ -231,10 +267,15 @@ class Qwen35Checkpoint:
             return Weight("fp16", data, tuple(data.shape))
         data = torch.stack(values)
         local = torch.stack(scales)
+        global_values = torch.stack(globals_)
+        input_values = torch.stack(inputs)
+        if not bool(torch.isfinite(global_values).all() and torch.isfinite(input_values).all()
+                    and (global_values > 0).all() and (input_values > 0).all()):
+            raise ValueError(f"expert {projected} global scales must be finite and positive")
         n, packed_k = data.shape[-2:]
         return Weight(
             "nvfp4", data, (256, n, packed_k * 2), local,
-            torch.stack(globals_), torch.stack(inputs),
+            global_values, input_values,
         )
 
     @staticmethod
@@ -287,6 +328,13 @@ class Qwen35Checkpoint:
         concatenated copies at once.  CPU packing keeps the V100 resident set
         to the final compact layer representation.
         """
+        if layer not in self._by_layer:
+            raise KeyError(f"unknown layer {layer}")
+        actual_names = {f"{MODEL_PREFIX}layers.{layer}.{relative}" for relative in self._by_layer[layer]}
+        expected_names = {name for name in EXPECTED_HEADERS if name.startswith(f"{MODEL_PREFIX}layers.{layer}.")}
+        if actual_names != expected_names:
+            raise ValueError(f"layer {layer} header names differ before payload read")
+        self._validate_headers(actual_names)
         raw = self._read_layer(layer, None)
         output: Dict[str, torch.Tensor | Weight] = self._pack_experts(raw, layer)
         output.update(self._pack_shared(raw))
@@ -324,6 +372,7 @@ class Qwen35Checkpoint:
         avoids duplicate host/device payloads.
         """
         result: Dict[str, torch.Tensor | Weight] = {}
+        self._validate_headers(GLOBAL_TENSORS.values())
         for public, name in GLOBAL_TENSORS.items():
             shard = self._weight_map.get(name)
             if shard is None:

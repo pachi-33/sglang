@@ -44,7 +44,7 @@ rounds to zero. Report max/P99 errors and non-finite values as well as NRMSE.
 
 | ID | Deliverable | Status |
 |---|---|---|
-| M0 | Environment, SM70 baseline, manifest, interfaces | Baseline / aggregate audit / config and interface passed; exact per-name manifest pending |
+| M0 | Environment, SM70 baseline, manifest, interfaces | Baseline, exact header manifest, config and stateless interface passed |
 | M1 | Independent references and codec tests | Codec / activation contract passed |
 | M2a | Common layers, W8A8 and Full Attention | Common / W8A8 / attention / producers passed; projection packing and tuning remain M5 |
 | M2b | Fused NVFP4 / FP16 routed MoE | Core fusion and real-layer precision passed; M5 tuning pending |
@@ -326,3 +326,26 @@ not establish complete-model quality or cache-backed serving support.
 
 `DESIGN.md` and `model_design.mmd` now document the quantized stateless design;
 the earlier external architecture reports point to these maintained sources.
+
+## M0 exact checkpoint manifest — 2026-09-07
+
+The generated manifest describes **119,015** exact text/global tensor names,
+shapes and dtypes. It includes all 130 attention FP8 matrices and their FP16
+block scales, all 29,184 NVFP4 matrices and their three scale companions, all
+1,536 FP16 routed matrices in layers 0/39, and the FP16 GDN, router, shared,
+normalization, embedding and head components. Unrelated vision tensors are
+allowed outside the text namespace.
+
+The full audit compares exact name sets before validating each header.
+`load_layer` checks the complete selected layer name set and headers before
+reading tensor payloads; global loading also validates its manifest entries.
+NVFP4 global multipliers are checked for positivity and finiteness on CPU
+before the compact GPU transfer. Fixed config validation now covers GDN head
+dimensions and Conv width, default partial RoPE, output gates, activation,
+attention bias and untied embedding/head semantics.
+
+Coordinator rerun of `unit.test_checkpoint` and `unit.test_model_config`:
+**6 tests passed in 0.474 s**, including the real complete-header audit,
+synthetic wrong-name/shape/dtype/scale cases and incompatible config rejection.
+The real matrix counts remain **130 / 29,184 / 1,536**. This is structural
+checkpoint validation; execution of every real expert remains the M3 gate.

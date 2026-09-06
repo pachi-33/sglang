@@ -1,10 +1,12 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
 from sglang.srt.hf_transformers_utils import get_config
 from sglang.srt.layers.qwen3_5.config import Qwen3_5MoeConfig
+from sglang.srt.layers.qwen3_5.checkpoint import Qwen35Checkpoint
 
 
 class TestQwen35Config(unittest.TestCase):
@@ -20,3 +22,18 @@ class TestQwen35Config(unittest.TestCase):
         self.assertIsInstance(loaded, Qwen3_5MoeConfig)
         self.assertEqual((loaded.text_config.vocab_size, loaded.text_config.hidden_size), (248320, 2048))
 
+    def test_rejects_incompatible_gdn_and_rope_contract(self):
+        source = Path(os.environ.get("QWEN35_MODEL_DIR", "/home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16"))
+        if not source.is_dir():
+            self.skipTest("real checkpoint unavailable")
+        config = json.loads((source / "config.json").read_text())
+        for key, value in (("linear_conv_kernel_dim", 3), ("attn_output_gate", False)):
+            altered = json.loads(json.dumps(config))
+            altered["text_config"][key] = value
+            with tempfile.TemporaryDirectory() as directory:
+                Path(directory, "config.json").write_text(json.dumps(altered))
+                with self.assertRaises(ValueError): Qwen35Checkpoint.validate_config(directory)
+        altered = json.loads(json.dumps(config)); altered["text_config"]["rope_parameters"]["partial_rotary_factor"] = 0.5
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "config.json").write_text(json.dumps(altered))
+            with self.assertRaises(ValueError): Qwen35Checkpoint.validate_config(directory)
