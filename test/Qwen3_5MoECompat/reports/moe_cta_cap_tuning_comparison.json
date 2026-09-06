@@ -1,0 +1,310 @@
+{
+  "aggregate_pattern_median_fused_ms": {
+    "1": {
+      "best_cap": 320,
+      "median_across_patterns_fused_ms": {
+        "160": 1.0538720488548279,
+        "320": 1.0399199724197388,
+        "80": 1.353376030921936
+      }
+    },
+    "128": {
+      "best_cap": 160,
+      "median_across_patterns_fused_ms": {
+        "160": 9.476336002349854,
+        "320": 9.480559825897217,
+        "80": 14.106847763061523
+      }
+    },
+    "2048": {
+      "best_cap": 320,
+      "median_across_patterns_fused_ms": {
+        "160": 23.558608055114746,
+        "320": 23.290719985961914,
+        "80": 33.53379249572754
+      }
+    },
+    "32": {
+      "best_cap": 160,
+      "median_across_patterns_fused_ms": {
+        "160": 6.39520001411438,
+        "320": 6.422431945800781,
+        "80": 9.934112071990967
+      }
+    },
+    "4": {
+      "best_cap": 320,
+      "median_across_patterns_fused_ms": {
+        "160": 2.0818560123443604,
+        "320": 2.0693279504776,
+        "80": 2.77019202709198
+      }
+    },
+    "512": {
+      "best_cap": 320,
+      "median_across_patterns_fused_ms": {
+        "160": 11.245408058166504,
+        "320": 11.096735954284668,
+        "80": 16.19876766204834
+      }
+    }
+  },
+  "benchmark_reports": {
+    "160": "test/Qwen3_5MoECompat/reports/moe_benchmark_cap160.json",
+    "320": "test/Qwen3_5MoECompat/reports/moe_benchmark_cap320.json",
+    "80": "test/Qwen3_5MoECompat/reports/moe_benchmark_cap80.json"
+  },
+  "bitwise_full_path_vs_cap80": {
+    "160": {
+      "bitwise_equal_to_cap80": true,
+      "mismatched_fp16_elements_by_case": {
+        "balanced_forced:1": 0,
+        "balanced_forced:128": 0,
+        "balanced_forced:2048": 0,
+        "balanced_forced:32": 0,
+        "balanced_forced:4": 0,
+        "balanced_forced:512": 0,
+        "eight_hot_forced:1": 0,
+        "eight_hot_forced:128": 0,
+        "eight_hot_forced:2048": 0,
+        "eight_hot_forced:32": 0,
+        "eight_hot_forced:4": 0,
+        "eight_hot_forced:512": 0,
+        "natural_router:1": 0,
+        "natural_router:128": 0,
+        "natural_router:2048": 0,
+        "natural_router:32": 0,
+        "natural_router:4": 0,
+        "natural_router:512": 0
+      }
+    },
+    "320": {
+      "bitwise_equal_to_cap80": true,
+      "mismatched_fp16_elements_by_case": {
+        "balanced_forced:1": 0,
+        "balanced_forced:128": 0,
+        "balanced_forced:2048": 0,
+        "balanced_forced:32": 0,
+        "balanced_forced:4": 0,
+        "balanced_forced:512": 0,
+        "eight_hot_forced:1": 0,
+        "eight_hot_forced:128": 0,
+        "eight_hot_forced:2048": 0,
+        "eight_hot_forced:32": 0,
+        "eight_hot_forced:4": 0,
+        "eight_hot_forced:512": 0,
+        "natural_router:1": 0,
+        "natural_router:128": 0,
+        "natural_router:2048": 0,
+        "natural_router:32": 0,
+        "natural_router:4": 0,
+        "natural_router:512": 0
+      }
+    }
+  },
+  "candidate_caps": [
+    80,
+    160,
+    320
+  ],
+  "per_pattern_fused_medians_ms": {
+    "balanced_forced": {
+      "1": {
+        "best_cap": 320,
+        "fused_median_ms": {
+          "160": 1.0564159750938416,
+          "320": 1.0413119792938232,
+          "80": 1.3518239855766296
+        }
+      },
+      "128": {
+        "best_cap": 320,
+        "fused_median_ms": {
+          "160": 10.601471900939941,
+          "320": 10.408271789550781,
+          "80": 15.74457597732544
+        }
+      },
+      "2048": {
+        "best_cap": 320,
+        "fused_median_ms": {
+          "160": 23.558608055114746,
+          "320": 23.290719985961914,
+          "80": 33.53379249572754
+        }
+      },
+      "32": {
+        "best_cap": 320,
+        "fused_median_ms": {
+          "160": 10.55078411102295,
+          "320": 10.337088108062744,
+          "80": 15.650735855102539
+        }
+      },
+      "4": {
+        "best_cap": 320,
+        "fused_median_ms": {
+          "160": 2.0818560123443604,
+          "320": 2.0693279504776,
+          "80": 2.77019202709198
+        }
+      },
+      "512": {
+        "best_cap": 320,
+        "fused_median_ms": {
+          "160": 11.246495723724365,
+          "320": 11.096735954284668,
+          "80": 16.31839942932129
+        }
+      }
+    },
+    "eight_hot_forced": {
+      "1": {
+        "best_cap": 320,
+        "fused_median_ms": {
+          "160": 1.0538720488548279,
+          "320": 1.0399199724197388,
+          "80": 1.353376030921936
+        }
+      },
+      "128": {
+        "best_cap": 160,
+        "fused_median_ms": {
+          "160": 2.233839988708496,
+          "320": 2.265872001647949,
+          "80": 2.909999966621399
+        }
+      },
+      "2048": {
+        "best_cap": 320,
+        "fused_median_ms": {
+          "160": 23.06100845336914,
+          "320": 22.932448387145996,
+          "80": 32.718496322631836
+        }
+      },
+      "32": {
+        "best_cap": 320,
+        "fused_median_ms": {
+          "160": 1.0997599959373474,
+          "320": 1.0788000226020813,
+          "80": 1.4121440052986145
+        }
+      },
+      "4": {
+        "best_cap": 320,
+        "fused_median_ms": {
+          "160": 1.0587040185928345,
+          "320": 1.0490079522132874,
+          "80": 1.3594560027122498
+        }
+      },
+      "512": {
+        "best_cap": 160,
+        "fused_median_ms": {
+          "160": 6.232480049133301,
+          "320": 6.269727945327759,
+          "80": 8.772511959075928
+        }
+      }
+    },
+    "natural_router": {
+      "1": {
+        "best_cap": 320,
+        "fused_median_ms": {
+          "160": 1.0245120525360107,
+          "320": 1.0091519951820374,
+          "80": 1.4837759733200073
+        }
+      },
+      "128": {
+        "best_cap": 160,
+        "fused_median_ms": {
+          "160": 9.476336002349854,
+          "320": 9.480559825897217,
+          "80": 14.106847763061523
+        }
+      },
+      "2048": {
+        "best_cap": 320,
+        "fused_median_ms": {
+          "160": 28.235615730285645,
+          "320": 28.215503692626953,
+          "80": 40.4365119934082
+        }
+      },
+      "32": {
+        "best_cap": 160,
+        "fused_median_ms": {
+          "160": 6.39520001411438,
+          "320": 6.422431945800781,
+          "80": 9.934112071990967
+        }
+      },
+      "4": {
+        "best_cap": 320,
+        "fused_median_ms": {
+          "160": 2.098096013069153,
+          "320": 2.0800479650497437,
+          "80": 3.1699039936065674
+        }
+      },
+      "512": {
+        "best_cap": 160,
+        "fused_median_ms": {
+          "160": 11.245408058166504,
+          "320": 11.39681625366211,
+          "80": 16.19876766204834
+        }
+      }
+    }
+  },
+  "purpose": "CTA-cap tuning evidence for Qwen3.5 NVFP4 routed MoE",
+  "recommendation": "fixed cap 320; no piecewise rule is justified by the 10-repeat median differences",
+  "report_sha1": {
+    "160": "7fc8190cb4a86c91bb2bdcffc8d24ece34826505",
+    "320": "3b42dc43e4e1f754eb054129c64a762a2e78b799",
+    "80": "1ffe94b2b1bc863d8c1b86ff24afe39feb7c357b"
+  },
+  "report_validation": {
+    "160": {
+      "all_finite": true,
+      "core_source_hash": "04876d73066403636bd265cc794b7780132f310d",
+      "max_fused_unfused_nrmse": 0.0,
+      "ptx": {
+        "current_process_ptx": true,
+        "has_hmma": true,
+        "target_sm70": true
+      },
+      "records": 18
+    },
+    "320": {
+      "all_finite": true,
+      "core_source_hash": "04876d73066403636bd265cc794b7780132f310d",
+      "max_fused_unfused_nrmse": 0.0,
+      "ptx": {
+        "current_process_ptx": true,
+        "has_hmma": true,
+        "target_sm70": true
+      },
+      "records": 18
+    },
+    "80": {
+      "all_finite": true,
+      "core_source_hash": "04876d73066403636bd265cc794b7780132f310d",
+      "max_fused_unfused_nrmse": 0.0,
+      "ptx": {
+        "current_process_ptx": true,
+        "has_hmma": true,
+        "target_sm70": true
+      },
+      "records": 18
+    }
+  },
+  "source_sha1_at_artifact_write": {
+    "python/sglang/srt/layers/qwen3_5/kernels/moe.py": "b997b1273a6ddb42b7fe9e3a8e8d789a62a8e747",
+    "python/sglang/srt/layers/qwen3_5/moe.py": "dbb1062364c2285bfe3b23c1d353e4e59a8154e3",
+    "python/sglang/srt/layers/qwen3_5/runner.py": "99e636c06e6d4456e2617b8dacfb6d71c2683fad",
+    "test/Qwen3_5MoECompat/bench/benchmark_moe.py": "7382776407b97e7715514faa87ca1a347480b89b"
+  }
+}

@@ -6,7 +6,7 @@ flowchart TD
         X["Hidden T x 2048"] --> N1["Gemma RMSNorm: 1 + weight"]
         X --> R1["Add residual"]
         N1 --> KIND{"Layer type"}
-        KIND -->|GDN| GP["W8A8 QKV8192/Z4096 + FP16 B32/A32"]
+        KIND -->|GDN| GP["Merged W8A8 QKVZ12288: QKV8192/Z4096<br/>Merged FP16 BA64: B32/A32"]
         GP --> CV["Causal depthwise Conv4 + SiLU on QKV"]
         CV --> QK["Q/K L2Norm: 16x128; V:32x128"]
         GP --> BG["beta=sigmoid(B); g=-exp(A_log)*softplus(A+dt_bias)"]
@@ -17,7 +17,7 @@ flowchart TD
         GN --> GA8["FP16 boundary + fused A8 group128"]
         GA8 --> GO["W8A8 output 4096 to 2048"]
         GO --> R1
-        KIND -->|Full| FP["W8A8 Q+gate8192 / K512 / V512"]
+        KIND -->|Full| FP["Merged W8A8 QGate/K/V9216<br/>Q+gate8192 / K512 / V512"]
         FP --> QR["Per-head split; Q/K Gemma Norm; NeoX RoPE64/256"]
         QR --> AT["Stateless causal GQA: Q16, KV2, D256"]
         AT --> GT["Multiply sigmoid(gate)"]
@@ -26,7 +26,7 @@ flowchart TD
         FA8 --> FO["W8A8 output 4096 to 2048"]
         FO --> R1
         R1 --> N2["Gemma RMSNorm"]
-        R1 --> R2["Add residual"]
+        R1 --> R2["Add residual: fused with NVFP4 combine"]
         N2 --> RT["FP16 Router 2048 to 256; softmax; normalized Top8"]
         RT --> DS["Triton expert dispatch / reverse map"]
         N2 --> AQ["Layers1-38: shared token A4 group16 quant"]
@@ -34,6 +34,7 @@ flowchart TD
         DS --> M1
         M1 --> SQ["FP16 boundary; SwiGLU; FP16 boundary; expert down A4 quant"]
         SQ --> M2["W4A4 grouped down GEMM"]
+        N2 -->|FP16 input| HF
         DS --> HF["Layers0/39: FP16 grouped gate/up, SwiGLU, down"]
         N2 --> SH["FP16 shared expert 2048 to 512 to 2048"]
         N2 --> SG["FP16 scalar gate + sigmoid"]

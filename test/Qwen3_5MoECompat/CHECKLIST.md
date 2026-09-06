@@ -1,0 +1,89 @@
+# Qwen3.5 V100 无状态路径核对清单
+
+本清单用于代码审阅、复现和验收。范围是文本模型、TP=1、SM70 V100、单次完整
+packed sequence；不包含 KV cache、视觉、MTP、分布式和常驻服务状态。所有 Python
+命令使用 `sglang-v100` 环境，并在 GPU 测试中设置指定的 `CUDA_VISIBLE_DEVICES`。
+
+
+路径约定：`layers/...` 表示 `python/sglang/srt/layers/...`；`kernels/...`
+表示 `python/sglang/srt/layers/qwen3_5/kernels/...`；无目录前缀的生产文件名表示
+`python/sglang/srt/layers/qwen3_5/` 下的文件；`models/...` 表示 `python/sglang/srt/models/...`；
+`unit/...`、`integration/...`、`reference/...` 与 `bench/...` 均表示
+`test/Qwen3_5MoECompat/` 下的对应子目录。下表中的相对路径均按这个约定展开。
+
+## 入口、权重和运行边界
+
+| 核对项 | 生产源码 | 验证源码 | 验收点 |
+|---|---|---|---|
+| 配置和模型入口 | `python/sglang/srt/models/qwen3_5_moe.py`、`layers/qwen3_5/config.py` | `unit/test_model_config.py` | 嵌套 `text_config` 可在旧 Transformers 注册前加载；固定 40 层配置和 RoPE 合同被拒绝/接受。 |
+| 精确 checkpoint 清单 | `layers/qwen3_5/manifest.py`、`layers/qwen3_5/checkpoint.py` | `unit/test_checkpoint.py` | 仅接受固定文本张量名、shape 和 dtype；payload 读取前完成 header 校验。 |
+| 压缩 `Weight` 合同 | `layers/qwen3_5/weights.py` | `unit/test_checkpoint.py`、`unit/test_quantization.py` | FP16、FP8、NVFP4 的物理存储、scale 和 global scale 不允许混用。 |
+| 无状态编排和 metadata | `layers/qwen3_5/runner.py` | `integration/test_stateless_model.py`、`unit/test_gdn.py` | 隐藏态为连续 FP16 `[T,2048]`，`T<=2048`；`positions=[T]`、`cu_seqlens` 为同卡连续 int32/int64。调用者信任 `cu` 的内容：首项为 0、末项为 T、单调、每段长度不超过 `max_seqlen`，内核不为热路径回读同步验证。无 KV 或 recurrent state 跨调用保存。 |
+| 原始 0--3 层端到端入口 | `models/qwen3_5_moe.py` | `integration/test_stateless_model.py` | embedding、4 个原始层、final norm 与选择行 LM head 在同一次无 cache 调用中连接。 |
+
+## 量化、线性层和投影打包
+
+| 算子/边界 | 生产源码 | 独立参考或测试 | 核对点 |
+|---|---|---|---|
+| E4M3FN 编解码、A8 K128 quantize | `layers/qwen3_5/quantization.py`、`kernels/quantization.py` | `reference/codec.py`、`unit/test_reference_codec.py`、`unit/test_quantization.py` | 有限饱和/RNE、NaN 编码、signed zero、FP32 reciprocal scale 形成。 |
+| W8A8 K128 GEMM | `layers/qwen3_5/quantization.py`、`kernels/quantization.py` | `reference/model.py`、`unit/test_reference_model.py` | 每 K128 partial 的 FP16 E4M3 decode、FP32 partial/scale/cross-K 累加、输出 FP16。语义参考不声称逐 HMMA 指令 bitwise 一致。 |
+| FP16 linear、embedding、LM head | `layers/qwen3_5/dense.py`、`kernels/dense.py` | `unit/test_dense_ops.py` | 隐藏维 `H=2048`；embedding/LM head 为 `[248320,2048]`，默认只选择每序列末 token logits；显式 `logits_indices` 可选择任意行或全部行，此时输出和显存按所选行数增长。 |
+| Gemma RMSNorm、ordinary RMSNorm、residual add | `layers/qwen3_5/ops.py`、`kernels/ops.py` | `unit/test_dense_ops.py`、`unit/test_model_ops.py` | Gemma 使用 `FP16(x * rsqrt(mean(x²)+1e-6) * (1+w))`；GDN ordinary norm 使用 `w` 而非 `1+w`；residual add 先产生 FP16 sum，`residual_add_gemma_rms_norm` 以该 sum 再做 norm。 |
+| GDN QKV+Z / B+A 打包 | `layers/qwen3_5/checkpoint.py`、`runner.py` | `unit/test_projection_packing.py` | CPU 排列为 `[QKV,Z]`、`[B,A]`；GPU 只传 merged storage，公开 component `Weight` 是别名视图。 |
+| Full QGate+K+V 打包 | `layers/qwen3_5/checkpoint.py`、`runner.py` | `unit/test_projection_packing.py` | CPU 排列为 `[QGate,K,V]`；component bytes 和 scales 共享 merged storage。 |
+| 投影性能/精度对照 | `bench/benchmark_projection_packing.py` | 已提交的 `reports/*.json` | layer 0/3，T=1/4/32/128/512/2048；separate/merged FP16 输出完全相等，并记录 CUDA kernel 数与中位延迟。 |
+
+## GDN 路径
+
+| 算子/边界 | 生产源码 | 测试 | 核对点 |
+|---|---|---|---|
+| Conv4 + SiLU | `kernels/gdn.py` | `unit/test_gdn.py` | packed sequence 左边界清零；投影 column view 可有大于逻辑宽度的 token stride；输出连续。 |
+| Q/K/V 布局和 L2Norm | `kernels/model_ops.py`、`kernels/gdn.py` | `unit/test_gdn.py` | `Q/K=[T,16,128]`、`V=[T,32,128]`，Q/K L2Norm 在 FP32 中计算。 |
+| A/B gate | `kernels/gdn.py` | `unit/test_gdn.py` | B/A merged 输出的 stride=64 被接受；softplus 稳定；beta 有明确 FP16 边界。 |
+| 短序列递推 | `kernels/gdn.py` | `unit/test_gdn.py` | 实际长度 1--64 使用 FP32 state recurrence，65 及以上不被短路径覆盖。 |
+| BT16 WY chunk | `kernels/gdn_chunk.py`、`kernels/gdn.py` | `unit/test_gdn.py` | Gram、FP32 三角求解、U/W、R/state/output 分阶段；ragged tail 和 O(B) workspace 被覆盖。每个 sequence tile 的每个 BT16 chunk 依次发射 14 个阶段 launch；`max_seqlen=2048` 时为 128 chunks，即最多 `14×128×ceil(B/32)` 个有序 launch（短 sequence 在掩码中空转）。这是内存有界实现，不能被描述为低 launch-count 路径。`stream_gdn16` 是内部 `max_seqlen>0` helper，空输入由公开 `chunk_gdn` 处理。 |
+| Z norm/SiLU/A8 producer | `kernels/model_ops.py` | `unit/test_model_ops.py` | `[T,4096]` Z column view 的 token stride 被显式传入；FP16 boundary 与 A8 bytes/scales 分开核对。 |
+
+## Full Attention 路径
+
+| 算子/边界 | 生产源码 | 测试 | 核对点 |
+|---|---|---|---|
+| QGate/K norm + partial NeoX RoPE | `kernels/model_ops.py` | `unit/test_model_ops.py` | Q projection 每 head 是 `Q[256], Gate[256]`；Q/K source 可为 merged row view；输出 Q/K/Gate 连续。 |
+| Causal GQA slab | `kernels/attention.py`、`kernels/attention_slab.py` | `unit/test_attention.py` | Q16/KV2/D256、packed ragged causal mask、int32/int64 cu；V 可为 token stride 9216 的 merged view。 |
+| Attention gate + O A8 producer | `kernels/model_ops.py` | `unit/test_model_ops.py` | `FP16(attention × sigmoid(gate))` 是 producer boundary，A8 codec 独立检查。 |
+
+## MoE 路径
+
+固定形状：router 为 `[256,2048]`；每层 routed gate/up 为 `[256,1024,2048]`
+（逻辑顺序 gate 后 up，每支 intermediate `I=512`），down 为 `[256,2048,512]`；
+每 token 固定 Top-8。第 0/39 层 routed 权重 FP16，中间第 1--38 层为 raw NVFP4。
+
+| 算子/边界 | 生产源码 | 独立参考或测试 | 核对点 |
+|---|---|---|---|
+| Router、stable Top-8 | `layers/qwen3_5/moe.py` 的 `route_topk`、`kernels/moe.py` 的 `normalized_top8_kernel` | `reference/moe.py`、`unit/test_moe.py` | router FP16 GEMM 后以 FP32 softmax；选中 8 路由权重在 FP32 归一化；相等 logit 必须 lower expert ID 优先。 |
+| 稳定 expert-major dispatch | `layers/qwen3_5/moe.py` 的 `_build_dispatch`、`kernels/moe.py` 的 `dispatch_*` | `unit/test_moe.py` | route 数为 `R=T×8`；count/prefix/scatter/inverse 按 expert-major 稳定重排。`dispatch_stable_scatter_kernel` 每个 expert CTA 都按 256-route chunk 扫描全部 R，因此 scatter 本身是 O(E×R)，`E=256`；容量按 32 对齐，不可误称为 O(R)。 |
+| 一次 A4 输入 codec | `layers/qwen3_5/quantization.py`、`kernels/quantization.py`、`layers/qwen3_5/moe.py` | `reference/model.py`、`reference/codec.py`、`unit/test_quantization.py`、`unit/test_moe.py` | routed hidden `x=[T,2048]` 仅为 gate/up 生成一次 static-global A4；gate/up input global 必须物理 `[256]` 且相同。强制 fused G1 不先 gather/materialize expert-major A4，而是从原始 per-token A4 用 `source_ids` token map 直接加载；仅显式 unfused baseline materialize expert-major G1/SwiGLU A4。 |
+| paired G1 + SwiGLU + direct A4 | `layers/qwen3_5/moe.py` 的 `_paired_gemm1_swiglu_a4`、`kernels/moe.py` 的 `nvfp4_paired_gemm1_swiglu_a4_kernel` | `reference/moe.py`、`unit/test_moe.py` | 同一 CTA 计算 gate/up；每支 G1 后先 FP16，SwiGLU 后再 FP16，直接量化为 GEMM2 所需 A4，不 materialize 完整 gate/up/SwiGLU FP16 tensor。A4 local scale 是 E4M3，packed E2M1 偶数 K 在低 nibble。 |
+| persistent G1 cap/scratch | 同上 | `unit/test_moe.py`、`bench/benchmark_moe.py` | 仅允许 CTA cap 80/160/320，默认 320；每 program 一个 `32×32` FP16 scratch（2 KiB），最大 `320×2 KiB=640 KiB`。这是 scratch 上限，不等于所有临时/输出 allocation。 |
+| G2 与 expert-specific down globals | `layers/qwen3_5/moe.py` 的 `_grouped_gemm`、`kernels/moe.py` 的 `nvfp4_grouped_gemm_kernel` | `reference/moe.py`、`unit/test_moe.py` | down A4 input global 和 down weight global 都是物理 `[256]`，按 expert row 选择；local E2M1×E4M3 decode 后 FP32 GEMM，global reciprocal 在累加后施加；G2 输出先舍入 FP16，再乘 route weight。 |
+| 固定顺序 FP32 combine、shared/residual | `layers/qwen3_5/moe.py` 的 `execute_experts`/`fused_*_moe`、`kernels/moe.py` 的 `route_combine*_kernel` | `reference/moe.py`、`unit/test_moe.py`、`integration/layer_scan.py` | inverse route 恢复后按固定 Top-8 顺序 FP32 累加。shared expert 为 FP16 `2048→512→2048`；shared scalar gate 的 sigmoid 先 FP16 再乘 shared output；routed+shared 和 residual add 保留各自 FP16 边界。 |
+| checkpoint 规定的 FP16 routed 路径（layer 0/39） | `layers/qwen3_5/moe.py` 的 `execute_fp16_experts`/`fused_fp16_moe`、`kernels/moe.py` 的 `fp16_*` | `reference/moe.py`、`unit/test_moe.py` | 仍使用全部 256 physical experts、同一 stable dispatch/Top-8/combine 合同；这是 checkpoint 规定的 FP16 层，不是 NVFP4 的降级 fallback，也不使用 NVFP4 global-scale 路径。 |
+| MoE benchmark | `bench/benchmark_moe.py` | 已提交的 `reports/*.json` | real layer 1、natural/forced routes、T=1/4/32/128/512/2048、fused 与 explicit unfused 对照。 |
+
+## 实层扫描和后端审计
+
+| 核对项 | 源码 | 验证 | 当前判读 |
+|---|---|---|---|
+| 40 层独立扫描 | `integration/layer_scan.py` | `integration/test_layer_scan.py`、CLI `--layers 0-39` | 投影同时记录 `_math` 与 `_semantic` 两个 2e-3 gate；组成层使用 block-semantic FP8 reference；MoE 强制 256 expert route 逐 expert 报告。 |
+| M3 参考 source hash | `integration/layer_scan.py` | 每层 JSON `source_sha256` | hash 覆盖生产 Qwen3.5 Python、独立 reference 与 scanner，报告必须和 source hash/contract 一起解释。 |
+| 完整后端 PTX 审计 | `bench/backend_audit.py` | `unit/test_backend_audit.py`、backend audit JSON | profiler CUDA compute events 必须精确匹配本进程 PTX entry；memory event 单列；framework/cublas/cutlass/未知 compute 失败。专门化 entry 名需原样写进 allowlist。 |
+| 格式/导入 | `python/sglang/srt/layers/qwen3_5/`、`models/qwen3_5_moe.py`、`test/Qwen3_5MoECompat/` | `isort==5.13.2 --check`、`black==24.10.0 --check`、`py_compile` | 格式检查不替代 GPU 精度或性能验收。 |
+
+## 执行前后核对
+
+1. 运行前确认 required interpreter、`PYTHONPATH=python:.`、V100 UUID 和 capability `(7,0)`。
+2. GPU unittest 自己持有 `/tmp/qwen35-v100-gpu.lock`；不要再套 shell `flock`。
+3. standalone layer scan 和 benchmark 自己持锁；同样不要外层加锁。
+4. 检查 M3 JSON 的 `math_contract`、`source_sha256`、每个 `_math`/`_semantic` projection gate、强制 256-expert route 和 nonfinite 字段。
+5. 检查 projection/MoE/backend benchmark 的 token 覆盖、actual GPU、kernel histogram 与 peak allocation；不要把不同 source hash 或不同 UUID 的报告混用。
+6. M3/M5 已通过本期验收；最终结果、命令输出和限制见 [VALIDATION.md](VALIDATION.md)。只有扫描、unit/integration、精度、内存和 benchmark 对应的验收项全部通过时，才更新里程碑状态；无 cache 的范围不等同于 cache-backed serving。

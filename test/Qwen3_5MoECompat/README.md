@@ -23,7 +23,9 @@ original layer independently with only one layer resident at a time.
 - Routed layers 1-38: 29,184 NVFP4 W4A4 matrices, groups of 16, FP8 local scales,
   static FP32 global multipliers. Layers 0/39 and shared experts remain FP16.
 
-The Mermaid source in `model_design.mmd` documents the full computation.
+The full rendered Mermaid graph is in [DESIGN.md](DESIGN.md), with source in
+[model_design.mmd](model_design.mmd). See [CHECKLIST.md](CHECKLIST.md) for the
+operator/source/test mapping.
 
 ## Numerical contract
 
@@ -31,12 +33,15 @@ FP8 and FP4 weights stay encoded in device memory. Triton decodes only the tile
 being computed and executes FP16 Tensor Core operations with FP32 accumulation.
 This is software FP8/FP4 support on SM70, which has no native FP8/FP4 MMA.
 
-W8A8 applies `activation_scale * weight_scale` to each K=128 partial in FP32.
+W8A8 computes each K=128 partial in FP32, multiplies that partial by its
+activation scale, then by its weight scale, and accumulates K blocks in FP32.
 Checkpoint weight scales are FP16; dynamic activation scales are FP32.
 
-For NVFP4, `u=x*G`, local scale is E4M3FN RNE-saturated `amax(u_group16)/6`, and
+For NVFP4, `u=x*G`, local scale is E4M3FN RNE-saturated
+`RN32(amax(u_group16) * RN32(1/6))`, and
 FP4 codes are E2M1 RNE-saturated `u/decoded_local_scale`. Zero local scales produce
-zero codes. Packing places even K in the low nibble. Reconstruction is
+zero codes. A8 scale uses `RN32(amax * RN32(1/448))`; normalized
+payload quotients use round-to-nearest FP32 division. Packing places even K in the low nibble. Reconstruction is
 `decode4(code)*decode8(local_scale)/G`, without per-row global renormalization.
 The product of a finite FP4 code and its FP8 scale is exactly representable in
 FP16 (maximum magnitude 2688); only this local product is folded into the HMMA
@@ -56,13 +61,39 @@ in a second shell `flock`, which would deadlock. From the repository root:
 
 ```bash
 CUDA_VISIBLE_DEVICES=GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96 \
-PYTHONPATH=python \
+PYTHONPATH=python:. \
 /home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python \
   -m unittest discover -s test/Qwen3_5MoECompat -p 'test_*.py' -v
 ```
 
-Standalone GPU probes without `V100TestCase` must instead use
-`flock /tmp/qwen35-v100-gpu.lock` around their Python command.
+The complete real-weight scan is a separate command; the small scan smoke in
+unittest discovery is opt-in:
+
+```bash
+CUDA_VISIBLE_DEVICES=GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96 \
+PYTHONPATH=python:. \
+/home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python -u -m \
+  test.Qwen3_5MoECompat.integration.layer_scan --layers 0-39 \
+  --output-dir test/Qwen3_5MoECompat/reports/layer_scan
+```
+
+The scan CLI and benchmark modules own the same lock internally. **Do not add
+an outer shell `flock`** to those commands or to `V100TestCase` tests.
+Only standalone ad hoc GPU probes that do not own a lock need shell `flock`.
+
+Benchmarks run with the same interpreter, UUID and `PYTHONPATH` prefix:
+
+- `-m test.Qwen3_5MoECompat.bench.benchmark_moe`: real layer-1 MoE,
+  including router, shared expert and residual; explicit unfused comparison.
+- `-m test.Qwen3_5MoECompat.bench.benchmark_projection_packing`: real
+  layer-0/3 merged versus separate projections, with exact output comparisons.
+- `-m test.Qwen3_5MoECompat.bench.backend_audit`: complete original layer-0–3
+  `forward_no_cache`, including embedding, final norm and selected-row head.
+
+Each benchmark covers T=1/4/32/128/512/2048. Compilation and loading are excluded
+from timings. The backend audit compares CUDA compute events to entry points
+from its own freshly compiled Triton PTX; memory operations are reported
+separately. Performance reports describe this V100 and this stateless scope.
 
 Checkpoint default:
 `/home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16`.
@@ -71,4 +102,8 @@ materialize all experts as FP32 simultaneously. The four-layer compressed
 parameters total approximately 4.808 GiB; the integration peak-allocated budget
 is 12 GiB at total tokens <=2048.
 
-See `MILESTONES.md` for verification evidence, accepted limits and remaining work.
+[VALIDATION.md](VALIDATION.md) records the accepted 40-layer scan and final
+93-test discovery (92 passed, one opt-in scan smoke skipped).
+[PERFORMANCE.md](PERFORMANCE.md) records fused comparisons and the final full
+four-layer Triton profiler audit. [MILESTONES.md](MILESTONES.md) preserves
+implementation milestones, verification evidence and scope limits.

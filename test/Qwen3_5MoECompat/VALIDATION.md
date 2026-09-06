@@ -113,9 +113,14 @@ smoke，已由单独 40 层 CLI 覆盖；没有因设备或 checkpoint 缺失而
 | 单序列 | 5,460,760,064 B（5.09 GiB） | 12 GiB |
 | `[1]×1983+[65]` | 9,595,500,032 B（8.94 GiB） | 12 GiB |
 
-格式后完整四层 profiler 正在复跑，结果完成后写入 [PERFORMANCE.md](PERFORMANCE.md)。
+格式后完整四层 profiler 已通过全部 6 种 token 数：计算事件精确匹配本进程 Triton PTX，
+无框架或未知 compute kernel。完整计时、kernel 数和当前源码 hash 见 [PERFORMANCE.md](PERFORMANCE.md)。
 
 复现命令见 [README.md](README.md)，完整设计图见 [DESIGN.md](DESIGN.md)，
 逐算子清单见 [CHECKLIST.md](CHECKLIST.md)。本期为文本 TP=1，最多 2048 tokens，无
 KV/Conv/SSM 跨调用 cache。验收涵盖独立 40 层与原始 0～3 四层集成，不包含完整 40 层
 串联、模型生成质量、旧 ModelRunner 服务、视觉或 MTP。
+
+扫描证据对应提交 `41d7d83452` 的源码。随后仅将扫描器输出的第 0/39 层 backend 标签
+改为 FP16；没有更改计算、reference、预算或原始测量值。重跑时源码 hash 会因这项 metadata
+表达式改变而不同，不能将新 hash 冒充原始扫描 hash。

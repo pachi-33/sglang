@@ -1,0 +1,244 @@
+{
+  "environment": {
+    "torch": "2.3.1+cu121",
+    "cuda": "12.1",
+    "capability": [
+      7,
+      0
+    ],
+    "gpu": "Tesla V100-SXM2-16GB",
+    "uuid": "GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96"
+  },
+  "repeats": 10,
+  "semantics": "same FP16 input; includes shared A8 quantization and GDN B/A; excludes loading and compilation",
+  "records": [
+    {
+      "layer": 0,
+      "kind": "gdn",
+      "tokens": 1,
+      "individual_ms": 0.3896320015192032,
+      "merged_ms": 0.2815999984741211,
+      "individual_cuda_kernels": 5,
+      "merged_cuda_kernels": 3,
+      "individual_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 2,
+        "_nt_gemm_kernel_0d1d2d": 2
+      },
+      "merged_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 1,
+        "_nt_gemm_kernel_0d1d2d": 1
+      },
+      "bitwise_fp16_outputs": true
+    },
+    {
+      "layer": 0,
+      "kind": "gdn",
+      "tokens": 4,
+      "individual_ms": 0.3909920006990433,
+      "merged_ms": 0.288799986243248,
+      "individual_cuda_kernels": 5,
+      "merged_cuda_kernels": 3,
+      "individual_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 2,
+        "_nt_gemm_kernel_0d1d2d": 2
+      },
+      "merged_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 1,
+        "_nt_gemm_kernel_0d1d2d": 1
+      },
+      "bitwise_fp16_outputs": true
+    },
+    {
+      "layer": 0,
+      "kind": "gdn",
+      "tokens": 32,
+      "individual_ms": 0.39585600793361664,
+      "merged_ms": 0.28862400352954865,
+      "individual_cuda_kernels": 5,
+      "merged_cuda_kernels": 3,
+      "individual_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 2,
+        "_nt_gemm_kernel_0d1d2d": 2
+      },
+      "merged_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 1,
+        "_nt_gemm_kernel_0d1d2d": 1
+      },
+      "bitwise_fp16_outputs": true
+    },
+    {
+      "layer": 0,
+      "kind": "gdn",
+      "tokens": 128,
+      "individual_ms": 0.9077439904212952,
+      "merged_ms": 0.7951839864253998,
+      "individual_cuda_kernels": 5,
+      "merged_cuda_kernels": 3,
+      "individual_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 2,
+        "_nt_gemm_kernel_0d1d2d": 2
+      },
+      "merged_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 1,
+        "_nt_gemm_kernel_0d1d2d": 1
+      },
+      "bitwise_fp16_outputs": true
+    },
+    {
+      "layer": 0,
+      "kind": "gdn",
+      "tokens": 512,
+      "individual_ms": 2.80348801612854,
+      "merged_ms": 2.643199920654297,
+      "individual_cuda_kernels": 5,
+      "merged_cuda_kernels": 3,
+      "individual_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 2,
+        "_nt_gemm_kernel_0d1d2d": 2
+      },
+      "merged_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 1,
+        "_nt_gemm_kernel_0d1d2d": 1
+      },
+      "bitwise_fp16_outputs": true
+    },
+    {
+      "layer": 0,
+      "kind": "gdn",
+      "tokens": 2048,
+      "individual_ms": 8.931632041931152,
+      "merged_ms": 8.832528114318848,
+      "individual_cuda_kernels": 5,
+      "merged_cuda_kernels": 3,
+      "individual_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 2,
+        "_nt_gemm_kernel_0d1d2d": 2
+      },
+      "merged_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 1,
+        "_nt_gemm_kernel_0d1d2d": 1
+      },
+      "bitwise_fp16_outputs": true
+    },
+    {
+      "layer": 3,
+      "kind": "full",
+      "tokens": 1,
+      "individual_ms": 0.38151998817920685,
+      "merged_ms": 0.22535999864339828,
+      "individual_cuda_kernels": 4,
+      "merged_cuda_kernels": 2,
+      "individual_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 3
+      },
+      "merged_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 1
+      },
+      "bitwise_fp16_outputs": true
+    },
+    {
+      "layer": 3,
+      "kind": "full",
+      "tokens": 4,
+      "individual_ms": 0.38260801136493683,
+      "merged_ms": 0.22707200050354004,
+      "individual_cuda_kernels": 4,
+      "merged_cuda_kernels": 2,
+      "individual_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 3
+      },
+      "merged_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 1
+      },
+      "bitwise_fp16_outputs": true
+    },
+    {
+      "layer": 3,
+      "kind": "full",
+      "tokens": 32,
+      "individual_ms": 0.3882399946451187,
+      "merged_ms": 0.22377599775791168,
+      "individual_cuda_kernels": 4,
+      "merged_cuda_kernels": 2,
+      "individual_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 3
+      },
+      "merged_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 1
+      },
+      "bitwise_fp16_outputs": true
+    },
+    {
+      "layer": 3,
+      "kind": "full",
+      "tokens": 128,
+      "individual_ms": 0.6556319892406464,
+      "merged_ms": 0.5227039754390717,
+      "individual_cuda_kernels": 4,
+      "merged_cuda_kernels": 2,
+      "individual_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 3
+      },
+      "merged_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 1
+      },
+      "bitwise_fp16_outputs": true
+    },
+    {
+      "layer": 3,
+      "kind": "full",
+      "tokens": 512,
+      "individual_ms": 1.7926239967346191,
+      "merged_ms": 1.7118239998817444,
+      "individual_cuda_kernels": 4,
+      "merged_cuda_kernels": 2,
+      "individual_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 3
+      },
+      "merged_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 1
+      },
+      "bitwise_fp16_outputs": true
+    },
+    {
+      "layer": 3,
+      "kind": "full",
+      "tokens": 2048,
+      "individual_ms": 6.47544002532959,
+      "merged_ms": 6.390703916549683,
+      "individual_cuda_kernels": 4,
+      "merged_cuda_kernels": 2,
+      "individual_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 3
+      },
+      "merged_kernel_histogram": {
+        "quantize_fp8_group128_kernel_0d1d2d": 1,
+        "fp8_block128_gemm_kernel_0d1d2d3d4d": 1
+      },
+      "bitwise_fp16_outputs": true
+    }
+  ]
+}

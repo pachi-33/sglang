@@ -805,7 +805,11 @@ def scan_layer(
             "tokens": tokens,
             "seed": SEED + layer_id,
             "math_contract": MATH_CONTRACT,
-            "expert_execution_backend": "fused paired G1/SwiGLU/A4",
+            "expert_execution_backend": (
+                "checkpoint FP16 grouped gate/up/SwiGLU/down"
+                if layer_id in (0, 39)
+                else "fused paired G1/SwiGLU/A4"
+            ),
             "source_sha256": _RUN_SOURCE_HASH or _source_hash(),
             "environment": {
                 "python": sys.version.split()[0],

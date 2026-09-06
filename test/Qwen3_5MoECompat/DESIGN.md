@@ -2,7 +2,8 @@
 
 本文件取代早期“离线展开 FP16、先接缓存和多卡服务”的建议。当前交付按
 `feat/qwen3/compat` 分支实现，精度和性能的已通过项目以
-[MILESTONES.md](MILESTONES.md) 及实际测试报告为准；设计图不表示所有验收已完成。
+[MILESTONES.md](MILESTONES.md) 和 [VALIDATION.md](VALIDATION.md) 为准；
+独立 40 层与四层无 cache 集成已完成本期验收。
 
 结构和计算语义对照本地 SGLang checkout
 `4349538c02e1566a1424510d5ac3ae853f49feef`，模型为
@@ -40,6 +41,10 @@
 
 FP8 矩阵合计 `30×3 + 10×4 = 130`。模型目录名中的 `_fp16` 不表示所有矩阵均为 FP16。
 压缩权重在 CPU 上整理，再一次性转入 GPU；生产路径只在 tile 内解码，不保留完整展开副本。
+GDN 输入投影按 QKV/Z 合并为 `[12288,2048]`，B/A 按 B 后 A 合并为 `[64,2048]`；
+Full 输入投影按 Q+gate、K、V 合并为 `[9216,2048]`。对应 FP8 block scale 同步按行合并。
+GPU 只接收合并后的存储，原矩阵接口从该存储恢复为别名视图；后续 Conv、gate、Q/K norm、
+RoPE 和 V 消费者支持带行 stride 的投影视图，不新增完整 activation 拷贝。
 
 ## 量化和舍入合同
 
@@ -71,10 +76,18 @@ GEMM1 按路由 token map 读取。成对 gate/up tile 在同一 CTA 中计算�
 `GEMM1→FP16→SwiGLU→FP16→A4` 边界，直接输出 down 所需的 packed activation。
 down 的输入 global scale 按 expert 选择。GEMM2 先舍入 FP16，再乘路由权重；
 combine 按固定 Top-8 顺序在 FP32 中累加。
+默认 persistent GEMM1 使用至多 320 个 CTA；每个 CTA 独占一个 32×32 FP16 spill tile，
+总 scratch 至多 640 KiB。该设置通过 80/160/320 的真实尺寸精度、重复使用和性能对照后采用。
+NVFP4 combine 同时完成 shared 和 residual 相加，并保留各次 FP16 舍入边界。
 
 Full Attention output gate 的边界为 `FP16(attention16 × sigmoid(gate32))`。
 Shared expert scalar gate 则先把 sigmoid 舍入 FP16，再乘 shared output；两者不能混用。
 每次 residual add 也先产生 FP16 sum，再用于后续 FP32 norm。
+
+独立 reference 同时保留完整反量化后的 FP32 数学对照和分块语义对照。
+W8A8 语义对照按 K128 求 FP32 partial，依次施加 activation / weight scale 并顺序累加；
+NVFP4 语义对照先解码局部 FP16 操作数，FP32 GEMM 后才乘 global reciprocal。
+两者都在投影末端舍入 FP16，不宣称逐指令模拟 HMMA 的累加顺序或编译器 FMA。
 
 ## GDN 的两条路径
 
@@ -108,6 +121,9 @@ V100 的 Triton 2.3 布局限制要求部分矩阵阶段通过独立 kernel 和�
 工作区设计不应按 `batch × max_chunks` 保存所有序列的 state history。
 WY 临时工作区按至多 32 条序列复用，完整输出保留绝对 token offset；
 每条序列的 FP32 state 只属于当前调用。全短序列的模型路径直接使用无 state 输出的递推。
+第一个 WY chunk 在 kernel 内产生初始零 state，第一块 attention slab 在 merge 内产生初始
+softmax 状态；生产路径不通过 PyTorch CUDA fill 初始化这些工作区。空输入的公开 GDN 接口
+使用专门的 Triton zero kernel 返回零 state。
 
 ## 代码接口与主干对应
 
@@ -157,4 +173,61 @@ attention 按 query、head 按 vocab 分块，避免参考实现成为显存瓶�
 未融合路径仅用于明确指定的诊断比较。在满足融合要求的候选中，只有正确且实测有收益的配置进入默认调度；
 profiler 和当前 V100 进程编译的 PTX 用于核实 Triton / SM70 HMMA 覆盖。
 
-完整模型计算图见 [model_design.mmd](model_design.mmd)。
+## 完整模型设计图
+
+可单独编辑或导出的 Mermaid 源文件为 [model_design.mmd](model_design.mmd)。
+
+```mermaid
+flowchart TD
+    TOK["Token IDs"] --> EMB["FP16 Embedding 248320 x 2048"]
+    EMB --> X
+    HS["Optional hidden input T x 2048<br/>exclusive with Token IDs"] --> X
+    subgraph DEC["Decoder x40: GDN,GDN,GDN,Full repeated x10"]
+        X["Hidden T x 2048"] --> N1["Gemma RMSNorm: 1 + weight"]
+        X --> R1["Add residual"]
+        N1 --> KIND{"Layer type"}
+        KIND -->|GDN| GP["Merged W8A8 QKVZ12288: QKV8192/Z4096<br/>Merged FP16 BA64: B32/A32"]
+        GP --> CV["Causal depthwise Conv4 + SiLU on QKV"]
+        CV --> QK["Q/K L2Norm: 16x128; V:32x128"]
+        GP --> BG["beta=sigmoid(B); g=-exp(A_log)*softplus(A+dt_bias)"]
+        QK --> GD["Gated Delta Rule: actual length <=64 FP32 recurrence, >64 BT16 WY<br/>call-local FP32 state, zero initial state; scratch tiled by 32 sequences"]
+        BG --> GD
+        GD --> GN["Ordinary RMSNorm x SiLU(Z)"]
+        GP -->|Z| GN
+        GN --> GA8["FP16 boundary + fused A8 group128"]
+        GA8 --> GO["W8A8 output 4096 to 2048"]
+        GO --> R1
+        KIND -->|Full| FP["Merged W8A8 QGate/K/V9216<br/>Q+gate8192 / K512 / V512"]
+        FP --> QR["Per-head split; Q/K Gemma Norm; NeoX RoPE64/256"]
+        QR --> AT["Stateless causal GQA: Q16, KV2, D256"]
+        AT --> GT["Multiply sigmoid(gate)"]
+        FP -->|gate| GT
+        GT --> FA8["FP16 boundary + fused A8 group128"]
+        FA8 --> FO["W8A8 output 4096 to 2048"]
+        FO --> R1
+        R1 --> N2["Gemma RMSNorm"]
+        R1 --> R2["Add residual: fused with NVFP4 combine"]
+        N2 --> RT["FP16 Router 2048 to 256; softmax; normalized Top8"]
+        RT --> DS["Triton expert dispatch / reverse map"]
+        N2 --> AQ["Layers1-38: shared token A4 group16 quant"]
+        AQ --> M1["Paired W4A4 grouped gate/up GEMM"]
+        DS --> M1
+        M1 --> SQ["FP16 boundary; SwiGLU; FP16 boundary; expert down A4 quant"]
+        SQ --> M2["W4A4 grouped down GEMM"]
+        N2 -->|FP16 input| HF
+        DS --> HF["Layers0/39: FP16 grouped gate/up, SwiGLU, down"]
+        N2 --> SH["FP16 shared expert 2048 to 512 to 2048"]
+        N2 --> SG["FP16 scalar gate + sigmoid"]
+        SH --> SM["Shared multiply"]
+        SG --> SM
+        M2 --> CO["Route weight; deterministic Top8 combine; add shared"]
+        HF --> CO
+        SM --> CO
+        CO --> R2
+    end
+    R2 --> NEXT{"More selected decoder layers?"}
+    NEXT -->|Yes| X
+    NEXT -->|No| FN["Final Gemma RMSNorm"]
+    FN --> HD["Separate FP16 LM head 2048 to 248320"]
+    HD --> LO["Selected token logits"]
+```

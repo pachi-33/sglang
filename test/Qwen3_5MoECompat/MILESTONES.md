@@ -49,13 +49,13 @@ chronological evidence, including limitations subsequently resolved.
 | ID | Deliverable | Status |
 |---|---|---|
 | M0 | Environment, SM70 baseline, manifest, interfaces | Baseline, exact header manifest, config and stateless interface passed |
-| M1 | Independent references and codec tests | Codec / activation contract passed |
+| M1 | Independent references and codec tests | Passed: independent codecs, FP8 math/block-semantic and NVFP4 post-global references |
 | M2a | Common layers, W8A8 and Full Attention | Passed, including merged projections and strided consumers |
 | M2b | Fused NVFP4 / FP16 routed MoE | Passed, including mandatory fusion, stable dispatch and CTA320 tuning |
 | M2c | Stateless GDN recurrent and chunk paths | FP32 recurrent and bounded streamed BT16 WY passed |
 | M3 | All 40 real layers independently checked | Passed: v4 independent math/semantic references, all 256 experts per layer |
 | M4 | Real layers 0-3 integration | Passed, including natural sequence isolation and both T2048 memory gates |
-| M5 | Performance / backend audit and documentation | Kernel optimizations passed; final-source profiler and documentation acceptance pending |
+| M5 | Performance / backend audit and documentation | Passed: fusion/packing comparisons, final-source Triton audit, complete design/checklist |
 
 ## Pre-implementation feasibility evidence
 
@@ -500,3 +500,60 @@ Full raw reports, concise summary and the completed CLI log are committed in
 The raw v4 `expert_execution_backend` label is generic and inaccurate for
 layers0/39; their actual execution and reference are FP16. The validation
 erratum states this explicitly without changing measured values.
+
+## M5 — final performance, backend audit and maintained design — 2026-09-07
+
+The canonical real layer-1 benchmark compares the complete fused path to an
+explicit same-semantic Triton unfused baseline, including router, shared expert
+and residual. All 18 cases (natural, balanced, eight-hot routes at each of
+T=1/4/32/128/512/2048) are finite and bitwise equal, NRMSE=0. Complete CUDA kernel
+counts are 18 versus 24. Natural T1 is 1.174/2.243 ms fused/unfused; T2048 is
+28.062/30.474 ms. Balanced and eight-hot T2048 are 23.235/25.291 and
+22.778/24.682 ms. All timings exclude compilation and loading. The historical
+80/160/320 cap sweep used separate shared/residual additions; canonical final
+measurements above use the fused epilogue and retain their own provenance.
+
+Twelve real layer-0/3 projection comparisons are bitwise equal. All merged
+cases improve measured latency, including GDN T1 0.390 to 0.282 ms and Full
+T1 0.382 to 0.225 ms. Original candidate/packing benchmark source hashes refer
+to pre-format files, explicitly documented in PERFORMANCE.md; no later hash
+is retroactively assigned to these measurements.
+
+The coordinator reran the full four-layer `forward_no_cache(input_ids=...)`
+profiler on final formatted production sources, with globals and one logits
+row, using a fresh private Triton cache. The final report source SHA1 is
+`2849c5cb8cc23eb3779183677b66c94c25610c4b`. All compute event names exactly
+match entries in that process's generated Triton PTX. No ATen/Torch, cuBLAS,
+CUTLASS or unknown compute event occurs; memory events are classified separately
+and are empty for all six calls. The PTX targets SM70 and contains FP16 HMMA.
+
+| T | Full four-layer median ms | CUDA compute launches |
+|---:|---:|---:|
+| 1 | 7.856 | 136 |
+| 4 | 10.100 | 136 |
+| 32 | 18.868 | 136 |
+| 128 | 33.710 | 472 |
+| 512 | 74.425 | 1480 |
+| 2048 | 242.240 | 5524 |
+
+All six output shapes and finite checks pass; profiler T2048 peak allocation
+is 5,454,842,368 B. GDN BT16 still launches 14 stages per chunk: this is the
+main long-sequence launch-count limitation, not a claimed low-launch or
+full-40-layer serving benchmark. No complete-model generation quality or cache
+support is inferred from these results.
+
+The final 93-test regression, 40 raw layer scans, performance/candidate JSONs
+and final profiler log are retained as reviewable evidence. Astra independently
+recomputed **1,250 passing component gates**, all40 table rows and all summary
+extrema, and reconstructed the scan source hash from commit41d7d83452. The only
+post-scan code change is the scanner's metadata label for checkpoint FP16
+layers0/39; its remaining AST matches that commit exactly. Raw measurements
+retain the original label with an explicit validation erratum.
+
+DESIGN.md now embeds the complete Mermaid graph; model_design.mmd is its
+standalone source. CHECKLIST.md maps each operator to shapes, implementation,
+reference and tests. VALIDATION.md and PERFORMANCE.md record current acceptance
+and limits; README.md provides the exact environment/UUID commands and lock
+ownership. The earlier external architecture/checklist files point to these
+maintained branch documents. All M0–M5 acceptance items within the approved
+text-only, TP=1, T<=2048, stateless scope are complete.
