@@ -47,7 +47,7 @@ rounds to zero. Report max/P99 errors and non-finite values as well as NRMSE.
 | M0 | Environment, SM70 baseline, manifest, interfaces | M0a passed; model/config interface pending |
 | M1 | Independent references and codec tests | Codec / activation contract passed |
 | M2a | Common layers, W8A8 and Full Attention | Common/W8A8/attention core passed; producer fusion pending |
-| M2b | Fused NVFP4 / FP16 routed MoE | Pending |
+| M2b | Fused NVFP4 / FP16 routed MoE | Core fusion and real-layer precision passed; M5 tuning pending |
 | M2c | Stateless GDN recurrent and chunk paths | Pending |
 | M3 | All 40 real layers independently checked | Pending |
 | M4 | Real layers 0-3 integration | Pending |
@@ -206,3 +206,60 @@ The 2048-token path is slower than this reference; performance optimization
 remains M5 work. This milestone accepts the attention core only. Projection
 packing, fused Q/gate split + Q/K norm/RoPE, gate+A8 producer fusion and real
 layer 3 end-to-end validation remain required before full M2a acceptance.
+
+## M2b — fused NVFP4 routed experts and Triton FP16/shared MoE
+
+The routed input is A4-quantized once per token; GEMM1 reads it directly through
+the dispatch token map. Each persistent GEMM1 CTA computes matching gate/up
+output tiles, applies the global multipliers in FP32, rounds both projections
+to FP16, computes SwiGLU in FP32, rounds to FP16, and emits the down input's
+packed A4 bytes and E4M3FN scales. The down activation multiplier is selected
+per expert. No full expanded weight or gate/up activation is materialized.
+
+To cross Triton 2.3's MMA/reduction layout boundary, each CTA owns one 32x32
+FP16 spill tile. A maximum of 80 CTAs bounds this scratch at **160 KiB**. Every
+tile is fully stored, synchronized, reloaded into an independent blocked
+layout, and synchronized again before reuse. Debug capture of the full SwiGLU
+tensor exists only for tests. Astra approved the scratch ownership, barriers,
+FP16 boundaries, low/high-nibble dot decomposition and global-scale mapping.
+
+GEMM2 rounds the expert result to FP16 before multiplying its routing weight
+in FP32. The final kernel sums routes in the fixed Top-8 order in FP32, then
+rounds to FP16. FP16 experts in layers 0/39 use grouped Triton GEMMs and SwiGLU.
+Shared projection, SwiGLU, scalar gate and output addition also use Triton;
+the shared sigmoid is rounded to FP16 before multiplication, matching the
+reference checkout's CUDA path. Routed output is rounded before adding shared
+output. CPU checkpoint packing verifies the layer-wide gate/up input scale.
+
+Independent reference tests stream one expert at a time. The final reference
+contract includes down-output FP16 rounding and FP32 Top-8 accumulation; early
+diagnostic references that omitted these boundaries were corrected without
+changing the acceptance budgets. Coordinator measurements with the corrected
+reference:
+
+| Real checkpoint case | NRMSE |
+|---|---:|
+| Layer 0, FP16, T=32 balanced routes covering all 256 experts | 1.786774e-4 |
+| Layer 1, NVFP4, T=32 balanced routes covering all 256 experts | 1.247981e-5 |
+| Layer 1, T=1 complete router + routed + shared composition | 2.078950e-4 |
+
+Layer 1 balanced maximum absolute error is 5.960464e-8 and P99 is zero; all
+outputs are finite. The synthetic captured-SwiGLU fixture also checks exact
+A4 payload/scale bytes against an independent CPU codec, including expert
+specific down globals and persistent scratch reuse.
+
+Additional coverage includes stable tied-score Top-8, dispatch padding/empty
+experts/hotspots/tails, repeated execution, malformed dtype/device/shape/stride
+rejection before launch, and an independent unweighted raw-GEMM baseline. The
+unweighted specialization uses a compile-time branch so it never evaluates
+route-placeholder loads. Run with the environment/UUID command above and
+`-m unittest test.Qwen3_5MoECompat.unit.test_moe -v`.
+
+Final coordinator rerun: **11 tests passed** in 12.478 s. Astra approved the
+numerical paths and references; the coordinator verified the final symmetric
+FP16/NVFP4 metadata validation and unweighted compile-time branch corrections.
+
+Performance tuning is still pending: the current stable scatter is quadratic
+in route count, and the fixed persistent grid is a correctness baseline.
+Kernel-count/latency comparisons, longer-token MoE sweeps, backend profiling,
+all 40 layers and four-layer integration remain later acceptance gates.

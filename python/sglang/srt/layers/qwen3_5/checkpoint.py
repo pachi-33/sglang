@@ -201,6 +201,11 @@ class Qwen35Checkpoint:
                 raise ValueError(f"layer {layer}: gate/up input global scales differ")
             if not torch.equal(gate.global_scale, up.global_scale):
                 raise ValueError(f"layer {layer}: gate/up weight global scales differ")
+            if not torch.equal(
+                gate.input_global_scale,
+                gate.input_global_scale[:1].expand_as(gate.input_global_scale),
+            ):
+                raise ValueError(f"layer {layer}: gate/up input global scale must be static across experts")
             gate_up = Weight(
                 "nvfp4", torch.cat((gate.data, up.data), dim=1), (256, gate.n + up.n, gate.k),
                 torch.cat((gate.block_scale, up.block_scale), dim=1), gate.global_scale, gate.input_global_scale,
