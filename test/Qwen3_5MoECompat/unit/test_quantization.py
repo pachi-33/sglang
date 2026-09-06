@@ -1,3 +1,10 @@
+from test.Qwen3_5MoECompat.reference.codec import decode_e2m1 as ref_decode_e2m1
+from test.Qwen3_5MoECompat.reference.codec import decode_e4m3fn as ref_decode_e4m3fn
+from test.Qwen3_5MoECompat.reference.codec import encode_e2m1 as ref_encode_e2m1
+from test.Qwen3_5MoECompat.reference.codec import encode_e4m3fn as ref_encode_e4m3fn
+from test.Qwen3_5MoECompat.reference.codec import quantize_a4, quantize_a8
+from test.Qwen3_5MoECompat.unit.test_environment import V100TestCase
+
 import torch
 
 from sglang.srt.layers.qwen3_5.quantization import (
@@ -5,22 +12,13 @@ from sglang.srt.layers.qwen3_5.quantization import (
     decode_e4m3fn,
     encode_e2m1,
     encode_e4m3fn,
-    pack_e2m1,
     linear_fp8,
+    pack_e2m1,
     quantize_fp8,
     quantize_nvfp4,
     unpack_e2m1,
 )
 from sglang.srt.layers.qwen3_5.weights import Weight
-from test.Qwen3_5MoECompat.reference.codec import (
-    decode_e2m1 as ref_decode_e2m1,
-    decode_e4m3fn as ref_decode_e4m3fn,
-    encode_e2m1 as ref_encode_e2m1,
-    encode_e4m3fn as ref_encode_e4m3fn,
-    quantize_a4,
-    quantize_a8,
-)
-from test.Qwen3_5MoECompat.unit.test_environment import V100TestCase
 
 
 class TestQwen35Quantization(V100TestCase):
@@ -37,7 +35,9 @@ class TestQwen35Quantization(V100TestCase):
         below = torch.nextafter(midpoint, torch.full_like(midpoint, -float("inf")))
         above = torch.nextafter(midpoint, torch.full_like(midpoint, float("inf")))
         boundary_inputs = torch.cat((below, midpoint, above, -below, -midpoint, -above))
-        self.assertTrue(torch.equal(encode_e2m1(boundary_inputs), ref_encode_e2m1(boundary_inputs)))
+        self.assertTrue(
+            torch.equal(encode_e2m1(boundary_inputs), ref_encode_e2m1(boundary_inputs))
+        )
 
     def test_e4m3_subnormal_carry_to_normal(self):
         # 7.75 / 512 rounds to 8 / 512 == the smallest normal 2^-6.
@@ -45,19 +45,35 @@ class TestQwen35Quantization(V100TestCase):
         codes = encode_e4m3fn(x)
         self.assertEqual(codes.tolist(), [0, 1, 8, 8, 126])
         all_codes = torch.arange(256, dtype=torch.uint8, device="cuda")
-        valid = torch.cat((torch.arange(127), torch.arange(128, 255))).to(torch.uint8).cuda()
+        valid = (
+            torch.cat((torch.arange(127), torch.arange(128, 255)))
+            .to(torch.uint8)
+            .cuda()
+        )
         self.assertTrue(torch.equal(encode_e4m3fn(x), ref_encode_e4m3fn(x)))
-        torch.testing.assert_close(decode_e4m3fn(all_codes), ref_decode_e4m3fn(all_codes), equal_nan=True)
+        torch.testing.assert_close(
+            decode_e4m3fn(all_codes), ref_decode_e4m3fn(all_codes), equal_nan=True
+        )
         self.assertTrue(torch.equal(encode_e4m3fn(ref_decode_e4m3fn(valid)), valid))
-        positive = ref_decode_e4m3fn(torch.arange(127, dtype=torch.uint8, device="cuda"))
+        positive = ref_decode_e4m3fn(
+            torch.arange(127, dtype=torch.uint8, device="cuda")
+        )
         midpoint = (positive[:-1] + positive[1:]) * 0.5
         below = torch.nextafter(midpoint, torch.full_like(midpoint, -float("inf")))
         above = torch.nextafter(midpoint, torch.full_like(midpoint, float("inf")))
         boundary_inputs = torch.cat((below, midpoint, above, -below, -midpoint, -above))
-        self.assertTrue(torch.equal(encode_e4m3fn(boundary_inputs), ref_encode_e4m3fn(boundary_inputs)))
+        self.assertTrue(
+            torch.equal(
+                encode_e4m3fn(boundary_inputs), ref_encode_e4m3fn(boundary_inputs)
+            )
+        )
 
     def test_nvfp4_static_global_and_nibble_order(self):
-        x = torch.tensor([[0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0] * 64], dtype=torch.float16, device="cuda")
+        x = torch.tensor(
+            [[0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0] * 64],
+            dtype=torch.float16,
+            device="cuda",
+        )
         global_scale = torch.tensor([1.0], dtype=torch.float32, device="cuda")
         q = quantize_nvfp4(x, global_scale)
         self.assertEqual(q.data[0, :4].tolist(), [0x10, 0x32, 0x54, 0x76])
@@ -84,7 +100,6 @@ class TestQwen35Quantization(V100TestCase):
         self.assertEqual(q.data[0, :4].tolist(), [128, 0, 128, 0])
         self.assertTrue(torch.equal(q.data, expected_data))
         self.assertTrue(torch.equal(q.block_scale, expected_scale))
-
 
     def test_fp8_quantization_and_block_gemm(self):
         torch.manual_seed(11)
@@ -115,7 +130,9 @@ class TestQwen35Quantization(V100TestCase):
         _, per_row_scale = quantize_a8(w_float)
         w_scale = per_row_scale.reshape(2, 128, groups).amax(dim=1)
         w_raw = ref_encode_e4m3fn(
-            (w_float.float().reshape(2, 128, groups, 128) / w_scale[:, None, :, None]).reshape_as(w_float)
+            (
+                w_float.float().reshape(2, 128, groups, 128) / w_scale[:, None, :, None]
+            ).reshape_as(w_float)
         )
         weight = Weight("fp8", w_raw, (n, k), w_scale.to(torch.float16))
         actual = linear_fp8(qx, weight)
@@ -123,8 +140,12 @@ class TestQwen35Quantization(V100TestCase):
         b = ref_decode_e4m3fn(w_raw).reshape(n, groups, 128).half()
         partial = torch.einsum("mgk,ngk->mng", a.float(), b.float())
         stored_w_scale = weight.block_scale.float().repeat_interleave(128, dim=0)
-        expected = (partial * qx.block_scale[:, None, :] * stored_w_scale[None, :, :]).sum(dim=-1)
-        nrmse = torch.linalg.vector_norm(actual.float() - expected) / torch.linalg.vector_norm(expected)
+        expected = (
+            partial * qx.block_scale[:, None, :] * stored_w_scale[None, :, :]
+        ).sum(dim=-1)
+        nrmse = torch.linalg.vector_norm(
+            actual.float() - expected
+        ) / torch.linalg.vector_norm(expected)
         value = float(nrmse)
         print(f"W8A8 M={m} N={n} K={k} NRMSE={value:.8g}")
         self.assertLess(value, 2e-3)
@@ -132,4 +153,5 @@ class TestQwen35Quantization(V100TestCase):
 
 if __name__ == "__main__":
     import unittest
+
     unittest.main()

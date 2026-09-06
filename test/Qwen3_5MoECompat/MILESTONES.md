@@ -43,16 +43,19 @@ groups. Report max/P99 errors and non-finite values as well as NRMSE.
 
 ## Milestone status
 
+The table is the current acceptance state. Dated sections below preserve
+chronological evidence, including limitations subsequently resolved.
+
 | ID | Deliverable | Status |
 |---|---|---|
 | M0 | Environment, SM70 baseline, manifest, interfaces | Baseline, exact header manifest, config and stateless interface passed |
 | M1 | Independent references and codec tests | Codec / activation contract passed |
-| M2a | Common layers, W8A8 and Full Attention | Common / W8A8 / attention / producers passed; projection packing and tuning remain M5 |
-| M2b | Fused NVFP4 / FP16 routed MoE | Core fusion and real-layer precision passed; M5 tuning pending |
+| M2a | Common layers, W8A8 and Full Attention | Passed, including merged projections and strided consumers |
+| M2b | Fused NVFP4 / FP16 routed MoE | Passed, including mandatory fusion, stable dispatch and CTA320 tuning |
 | M2c | Stateless GDN recurrent and chunk paths | FP32 recurrent and bounded streamed BT16 WY passed |
 | M3 | All 40 real layers independently checked | Pending |
 | M4 | Real layers 0-3 integration | Passed, including natural sequence isolation and both T2048 memory gates |
-| M5 | Performance / backend audit and documentation | Pending |
+| M5 | Performance / backend audit and documentation | Kernel optimizations passed; final-source profiler and documentation acceptance pending |
 
 ## Pre-implementation feasibility evidence
 
@@ -411,3 +414,45 @@ does not grow with the number of empty/short sequences. Header validation now
 populates safetensors headers once per shard before selected-layer checks,
 avoiding one file open per tensor. No cache or full-40-layer quality claim is
 part of this milestone. M3 all-layer precision and M5 performance remain open.
+
+## M5a — packed projections and complete Triton hot path — 2026-09-07
+
+CPU loading now merges GDN QKV/Z and B/A, and Full QGate/K/V, transfers each
+merged allocation once, and exposes original component weights as aliases.
+Conv, gates, output producers, Q/K norm/RoPE and V readers consume row-strided
+projection views. Twelve real layer-0/3 projection comparisons at the six
+required token sizes are bitwise equal; GDN input launch counts fall 5 to 3,
+and Full input launches fall 4 to 2.
+
+MoE stable dispatch is O(E*R), replacing the quadratic route comparison.
+Mandatory paired G1/SwiGLU/A4 now uses the validated default cap of 320 CTAs,
+with at most 640 KiB of CTA-owned FP16 scratch. Shared and residual additions
+are fused into NVFP4 combine while retaining each FP16 boundary. FP16 down
+uses identity row mapping without a Torch arange. Optional expert-route
+capture is available only for independent all-expert tests.
+
+GDN's first WY chunk initializes both residual and state-update reads inside
+Triton; empty sequences also receive initialized state. Attention initializes
+online-softmax state inside the first merge slab. NaN-poisoned workspace,
+ragged/empty/repeat and long-input tests verify these paths. No production
+Torch CUDA fill remains in the measured nonempty full call.
+
+Astra ultra approved the numerical boundaries, scratch ownership, stride
+consumers and sequence-local initialization. The coordinator's final discovery
+ran **93 tests: 92 passed, 1 opt-in scan smoke skipped**. The full 40-layer CLI
+covers that smoke separately. The 356.771 s unittest duration includes waiting
+for the GPU lock; it is not a compute benchmark. Full command output is in
+`reports/final_regression.txt`. Latest M4 peaks are 5,460,760,064 B for a single
+T2048 sequence and 9,595,500,032 B for `[1]*1983+[65]`; both are below 12 GiB.
+Packed versus natural-max separate calls still have exactly zero hidden and
+logits NRMSE. The final working-tree suite includes the independently reviewed
+M3 references whose full-scan acceptance is recorded next.
+
+Only isort 5.13.2 and Black 24.10.0 were added to the required environment.
+Torch 2.3.1+cu121, Triton 2.3.1 and Transformers 4.43.2 remain unchanged.
+Formatting/import sorting covered 54 owned Python files; Black preserved all
+post-isort ASTs, and checks/compile/diff whitespace validation pass. The only
+additional AST-level documentation edit states the internal stream helper's
+positive-max precondition. A CPU backend-classifier fixture was corrected to
+use an exact specialized PTX entry; production allowlist matching was not
+weakened.

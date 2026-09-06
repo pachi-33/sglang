@@ -1,0 +1,113 @@
+test_one_real_layer (integration.layer_scan.TestLayerScanSmoke) ... skipped 'set QWEN35_LAYER_SCAN_SMOKE=1 to run real-checkpoint scan smoke'
+test_nan_route_fails_even_when_other_experts_match (integration.test_layer_scan.TestRouteReport) ... ok
+test_one_bad_route_cannot_hide_in_aggregate (integration.test_layer_scan.TestRouteReport) ... ok
+test_default_empty_logits_and_explicit_selection (integration.test_stateless_model.TestStatelessFourLayerSlice) ... ok
+test_input_or_hidden_exclusive_and_packed_sequence_equivalence (integration.test_stateless_model.TestStatelessFourLayerSlice) ... M4_METRIC={"case": "packed_vs_per_sequence", "hidden_nrmse": 0.0, "logits_nrmse": 0.0, "shape": [82, 2048]}
+ok
+test_int64_empty_and_63_64_65_sequence_isolation (integration.test_stateless_model.TestStatelessFourLayerSlice) ... ok
+test_ragged_explicit_logits_indices (integration.test_stateless_model.TestStatelessFourLayerSlice) ... ok
+test_real_chain_length_matrix_and_empty_batch (integration.test_stateless_model.TestStatelessFourLayerSlice) ... ok
+test_repeat_after_distinct_call_and_independent_global_oracles (integration.test_stateless_model.TestStatelessFourLayerSlice) ... ok
+test_short_sequences_ignore_an_inflated_batch_maximum (integration.test_stateless_model.TestStatelessFourLayerSlice) ... ok
+test_single_sequence_t2048_peak (integration.test_stateless_model.TestStatelessFourLayerSlice) ... M4_METRIC={"case": "single_sequence_t2048", "finite": true, "peak_bytes": 5460760064, "shape": [2048, 2048]}
+ok
+test_t1_default_last_token_logits (integration.test_stateless_model.TestStatelessFourLayerSlice) ... ok
+test_worst_ragged_t2048_peak (integration.test_stateless_model.TestStatelessFourLayerSlice) ... M4_METRIC={"case": "worst_ragged_t2048", "finite": true, "peak_bytes": 9595500032, "shape": [2048, 2048]}
+ok
+test_layer39_full_attention_fp16_expert_route (integration.test_stateless_model.TestZZLayer39FullAttention) ... ok
+test_attention_rejects_invalid_metadata_without_launch (unit.test_attention.TestCausalGQA) ... ok
+test_attention_rejects_nonunit_inner_stride_v (unit.test_attention.TestCausalGQA) ... ok
+test_empty_attention_honors_output_identity (unit.test_attention.TestCausalGQA) ... ok
+test_merged_v_row_view_matches_contiguous_v (unit.test_attention.TestCausalGQA) ... ok
+test_nonempty_int64_cu_seqlens (unit.test_attention.TestCausalGQA) ... ok
+test_normalize_and_rope_qk_and_layout_contract (unit.test_attention.TestCausalGQA) ... ok
+test_partial_neox_rope (unit.test_attention.TestCausalGQA) ... ok
+test_ragged_causal_gqa (unit.test_attention.TestCausalGQA) ... ok
+test_rope_empty_and_invalid_metadata (unit.test_attention.TestCausalGQA) ... ok
+test_tensorcore_attention_multitile (unit.test_attention.TestCausalGQA) ... ok
+test_tensorcore_attention_ragged_total_2048 (unit.test_attention.TestCausalGQA) ... ok
+test_tensorcore_attention_single_sequences_through_2048 (unit.test_attention.TestCausalGQA) ... ok
+test_accepts_compiled_triton_and_separates_memory (unit.test_backend_audit.TestBackendAuditClassifier) ... ok
+test_rejects_framework_and_unknown_compute (unit.test_backend_audit.TestBackendAuditClassifier) ... ok
+test_quantized_matrix_manifest (unit.test_checkpoint.TestCheckpointManifest) ... ok
+test_generated_manifest_has_exact_required_counts (unit.test_checkpoint.TestExactHeaderManifest) ... ok
+test_rejects_wrong_name_shape_and_dtype_before_payload_read (unit.test_checkpoint.TestExactHeaderManifest) ... ok
+test_fp16_disallows_quantization_metadata (unit.test_checkpoint.TestWeightContract) ... ok
+test_norm_and_elementwise (unit.test_dense_ops.TestDenseOps) ... ok
+test_nt_gemm_and_embedding (unit.test_dense_ops.TestDenseOps) ... ok
+test_nt_gemm_sm70_shape_sweep (unit.test_dense_ops.TestDenseOps)
+The safe 32-cube Volta configuration must survive tails and CTAs. ... ok
+test_required_versions (unit.test_environment.TestEnvironment) ... ok
+test_chunk_bt16_exact_block_multiples (unit.test_gdn.TestGDNRecurrent) ... ok
+test_chunk_bt16_long_independent_recurrence (unit.test_gdn.TestGDNRecurrent) ... ok
+test_chunk_bt16_ragged_tails_and_repeatability (unit.test_gdn.TestGDNRecurrent) ... ok
+test_chunk_bt16_streamed_skewed_ragged (unit.test_gdn.TestGDNRecurrent) ... ok
+test_conv4_silu_checkpoint_channel_width (unit.test_gdn.TestGDNRecurrent) ... ok
+test_conv4_silu_ragged_boundaries (unit.test_gdn.TestGDNRecurrent) ... ok
+test_gdn_and_runner_metadata_reject_invalid_max_or_cpu_metadata (unit.test_gdn.TestGDNRecurrent) ... ok
+test_gdn_rejects_overlapping_or_nonunit_inner_stride_rows (unit.test_gdn.TestGDNRecurrent) ... ok
+test_int64_cu_and_empty_segments (unit.test_gdn.TestGDNRecurrent) ... ok
+test_merged_projection_row_views_match_contiguous_gdn_inputs (unit.test_gdn.TestGDNRecurrent) ... ok
+test_prepare_gates_stable_softplus_and_l2 (unit.test_gdn.TestGDNRecurrent) ... ok
+test_recurrent_ragged_sequence_isolation (unit.test_gdn.TestGDNRecurrent) ... ok
+test_recurrent_relative_l2_and_state_precision (unit.test_gdn.TestGDNRecurrent) ... ok
+test_recurrent_single_lengths (unit.test_gdn.TestGDNRecurrent) ... ok
+test_separated_bt16_gram_and_inverse_four_chunks (unit.test_gdn.TestGDNRecurrent) ... ok
+test_separated_bt16_residual_and_state_ragged (unit.test_gdn.TestGDNRecurrent) ... ok
+test_separated_bt16_wy_real_dim_ragged (unit.test_gdn.TestGDNRecurrent) ... ok
+test_short_output_overwrite_boundaries_and_int64_empty (unit.test_gdn.TestGDNRecurrent) ... ok
+test_stream_reset_poisoned_state_and_empty_sequences (unit.test_gdn.TestGDNRecurrent) ... ok
+test_nested_text_config_loads_before_auto_config (unit.test_model_config.TestQwen35Config) ... ok
+test_rejects_incompatible_gdn_and_rope_contract (unit.test_model_config.TestQwen35Config) ... ok
+test_attention_capture_boundary_is_codec_input (unit.test_model_ops.TestFullAttentionProducer) ... ok
+test_full_qk_and_gdn_z_accept_merged_projection_row_views (unit.test_model_ops.TestFullAttentionProducer) ... ok
+test_full_qk_rejects_nonunit_inner_stride_rows (unit.test_model_ops.TestFullAttentionProducer) ... ok
+test_fused_residual_norm_keeps_fp16_sum_boundary (unit.test_model_ops.TestFullAttentionProducer) ... ok
+test_gated_attention_a8_matches_independent_fp16_boundary_codec (unit.test_model_ops.TestFullAttentionProducer) ... ok
+test_gated_attention_zero_gate_is_exact_base_a8 (unit.test_model_ops.TestFullAttentionProducer)
+The fused local-scale arithmetic matches A8 at a boundary-heavy T17. ... ok
+test_gdn_capture_boundary_is_codec_input (unit.test_model_ops.TestFullAttentionProducer) ... ok
+test_gdn_norm_silu_a8_matches_independent_fp16_boundary_codec (unit.test_model_ops.TestFullAttentionProducer) ... ok
+test_q_gate_head_layout_norm_and_rope (unit.test_model_ops.TestFullAttentionProducer) ... ok
+test_real_layer3_full_attention_composition (unit.test_model_ops.TestFullAttentionProducer)
+Independent CPU oracle for all Q/K/V/O W8 projections and residual. ... ok
+test_fp16_routed_moe_fallback (unit.test_moe.TestQwen35Moe) ... ok
+test_routed_validators_reject_malformed_payloads_before_launch (unit.test_moe.TestQwen35Moe) ... ok
+test_topk_is_fp32_and_sorted (unit.test_moe.TestQwen35Moe) ... ok
+test_gpu_dispatch_matches_stable_reference (unit.test_moe.TestQwen35MoeGPU) ... ok
+test_paired_gemm1_swiglu_a4_matches_projection_and_codec (unit.test_moe.TestQwen35MoeGPU)
+Validate the fused boundary without comparing separately-rounded GEMMs' bytes. ... ok
+test_raw_grouped_gemm_unweighted_multiexpert_baseline (unit.test_moe.TestQwen35MoeGPU)
+Exercise the unweighted store path without placeholder route loads. ... ok
+test_real_layer0_fp16_all_experts_balanced_precision (unit.test_moe.TestQwen35MoeGPU)
+The FP16 routed fallback keeps the same all-expert Top-8 semantics. ... ok
+test_real_layer1_all_experts_balanced (unit.test_moe.TestQwen35MoeGPU)
+Stream an independent raw-codec oracle for production layer 1. ... ok
+test_real_layer1_fused_moe_single_token_oracle (unit.test_moe.TestQwen35MoeGPU)
+End-to-end wrapper check: stable router, routed experts, shared gate, residual. ... ok
+test_real_shared_expert_gate_fp16_sigmoid_boundary (unit.test_moe.TestQwen35MoeGPU)
+Match CUDA's FP16 sigmoid boundary before shared-output multiply. ... ok
+test_routed_nvfp4_moe_is_deterministic (unit.test_moe.TestQwen35MoeGPU) ... ok
+test_full_helper_packs_qgate_k_v_with_aliases (unit.test_projection_packing.TestMergedProjectionLayout) ... ok
+test_gdn_helper_packs_qkv_z_and_ba_with_aliases (unit.test_projection_packing.TestMergedProjectionLayout) ... ok
+test_real_layer_projection_aliases_have_no_extra_device_storage (unit.test_projection_packing.TestProjectionDeviceAliases) ... ok
+test_e2m1_rne_and_signed_zero (unit.test_quantization.TestQwen35Quantization) ... ok
+test_e4m3_subnormal_carry_to_normal (unit.test_quantization.TestQwen35Quantization) ... ok
+test_fp8_quantization_and_block_gemm (unit.test_quantization.TestQwen35Quantization) ... W8A8 M=1 N=256 K=2048 NRMSE=0.00018405264
+W8A8 M=17 N=256 K=4096 NRMSE=0.0002042728
+W8A8 M=128 N=256 K=2048 NRMSE=0.00020639937
+ok
+test_fp8_zero_local_scale_preserves_signed_zero_codes (unit.test_quantization.TestQwen35Quantization) ... ok
+test_nvfp4_static_global_and_nibble_order (unit.test_quantization.TestQwen35Quantization) ... ok
+test_nvfp4_zero_local_scale_has_zero_codes (unit.test_quantization.TestQwen35Quantization) ... ok
+test_a4_zero_scale_uses_zero_codes (unit.test_reference_codec.TestReferenceCodec) ... ok
+test_a8_zero_scale_preserves_signed_zero_codes (unit.test_reference_codec.TestReferenceCodec) ... ok
+test_signed_zero_and_nan_contract (unit.test_reference_codec.TestReferenceCodec) ... ok
+test_exact_scale_shapes_are_required (unit.test_reference_model.TestFp8BlockSemanticReference) ... ok
+test_k128_partials_apply_per_row_activation_then_weight_scales (unit.test_reference_model.TestFp8BlockSemanticReference) ... ok
+test_weight_k_and_scale_shape_errors_are_rejected (unit.test_reference_model.TestFp8BlockSemanticReference) ... ok
+
+----------------------------------------------------------------------
+Ran 93 tests in 356.771s
+
+OK (skipped=1)

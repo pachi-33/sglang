@@ -4,6 +4,7 @@ Checkpoint FP8 and FP4 bytes are intentionally retained.  These utilities only
 create per-call activation payloads; they never materialize a dequantized copy
 of a model weight.
 """
+
 from __future__ import annotations
 
 import torch
@@ -49,7 +50,9 @@ def decode_e4m3fn(x: torch.Tensor) -> torch.Tensor:
     )
     subnormal = mantissa.to(torch.float32) * E4M3_MIN_SUBNORMAL
     value = sign * torch.where(exponent == 0, subnormal, normal)
-    return torch.where((exponent == 15) & (mantissa == 7), torch.full_like(value, float("nan")), value)
+    return torch.where(
+        (exponent == 15) & (mantissa == 7), torch.full_like(value, float("nan")), value
+    )
 
 
 def encode_e4m3fn(x: torch.Tensor) -> torch.Tensor:
@@ -76,9 +79,9 @@ def encode_e4m3fn(x: torch.Tensor) -> torch.Tensor:
     sub_m_raw = torch.round(ax * 512.0).to(torch.int32)
     sub_m = sub_m_raw.clamp(0, 7)
     exponent_unbiased = torch.floor(torch.log2(ax.clamp_min(2.0**-6))).to(torch.int32)
-    mantissa = torch.round(
-        (ax / torch.exp2(exponent_unbiased.float()) - 1.0) * 8.0
-    ).to(torch.int32)
+    mantissa = torch.round((ax / torch.exp2(exponent_unbiased.float()) - 1.0) * 8.0).to(
+        torch.int32
+    )
     carry = mantissa == 8
     exponent_unbiased = exponent_unbiased + carry.to(torch.int32)
     mantissa = torch.where(carry, torch.zeros_like(mantissa), mantissa)
@@ -141,7 +144,9 @@ def pack_e2m1(codes: torch.Tensor) -> torch.Tensor:
 
 def unpack_e2m1(packed: torch.Tensor) -> torch.Tensor:
     p = _as_u8(packed)
-    out = torch.empty((*p.shape[:-1], p.shape[-1] * 2), device=p.device, dtype=torch.uint8)
+    out = torch.empty(
+        (*p.shape[:-1], p.shape[-1] * 2), device=p.device, dtype=torch.uint8
+    )
     out[..., 0::2] = p & 0xF
     out[..., 1::2] = p >> 4
     return out
@@ -150,7 +155,9 @@ def unpack_e2m1(packed: torch.Tensor) -> torch.Tensor:
 def quantize_fp8(x: torch.Tensor, group_size: int = 128) -> QuantActivation:
     """Dynamic E4M3FN activation quantization with FP32 K-group scales."""
     if x.ndim != 2 or x.shape[1] % group_size:
-        raise ValueError("FP8 quantization expects [M,K] with K divisible by group_size")
+        raise ValueError(
+            "FP8 quantization expects [M,K] with K divisible by group_size"
+        )
     m, k = x.shape
     if x.is_cuda:
         if group_size != 128:
@@ -161,7 +168,9 @@ def quantize_fp8(x: torch.Tensor, group_size: int = 128) -> QuantActivation:
         scale = torch.empty((m, k // 128), dtype=torch.float32, device=x.device)
         if m == 0:
             return QuantActivation("fp8", q, (m, k), scale)
-        quantize_fp8_group128_kernel[(m * (k // 128),)](x, q, scale, m=m, k=k, BLOCK=128)
+        quantize_fp8_group128_kernel[(m * (k // 128),)](
+            x, q, scale, m=m, k=k, BLOCK=128
+        )
         return QuantActivation("fp8", q, (m, k), scale)
     # CPU is intentionally a diagnostic fallback; runtime inference always
     # takes the Triton branch above.

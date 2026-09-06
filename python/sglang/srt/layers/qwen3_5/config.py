@@ -5,6 +5,7 @@ this compatibility tree.  Keeping the small text schema here lets
 ``AutoConfig`` read language-model-only checkpoints without importing the
 main SGLang Qwen3.5 implementation (which requires the normal KV runner).
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -90,10 +91,11 @@ def register_qwen3_5_moe_config() -> None:
     # ``exist_ok`` is absent on some 4.43 point releases.  Re-registering the
     # identical local class is harmless, while a third-party implementation
     # should remain untouched.
-    for name, cls in ((Qwen3_5MoeConfig.model_type, Qwen3_5MoeConfig),
-                      (Qwen3_5MoeTextConfig.model_type, Qwen3_5MoeTextConfig)):
+    for name, cls in (
+        (Qwen3_5MoeConfig.model_type, Qwen3_5MoeConfig),
+        (Qwen3_5MoeTextConfig.model_type, Qwen3_5MoeTextConfig),
+    ):
         try:
             AutoConfig.register(name, cls)
         except ValueError:
             pass
-

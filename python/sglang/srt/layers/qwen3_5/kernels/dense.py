@@ -5,17 +5,28 @@ These kernels intentionally use the small configurations covered by the
 compatibility tests: 32-cube NT GEMM and one pipeline stage.
 """
 
+import torch
 import triton
 import triton.language as tl
-import torch
 
 
 @triton.jit
 def _nt_gemm_kernel(
-    x, w, out, m: tl.constexpr, n: tl.constexpr, k: tl.constexpr,
-    sxm: tl.constexpr, sxk: tl.constexpr, swn: tl.constexpr, swk: tl.constexpr,
-    som: tl.constexpr, son: tl.constexpr,
-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+    x,
+    w,
+    out,
+    m: tl.constexpr,
+    n: tl.constexpr,
+    k: tl.constexpr,
+    sxm: tl.constexpr,
+    sxk: tl.constexpr,
+    swn: tl.constexpr,
+    swk: tl.constexpr,
+    som: tl.constexpr,
+    son: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
 ):
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
@@ -27,26 +38,43 @@ def _nt_gemm_kernel(
         k_offsets = start_k + offs_k
         a = tl.load(
             x + offs_m[:, None] * sxm + k_offsets[None, :] * sxk,
-            mask=(offs_m[:, None] < m) & (k_offsets[None, :] < k), other=0.0,
+            mask=(offs_m[:, None] < m) & (k_offsets[None, :] < k),
+            other=0.0,
         )
         b = tl.load(
             w + offs_n[None, :] * swn + k_offsets[:, None] * swk,
-            mask=(offs_n[None, :] < n) & (k_offsets[:, None] < k), other=0.0,
+            mask=(offs_n[None, :] < n) & (k_offsets[:, None] < k),
+            other=0.0,
         )
         acc += tl.dot(a, b)
-    tl.store(out + offs_m[:, None] * som + offs_n[None, :] * son, acc,
-             mask=(offs_m[:, None] < m) & (offs_n[None, :] < n))
+    tl.store(
+        out + offs_m[:, None] * som + offs_n[None, :] * son,
+        acc,
+        mask=(offs_m[:, None] < m) & (offs_n[None, :] < n),
+    )
 
 
 @triton.jit
-def _embedding_kernel(ids, table, out, rows: tl.constexpr, hidden: tl.constexpr,
-                      sid: tl.constexpr, str_: tl.constexpr, stc: tl.constexpr,
-                      som: tl.constexpr, son: tl.constexpr, BLOCK: tl.constexpr):
+def _embedding_kernel(
+    ids,
+    table,
+    out,
+    rows: tl.constexpr,
+    hidden: tl.constexpr,
+    sid: tl.constexpr,
+    str_: tl.constexpr,
+    stc: tl.constexpr,
+    som: tl.constexpr,
+    son: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
     row = tl.program_id(0)
     cols = tl.arange(0, BLOCK)
     token = tl.load(ids + row * sid)
     valid_token = (token >= 0) & (token < rows)
-    values = tl.load(table + token * str_ + cols * stc, mask=valid_token & (cols < hidden), other=0.0)
+    values = tl.load(
+        table + token * str_ + cols * stc, mask=valid_token & (cols < hidden), other=0.0
+    )
     tl.store(out + row * som + cols * son, values, mask=cols < hidden)
 
 
@@ -66,16 +94,33 @@ def nt_gemm(x, weight, out=None):
     n = weight.shape[0]
     if out is None:
         out = x.new_empty((m, n))
-    if (out.shape != (m, n) or out.dtype != x.dtype or not out.is_cuda or
-            out.device != x.device or not out.is_contiguous()):
+    if (
+        out.shape != (m, n)
+        or out.dtype != x.dtype
+        or not out.is_cuda
+        or out.device != x.device
+        or not out.is_contiguous()
+    ):
         raise ValueError("invalid NT GEMM output")
     grid = (triton.cdiv(m, 32), triton.cdiv(n, 32))
     _nt_gemm_kernel[grid](
-        x, weight, out, m, n, k,
-        x.stride(0), x.stride(1), weight.stride(0), weight.stride(1),
-        out.stride(0), out.stride(1),
-        BLOCK_M=32, BLOCK_N=32, BLOCK_K=32,
-        num_warps=4, num_stages=1,
+        x,
+        weight,
+        out,
+        m,
+        n,
+        k,
+        x.stride(0),
+        x.stride(1),
+        weight.stride(0),
+        weight.stride(1),
+        out.stride(0),
+        out.stride(1),
+        BLOCK_M=32,
+        BLOCK_N=32,
+        BLOCK_K=32,
+        num_warps=4,
+        num_stages=1,
     )
     return out
 
@@ -92,12 +137,25 @@ def embedding(ids, table, out=None, validate_ids=False):
         raise ValueError("embedding hidden size exceeds supported block")
     if out is None:
         out = table.new_empty((tokens, hidden))
-    if out.shape != (tokens, hidden) or out.dtype != table.dtype or out.device != table.device:
+    if (
+        out.shape != (tokens, hidden)
+        or out.dtype != table.dtype
+        or out.device != table.device
+    ):
         raise ValueError("invalid embedding output")
     block = triton.next_power_of_2(hidden)
     _embedding_kernel[(tokens,)](
-        ids, table, out, table.shape[0], hidden,
-        ids.stride(0), table.stride(0), table.stride(1), out.stride(0), out.stride(1),
-        BLOCK=block, num_warps=4,
+        ids,
+        table,
+        out,
+        table.shape[0],
+        hidden,
+        ids.stride(0),
+        table.stride(0),
+        table.stride(1),
+        out.stride(0),
+        out.stride(1),
+        BLOCK=block,
+        num_warps=4,
     )
     return out

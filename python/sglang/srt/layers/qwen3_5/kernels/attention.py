@@ -1,32 +1,53 @@
 """Stateless causal GQA kernel for Qwen3.5 Full-Attention layers."""
 
 import math
+
 import torch
 import triton
 import triton.language as tl
+
 from .attention_slab import causal_gqa_slab
 
 
 @triton.jit
-def _partial_neox_rope_kernel(x, positions, out, tokens: tl.constexpr, heads: tl.constexpr,
-                              stride_t: tl.constexpr, stride_h: tl.constexpr, stride_d: tl.constexpr,
-                              position_stride: tl.constexpr, theta: tl.constexpr,
-                              BLOCK_D: tl.constexpr):
+def _partial_neox_rope_kernel(
+    x,
+    positions,
+    out,
+    tokens: tl.constexpr,
+    heads: tl.constexpr,
+    stride_t: tl.constexpr,
+    stride_h: tl.constexpr,
+    stride_d: tl.constexpr,
+    position_stride: tl.constexpr,
+    theta: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+):
     token = tl.program_id(0)
     head = tl.program_id(1)
     d = tl.arange(0, BLOCK_D)
-    value = tl.load(x + token * stride_t + head * stride_h + d * stride_d, mask=d < BLOCK_D)
+    value = tl.load(
+        x + token * stride_t + head * stride_h + d * stride_d, mask=d < BLOCK_D
+    )
     pair = d % 32
     mate = tl.where(d < 32, d + 32, d - 32)
-    paired = tl.load(x + token * stride_t + head * stride_h + mate * stride_d, mask=d < 64, other=0.0).to(tl.float32)
+    paired = tl.load(
+        x + token * stride_t + head * stride_h + mate * stride_d, mask=d < 64, other=0.0
+    ).to(tl.float32)
     position = tl.load(positions + token * position_stride).to(tl.float32)
     angle = position / tl.exp((pair.to(tl.float32) / 32.0) * tl.log(theta))
     cosine = tl.cos(angle)
     sine = tl.sin(angle)
-    rotated = tl.where(d < 32, value.to(tl.float32) * cosine - paired * sine,
-                       paired * sine + value.to(tl.float32) * cosine)
-    tl.store(out + token * stride_t + head * stride_h + d * stride_d,
-             tl.where(d < 64, rotated, value), mask=d < BLOCK_D)
+    rotated = tl.where(
+        d < 32,
+        value.to(tl.float32) * cosine - paired * sine,
+        paired * sine + value.to(tl.float32) * cosine,
+    )
+    tl.store(
+        out + token * stride_t + head * stride_h + d * stride_d,
+        tl.where(d < 64, rotated, value),
+        mask=d < BLOCK_D,
+    )
 
 
 def causal_gqa(q, k, v, cu_seqlens, max_seqlen: int, softmax_scale=None, out=None):
@@ -48,8 +69,14 @@ def causal_gqa(q, k, v, cu_seqlens, max_seqlen: int, softmax_scale=None, out=Non
         raise TypeError("causal_gqa currently supports FP16 only")
     if cu_seqlens.ndim != 1 or cu_seqlens.dtype not in (torch.int32, torch.int64):
         raise ValueError("cu_seqlens must be a rank-1 int32 or int64 tensor")
-    if not (q.is_contiguous() and k.is_contiguous() and v.is_contiguous() and cu_seqlens.is_contiguous()):
-        raise ValueError("causal_gqa inputs must be contiguous")
+    if not (q.is_contiguous() and k.is_contiguous() and cu_seqlens.is_contiguous()):
+        raise ValueError("causal_gqa requires contiguous Q/K and cu_seqlens")
+    if (
+        v.stride(0) < v.shape[1] * v.shape[2]
+        or v.stride(1) != v.shape[2]
+        or v.stride(2) != 1
+    ):
+        raise ValueError("V must be a non-overlapping unit-inner-stride row view")
     tokens, hq, head_dim = q.shape
     if tokens > 2048:
         raise ValueError("causal_gqa supports at most 2048 packed tokens")
@@ -66,11 +93,16 @@ def causal_gqa(q, k, v, cu_seqlens, max_seqlen: int, softmax_scale=None, out=Non
         raise ValueError("cu_seqlens must contain at least a start and end")
     if out is None:
         out = q.new_empty(q.shape)
-    if out.shape != q.shape or out.dtype != q.dtype or out.device != q.device or not out.is_contiguous():
+    if (
+        out.shape != q.shape
+        or out.dtype != q.dtype
+        or out.device != q.device
+        or not out.is_contiguous()
+    ):
         raise ValueError("invalid attention output")
     if softmax_scale is None:
-        softmax_scale = head_dim ** -0.5
-    if softmax_scale != head_dim ** -0.5:
+        softmax_scale = head_dim**-0.5
+    if softmax_scale != head_dim**-0.5:
         raise ValueError("Qwen3.5 slab attention uses the fixed 1/sqrt(256) scale")
     if tokens == 0:
         if max_seqlen != 0:
@@ -87,7 +119,11 @@ def partial_neox_rope(x, positions, theta: float = 10_000_000.0, out=None):
         raise ValueError("RoPE expects contiguous CUDA [T,H,256]")
     if x.dtype != torch.float16:
         raise TypeError("RoPE currently supports FP16 only")
-    if positions.shape != (x.shape[0],) or not positions.is_cuda or not positions.is_contiguous():
+    if (
+        positions.shape != (x.shape[0],)
+        or not positions.is_cuda
+        or not positions.is_contiguous()
+    ):
         raise ValueError("positions must be contiguous CUDA [T]")
     if positions.device != x.device:
         raise ValueError("positions and x must be on one CUDA device")
@@ -97,14 +133,29 @@ def partial_neox_rope(x, positions, theta: float = 10_000_000.0, out=None):
         raise ValueError("theta must be finite and positive")
     if out is None:
         out = x.new_empty(x.shape)
-    if out.shape != x.shape or out.dtype != x.dtype or out.device != x.device or not out.is_contiguous():
+    if (
+        out.shape != x.shape
+        or out.dtype != x.dtype
+        or out.device != x.device
+        or not out.is_contiguous()
+    ):
         raise ValueError("invalid RoPE output")
     if x.numel() and out.untyped_storage().data_ptr() == x.untyped_storage().data_ptr():
         raise ValueError("RoPE output must not overlap x")
     if x.numel() == 0:
         return out
     _partial_neox_rope_kernel[(x.shape[0], x.shape[1])](
-        x, positions, out, x.shape[0], x.shape[1], x.stride(0), x.stride(1), x.stride(2),
-        positions.stride(0), theta, BLOCK_D=256, num_warps=4,
+        x,
+        positions,
+        out,
+        x.shape[0],
+        x.shape[1],
+        x.stride(0),
+        x.stride(1),
+        x.stride(2),
+        positions.stride(0),
+        theta,
+        BLOCK_D=256,
+        num_warps=4,
     )
     return out

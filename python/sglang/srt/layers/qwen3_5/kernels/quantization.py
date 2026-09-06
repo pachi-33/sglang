@@ -35,7 +35,9 @@ def _e2m1_decode(x):
                     tl.where(
                         magnitude == 4,
                         2.0,
-                        tl.where(magnitude == 5, 3.0, tl.where(magnitude == 6, 4.0, 6.0)),
+                        tl.where(
+                            magnitude == 5, 3.0, tl.where(magnitude == 6, 4.0, 6.0)
+                        ),
                     ),
                 ),
             ),
@@ -118,7 +120,9 @@ def decode_e4m3fn_kernel(x_ptr, out_ptr, numel: tl.constexpr, BLOCK: tl.constexp
 
 
 @triton.jit
-def quantize_fp8_group128_kernel(x_ptr, q_ptr, sf_ptr, m: tl.constexpr, k: tl.constexpr, BLOCK: tl.constexpr):
+def quantize_fp8_group128_kernel(
+    x_ptr, q_ptr, sf_ptr, m: tl.constexpr, k: tl.constexpr, BLOCK: tl.constexpr
+):
     pid = tl.program_id(0)
     row = pid // (k // BLOCK)
     group = pid % (k // BLOCK)
@@ -129,13 +133,21 @@ def quantize_fp8_group128_kernel(x_ptr, q_ptr, sf_ptr, m: tl.constexpr, k: tl.co
     # below is explicitly IEEE RN to protect E4M3 midpoint decisions.
     scale = tl.max(tl.abs(x), axis=0) / 448.0
     safe = tl.where(scale == 0.0, 1.0, scale)
-    tl.store(q_ptr + row * k + offs, _encode_e4m3fn(tl.math.div_rn(x, safe)), mask=row < m)
+    tl.store(
+        q_ptr + row * k + offs, _encode_e4m3fn(tl.math.div_rn(x, safe)), mask=row < m
+    )
     tl.store(sf_ptr + row * (k // BLOCK) + group, scale, mask=row < m)
 
 
 @triton.jit
 def quantize_nvfp4_group16_kernel(
-    x_ptr, q_ptr, sf_ptr, global_ptr, m: tl.constexpr, k: tl.constexpr, GLOBAL_PER_ROW: tl.constexpr
+    x_ptr,
+    q_ptr,
+    sf_ptr,
+    global_ptr,
+    m: tl.constexpr,
+    k: tl.constexpr,
+    GLOBAL_PER_ROW: tl.constexpr,
 ):
     pid = tl.program_id(0)
     row = pid // (k // 16)
@@ -144,9 +156,13 @@ def quantize_nvfp4_group16_kernel(
     offs = group * 16 + pair * 2
     g = tl.load(global_ptr + tl.where(GLOBAL_PER_ROW, row, 0)).to(tl.float32)
     u_lo = tl.load(x_ptr + row * k + offs, mask=row < m, other=0.0).to(tl.float32) * g
-    u_hi = tl.load(x_ptr + row * k + offs + 1, mask=row < m, other=0.0).to(tl.float32) * g
+    u_hi = (
+        tl.load(x_ptr + row * k + offs + 1, mask=row < m, other=0.0).to(tl.float32) * g
+    )
     # As above, retain the reference's reciprocal-multiply scale formation.
-    raw_sf = tl.maximum(tl.max(tl.abs(u_lo), axis=0), tl.max(tl.abs(u_hi), axis=0)) / 6.0
+    raw_sf = (
+        tl.maximum(tl.max(tl.abs(u_lo), axis=0), tl.max(tl.abs(u_hi), axis=0)) / 6.0
+    )
     sf = _encode_e4m3fn(raw_sf)
     decoded = _decode_e4m3fn(sf)
     safe = tl.where(decoded == 0.0, 1.0, decoded)

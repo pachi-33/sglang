@@ -1,10 +1,14 @@
 import math
 import unittest
+from test.Qwen3_5MoECompat.unit.test_environment import V100TestCase
 
 import torch
 
-from sglang.srt.layers.qwen3_5.attention import causal_gqa, normalize_and_rope_qk, partial_neox_rope
-from test.Qwen3_5MoECompat.unit.test_environment import V100TestCase
+from sglang.srt.layers.qwen3_5.attention import (
+    causal_gqa,
+    normalize_and_rope_qk,
+    partial_neox_rope,
+)
 
 
 def reference_packed_gqa(q, k, v, cu):
@@ -12,9 +16,18 @@ def reference_packed_gqa(q, k, v, cu):
     for start, end in zip(cu[:-1].tolist(), cu[1:].tolist()):
         for head in range(q.shape[1]):
             kv_head = head // (q.shape[1] // k.shape[1])
-            scores = q[start:end, head].float() @ k[start:end, kv_head].float().t() / math.sqrt(q.shape[-1])
-            scores.masked_fill_(torch.triu(torch.ones_like(scores, dtype=torch.bool), diagonal=1), float("-inf"))
-            out[start:end, head] = (scores.softmax(-1) @ v[start:end, kv_head].float()).half()
+            scores = (
+                q[start:end, head].float()
+                @ k[start:end, kv_head].float().t()
+                / math.sqrt(q.shape[-1])
+            )
+            scores.masked_fill_(
+                torch.triu(torch.ones_like(scores, dtype=torch.bool), diagonal=1),
+                float("-inf"),
+            )
+            out[start:end, head] = (
+                scores.softmax(-1) @ v[start:end, kv_head].float()
+            ).half()
     return out
 
 
@@ -25,14 +38,22 @@ class TestCausalGQA(V100TestCase):
         q = torch.randn((tokens, 16, 256), dtype=torch.float16, device="cuda")
         k = torch.randn((tokens, 2, 256), dtype=torch.float16, device="cuda")
         v = torch.randn((tokens, 2, 256), dtype=torch.float16, device="cuda")
-        cu = torch.tensor([0, *torch.tensor(lengths).cumsum(0).tolist()], dtype=torch.int32, device="cuda")
+        cu = torch.tensor(
+            [0, *torch.tensor(lengths).cumsum(0).tolist()],
+            dtype=torch.int32,
+            device="cuda",
+        )
         actual = causal_gqa(q, k, v, cu, max_seqlen=max(lengths)).float()
         expected = reference_packed_gqa(q, k, v, cu.cpu()).cuda().float()
-        nrmse = (actual - expected).square().mean().sqrt() / expected.square().mean().sqrt()
+        nrmse = (
+            actual - expected
+        ).square().mean().sqrt() / expected.square().mean().sqrt()
         self.assertLessEqual(nrmse.item(), 5e-3)
         for start in cu[:-1].cpu().tolist():
             for head in range(16):
-                torch.testing.assert_close(actual[start, head], v[start, head // 8].float(), rtol=0, atol=0)
+                torch.testing.assert_close(
+                    actual[start, head], v[start, head // 8].float(), rtol=0, atol=0
+                )
 
     def test_tensorcore_attention_single_sequences_through_2048(self):
         for seed, length in enumerate((1, 17, 65, 129, 2048), start=19):
@@ -50,7 +71,9 @@ class TestCausalGQA(V100TestCase):
         cu = torch.tensor([0, 17, 33], dtype=torch.int32, device="cuda")
         actual = causal_gqa(q, k, v, cu, max_seqlen=17).float()
         expected = reference_packed_gqa(q, k, v, cu.cpu()).cuda().float()
-        nrmse = (actual - expected).square().mean().sqrt() / expected.square().mean().sqrt()
+        nrmse = (
+            actual - expected
+        ).square().mean().sqrt() / expected.square().mean().sqrt()
         self.assertLessEqual(nrmse.item(), 5e-3)
 
     def test_partial_neox_rope(self):
@@ -62,8 +85,12 @@ class TestCausalGQA(V100TestCase):
         pair = torch.arange(32, device="cuda", dtype=torch.float32)
         angles = positions.float()[:, None] / (10_000_000.0 ** (pair / 32))
         c, s = angles.cos()[:, None], angles.sin()[:, None]
-        expected[:, :, :32] = (x[:, :, :32].float() * c - x[:, :, 32:64].float() * s).half()
-        expected[:, :, 32:64] = (x[:, :, :32].float() * s + x[:, :, 32:64].float() * c).half()
+        expected[:, :, :32] = (
+            x[:, :, :32].float() * c - x[:, :, 32:64].float() * s
+        ).half()
+        expected[:, :, 32:64] = (
+            x[:, :, :32].float() * s + x[:, :, 32:64].float() * c
+        ).half()
         torch.testing.assert_close(actual, expected, rtol=3e-3, atol=5e-3)
 
     def test_ragged_causal_gqa(self):
@@ -108,7 +135,11 @@ class TestCausalGQA(V100TestCase):
             partial_neox_rope(x, positions, theta=0.0)
         with self.assertRaisesRegex(ValueError, "must not overlap"):
             nonempty = torch.empty((1, 2, 256), dtype=torch.float16, device="cuda")
-            partial_neox_rope(nonempty, torch.zeros((1,), dtype=torch.int64, device="cuda"), out=nonempty)
+            partial_neox_rope(
+                nonempty,
+                torch.zeros((1,), dtype=torch.int64, device="cuda"),
+                out=nonempty,
+            )
 
     def test_normalize_and_rope_qk_and_layout_contract(self):
         torch.manual_seed(44)
@@ -118,9 +149,40 @@ class TestCausalGQA(V100TestCase):
         kw = torch.randn((256,), dtype=torch.float16, device="cuda")
         positions = torch.zeros((2,), dtype=torch.int64, device="cuda")
         actual_q, actual_k = normalize_and_rope_qk(q, k, qw, kw, positions)
-        expected_q = (q.float() * torch.rsqrt(q.float().square().mean(-1, keepdim=True) + 1e-6) * (1 + qw.float())).half()
-        expected_k = (k.float() * torch.rsqrt(k.float().square().mean(-1, keepdim=True) + 1e-6) * (1 + kw.float())).half()
+        expected_q = (
+            q.float()
+            * torch.rsqrt(q.float().square().mean(-1, keepdim=True) + 1e-6)
+            * (1 + qw.float())
+        ).half()
+        expected_k = (
+            k.float()
+            * torch.rsqrt(k.float().square().mean(-1, keepdim=True) + 1e-6)
+            * (1 + kw.float())
+        ).half()
         torch.testing.assert_close(actual_q, expected_q, rtol=3e-3, atol=5e-3)
         torch.testing.assert_close(actual_k, expected_k, rtol=3e-3, atol=5e-3)
         with self.assertRaisesRegex(ValueError, "contiguous"):
             normalize_and_rope_qk(q.transpose(0, 1), k, qw, kw, positions)
+
+    def test_merged_v_row_view_matches_contiguous_v(self):
+        torch.manual_seed(53)
+        tokens = 4
+        q = torch.randn((tokens, 16, 256), dtype=torch.float16, device="cuda")
+        k = torch.randn((tokens, 2, 256), dtype=torch.float16, device="cuda")
+        merged = torch.randn((tokens, 9216), dtype=torch.float16, device="cuda")
+        v = merged[:, 8704:].view(tokens, 2, 256)
+        cu = torch.tensor([0, tokens], dtype=torch.int32, device="cuda")
+        torch.testing.assert_close(
+            causal_gqa(q, k, v, cu, max_seqlen=tokens),
+            causal_gqa(q, k, v.contiguous(), cu, max_seqlen=tokens),
+            rtol=0,
+            atol=0,
+        )
+
+    def test_attention_rejects_nonunit_inner_stride_v(self):
+        q = torch.empty((1, 16, 256), dtype=torch.float16, device="cuda")
+        k = torch.empty((1, 2, 256), dtype=torch.float16, device="cuda")
+        v = torch.empty((1, 2, 512), dtype=torch.float16, device="cuda")[:, :, ::2]
+        cu = torch.tensor([0, 1], dtype=torch.int32, device="cuda")
+        with self.assertRaisesRegex(ValueError, "unit-inner-stride"):
+            causal_gqa(q, k, v, cu, max_seqlen=1)

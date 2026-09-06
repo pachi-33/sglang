@@ -1,4 +1,5 @@
 """Text-only, stateless Qwen3.5 MoE entry point for the Volta path."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -7,9 +8,11 @@ from typing import Iterable
 import torch
 from torch import nn
 
-from sglang.srt.layers.qwen3_5.model_ops import default_last_token_indices, gather_hidden
+from sglang.srt.layers.qwen3_5.model_ops import (
+    default_last_token_indices,
+    gather_hidden,
+)
 from sglang.srt.layers.qwen3_5.runner import Qwen35StatelessRunner
-
 
 
 class Qwen3_5MoeForConditionalGeneration(nn.Module):
@@ -33,14 +36,25 @@ class Qwen3_5MoeForConditionalGeneration(nn.Module):
         self.selected_layer_ids = tuple(selected_layer_ids)
         self.runner: Qwen35StatelessRunner | None = None
         if model_dir is not None:
-            self.runner = Qwen35StatelessRunner(model_dir, self.selected_layer_ids, device=device)
+            self.runner = Qwen35StatelessRunner(
+                model_dir, self.selected_layer_ids, device=device
+            )
 
     @classmethod
     def from_checkpoint(
-        cls, model_dir: str | Path, *, selected_layer_ids: Iterable[int] = range(4),
-        device: str | torch.device = "cuda", config=None,
+        cls,
+        model_dir: str | Path,
+        *,
+        selected_layer_ids: Iterable[int] = range(4),
+        device: str | torch.device = "cuda",
+        config=None,
     ) -> "Qwen3_5MoeForConditionalGeneration":
-        return cls(config, model_dir=model_dir, selected_layer_ids=selected_layer_ids, device=device)
+        return cls(
+            config,
+            model_dir=model_dir,
+            selected_layer_ids=selected_layer_ids,
+            device=device,
+        )
 
     def _runner(self) -> Qwen35StatelessRunner:
         if self.runner is None:
@@ -69,11 +83,18 @@ class Qwen3_5MoeForConditionalGeneration(nn.Module):
             raise ValueError("provide exactly one of input_ids or hidden_states")
         runner = self._runner()
         hidden = runner.embed(input_ids) if input_ids is not None else hidden_states
-        final_hidden = runner.final_hidden(runner.forward_hidden(
-            hidden, positions=positions, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen
-        ))
+        final_hidden = runner.final_hidden(
+            runner.forward_hidden(
+                hidden,
+                positions=positions,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
+            )
+        )
         if logits_indices is None:
-            logits_indices = default_last_token_indices(cu_seqlens, final_hidden.shape[0])
+            logits_indices = default_last_token_indices(
+                cu_seqlens, final_hidden.shape[0]
+            )
         chosen = gather_hidden(final_hidden, logits_indices)
         return final_hidden, runner.logits(chosen)
 

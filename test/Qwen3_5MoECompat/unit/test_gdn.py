@@ -1,13 +1,24 @@
 import unittest
+from test.Qwen3_5MoECompat.reference.gdn import recurrent, recurrent_vectorized
+from test.Qwen3_5MoECompat.unit.test_environment import V100TestCase
 
 import torch
 
-from sglang.srt.layers.qwen3_5.gdn import (chunk_gdn, depthwise_conv4_silu, l2_normalize_qk,
-                                            prepare_gates, recurrent_gdn, recurrent_gdn_short_output)
-from sglang.srt.layers.qwen3_5.kernels.gdn_chunk import compute_gram_a16, compute_r_state16, compute_wy16
+from sglang.srt.layers.qwen3_5.gdn import (
+    chunk_gdn,
+    depthwise_conv4_silu,
+    l2_normalize_qk,
+    prepare_gates,
+    recurrent_gdn,
+    recurrent_gdn_short_output,
+)
+from sglang.srt.layers.qwen3_5.kernels.gdn_chunk import (
+    compute_gram_a16,
+    compute_r_state16,
+    compute_wy16,
+    stream_gdn16,
+)
 from sglang.srt.layers.qwen3_5.runner import _validate_metadata
-from test.Qwen3_5MoECompat.reference.gdn import recurrent, recurrent_vectorized
-from test.Qwen3_5MoECompat.unit.test_environment import V100TestCase
 
 
 class TestGDNRecurrent(V100TestCase):
@@ -21,7 +32,11 @@ class TestGDNRecurrent(V100TestCase):
         b = torch.randn_like(a)
         alog = torch.randn((32,), device="cuda", dtype=torch.float16)
         dt = torch.randn_like(alog)
-        cu = torch.tensor([0, *torch.tensor(lengths).cumsum(0).tolist()], device="cuda", dtype=torch.int32)
+        cu = torch.tensor(
+            [0, *torch.tensor(lengths).cumsum(0).tolist()],
+            device="cuda",
+            dtype=torch.int32,
+        )
         q, k = l2_normalize_qk(q, k)
         decay, beta = prepare_gates(a, b, alog, dt)
         return q, k, v, decay, beta, cu
@@ -51,7 +66,11 @@ class TestGDNRecurrent(V100TestCase):
         x = torch.randn((tokens, channels), device="cuda", dtype=torch.float16)
         weight = torch.randn((channels, 4), device="cuda", dtype=torch.float16)
         bias = torch.randn((channels,), device="cuda", dtype=torch.float16)
-        cu = torch.tensor([0, *torch.tensor(lengths).cumsum(0).tolist()], device="cuda", dtype=torch.int32)
+        cu = torch.tensor(
+            [0, *torch.tensor(lengths).cumsum(0).tolist()],
+            device="cuda",
+            dtype=torch.int32,
+        )
         actual = depthwise_conv4_silu(x, weight, bias, cu)
         expected = torch.empty_like(x)
         for start, end in zip(cu[:-1].cpu().tolist(), cu[1:].cpu().tolist()):
@@ -73,7 +92,9 @@ class TestGDNRecurrent(V100TestCase):
                     if index >= start:
                         total += x[index].float() * weight[:, tap].float()
                 expected_no_bias[t] = torch.nn.functional.silu(total).half()
-        torch.testing.assert_close(actual_no_bias, expected_no_bias, rtol=3e-3, atol=5e-3)
+        torch.testing.assert_close(
+            actual_no_bias, expected_no_bias, rtol=3e-3, atol=5e-3
+        )
 
     def test_conv4_silu_checkpoint_channel_width(self):
         torch.manual_seed(81)
@@ -98,8 +119,12 @@ class TestGDNRecurrent(V100TestCase):
             decay.fill_(-1e-4)
         actual, state = chunk_gdn(q, k, v, decay, beta, cu, max(lengths))
         expected, expected_state = recurrent_vectorized(q, k, v, decay, beta, cu.cpu())
-        nrmse = (actual - expected).square().mean().sqrt() / expected.square().mean().sqrt().clamp_min(1e-8)
-        state_nrmse = (state - expected_state).square().mean().sqrt() / expected_state.square().mean().sqrt().clamp_min(1e-8)
+        nrmse = (
+            actual - expected
+        ).square().mean().sqrt() / expected.square().mean().sqrt().clamp_min(1e-8)
+        state_nrmse = (
+            state - expected_state
+        ).square().mean().sqrt() / expected_state.square().mean().sqrt().clamp_min(1e-8)
         self.assertLessEqual(nrmse.item(), 5e-3)
         self.assertLessEqual(state_nrmse.item(), 5e-3)
         return (q, k, v, decay, beta, cu), actual, state
@@ -138,7 +163,9 @@ class TestGDNRecurrent(V100TestCase):
                 self._check_chunk_nrmse([length], seed)
 
     def test_prepare_gates_stable_softplus_and_l2(self):
-        values = torch.tensor([-30.0, -20.0, 0.0, 20.0, 100.0], device="cuda", dtype=torch.float16).view(-1, 1)
+        values = torch.tensor(
+            [-30.0, -20.0, 0.0, 20.0, 100.0], device="cuda", dtype=torch.float16
+        ).view(-1, 1)
         zeros = torch.zeros_like(values)
         alog = torch.zeros((1,), device="cuda", dtype=torch.float16)
         decay, beta = prepare_gates(values, zeros, alog, zeros[0])
@@ -148,7 +175,12 @@ class TestGDNRecurrent(V100TestCase):
         torch.testing.assert_close(beta, torch.full_like(beta, 0.5), rtol=0, atol=0)
         q = torch.randn((3, 16, 128), device="cuda", dtype=torch.float16)
         nq, nk = l2_normalize_qk(q, q.clone())
-        torch.testing.assert_close(nq.float().square().sum(-1), torch.ones((3, 16), device="cuda"), rtol=3e-3, atol=3e-3)
+        torch.testing.assert_close(
+            nq.float().square().sum(-1),
+            torch.ones((3, 16), device="cuda"),
+            rtol=3e-3,
+            atol=3e-3,
+        )
         torch.testing.assert_close(nk, nq, rtol=0, atol=0)
 
     def test_int64_cu_and_empty_segments(self):
@@ -165,12 +197,24 @@ class TestGDNRecurrent(V100TestCase):
         q, k, v, decay, beta, cu = self._inputs([1, 17, 65], 902)
         actual, state = recurrent_gdn(q, k, v, decay, beta, cu, 65)
         expected, expected_state = recurrent_vectorized(q, k, v, decay, beta, cu.cpu())
-        output_rel = torch.linalg.vector_norm((actual - expected).flatten(1), dim=1) / torch.linalg.vector_norm(expected.flatten(1), dim=1).clamp_min(1e-8)
-        state_rel = torch.linalg.vector_norm((state - expected_state).flatten(1), dim=1) / torch.linalg.vector_norm(expected_state.flatten(1), dim=1).clamp_min(1e-8)
+        output_rel = torch.linalg.vector_norm(
+            (actual - expected).flatten(1), dim=1
+        ) / torch.linalg.vector_norm(expected.flatten(1), dim=1).clamp_min(1e-8)
+        state_rel = torch.linalg.vector_norm(
+            (state - expected_state).flatten(1), dim=1
+        ) / torch.linalg.vector_norm(expected_state.flatten(1), dim=1).clamp_min(1e-8)
         self.assertTrue(torch.isfinite(output_rel).all())
         self.assertTrue(torch.isfinite(state_rel).all())
-        self.assertLessEqual(output_rel.max().item(), 1e-4, f"output p99={torch.quantile(output_rel, .99).item():.3e}")
-        self.assertLessEqual(state_rel.max().item(), 1e-4, f"state p99={torch.quantile(state_rel, .99).item():.3e}")
+        self.assertLessEqual(
+            output_rel.max().item(),
+            1e-4,
+            f"output p99={torch.quantile(output_rel, .99).item():.3e}",
+        )
+        self.assertLessEqual(
+            state_rel.max().item(),
+            1e-4,
+            f"state p99={torch.quantile(state_rel, .99).item():.3e}",
+        )
 
     def test_gdn_and_runner_metadata_reject_invalid_max_or_cpu_metadata(self):
         q, k, v, decay, beta, cu = self._inputs([1], 903)
@@ -181,24 +225,50 @@ class TestGDNRecurrent(V100TestCase):
         with self.assertRaises(ValueError):
             _validate_metadata(1, torch.zeros((1,), dtype=torch.int32), cu, 1, q.device)
         with self.assertRaises(ValueError):
-            _validate_metadata(1, torch.zeros((1,), device="cuda", dtype=torch.int32), cu, 0, q.device)
+            _validate_metadata(
+                1, torch.zeros((1,), device="cuda", dtype=torch.int32), cu, 0, q.device
+            )
 
     def test_separated_bt16_gram_and_inverse_four_chunks(self):
         lengths = [49, 17]
         q, k, v, decay, beta, cu = self._inputs(lengths, 94)
         gram, actual_a = compute_gram_a16(q, k, decay, beta, cu, max(lengths))
-        for seq, (start, end) in enumerate(zip(cu[:-1].cpu().tolist(), cu[1:].cpu().tolist())):
+        for seq, (start, end) in enumerate(
+            zip(cu[:-1].cpu().tolist(), cu[1:].cpu().tolist())
+        ):
             for chunk, block_start in enumerate(range(start, end, 16)):
                 n = min(16, end - block_start)
-                kh = k[block_start:block_start + n].repeat_interleave(2, dim=1).permute(1, 0, 2).float()
+                kh = (
+                    k[block_start : block_start + n]
+                    .repeat_interleave(2, dim=1)
+                    .permute(1, 0, 2)
+                    .float()
+                )
                 expected_gram = torch.bmm(kh, kh.transpose(1, 2))
-                torch.testing.assert_close(gram[seq, chunk, :, :n, :n], expected_gram, rtol=3e-3, atol=3e-3)
-                g = torch.cumsum(decay[block_start:block_start + n].transpose(0, 1), dim=1)
-                l = beta[block_start:block_start + n].transpose(0, 1).float().unsqueeze(2) * expected_gram * torch.exp(g[:, :, None] - g[:, None, :])
+                torch.testing.assert_close(
+                    gram[seq, chunk, :, :n, :n], expected_gram, rtol=3e-3, atol=3e-3
+                )
+                g = torch.cumsum(
+                    decay[block_start : block_start + n].transpose(0, 1), dim=1
+                )
+                l = (
+                    beta[block_start : block_start + n]
+                    .transpose(0, 1)
+                    .float()
+                    .unsqueeze(2)
+                    * expected_gram
+                    * torch.exp(g[:, :, None] - g[:, None, :])
+                )
                 l = torch.tril(l, diagonal=-1)
-                eye = torch.eye(n, device="cuda", dtype=torch.float32).expand(32, -1, -1)
-                expected_a = torch.linalg.solve_triangular(eye + l, eye, upper=False).half()
-                torch.testing.assert_close(actual_a[seq, chunk, :, :n, :n], expected_a, rtol=3e-3, atol=3e-3)
+                eye = torch.eye(n, device="cuda", dtype=torch.float32).expand(
+                    32, -1, -1
+                )
+                expected_a = torch.linalg.solve_triangular(
+                    eye + l, eye, upper=False
+                ).half()
+                torch.testing.assert_close(
+                    actual_a[seq, chunk, :, :n, :n], expected_a, rtol=3e-3, atol=3e-3
+                )
 
     def test_separated_bt16_wy_real_dim_ragged(self):
         lengths = [49, 17]
@@ -207,21 +277,56 @@ class TestGDNRecurrent(V100TestCase):
         actual_u, actual_w = compute_wy16(q, k, v, decay, beta, cu, max(lengths), a16)
         expected_u, expected_w = [], []
         actual_u_active, actual_w_active = [], []
-        for seq, (start, end) in enumerate(zip(cu[:-1].cpu().tolist(), cu[1:].cpu().tolist())):
+        for seq, (start, end) in enumerate(
+            zip(cu[:-1].cpu().tolist(), cu[1:].cpu().tolist())
+        ):
             for chunk, block_start in enumerate(range(start, end, 16)):
                 n = min(16, end - block_start)
                 aa = a16[seq, chunk, :, :n, :n].float()
-                vv = (beta[block_start:block_start + n].transpose(0, 1).float().unsqueeze(2) * v[block_start:block_start + n].permute(1, 0, 2).float()).half()
-                kh = k[block_start:block_start + n].repeat_interleave(2, dim=1).permute(1, 0, 2).float()
-                g = torch.cumsum(decay[block_start:block_start + n].transpose(0, 1), dim=1)
-                kk = (beta[block_start:block_start + n].transpose(0, 1).float().unsqueeze(2) * torch.exp(g).unsqueeze(2) * kh).half()
+                vv = (
+                    beta[block_start : block_start + n]
+                    .transpose(0, 1)
+                    .float()
+                    .unsqueeze(2)
+                    * v[block_start : block_start + n].permute(1, 0, 2).float()
+                ).half()
+                kh = (
+                    k[block_start : block_start + n]
+                    .repeat_interleave(2, dim=1)
+                    .permute(1, 0, 2)
+                    .float()
+                )
+                g = torch.cumsum(
+                    decay[block_start : block_start + n].transpose(0, 1), dim=1
+                )
+                kk = (
+                    beta[block_start : block_start + n]
+                    .transpose(0, 1)
+                    .float()
+                    .unsqueeze(2)
+                    * torch.exp(g).unsqueeze(2)
+                    * kh
+                ).half()
                 expected_u.append(torch.bmm(aa, vv.float()).half())
                 expected_w.append(torch.bmm(aa, kk.float()).half())
                 actual_u_active.append(actual_u[seq, chunk, :, :n])
                 actual_w_active.append(actual_w[seq, chunk, :, :n])
-        for actual, expected in ((torch.cat([x.reshape(-1, 128) for x in actual_u_active]), torch.cat([x.reshape(-1, 128) for x in expected_u])), (torch.cat([x.reshape(-1, 128) for x in actual_w_active]), torch.cat([x.reshape(-1, 128) for x in expected_w]))):
+        for actual, expected in (
+            (
+                torch.cat([x.reshape(-1, 128) for x in actual_u_active]),
+                torch.cat([x.reshape(-1, 128) for x in expected_u]),
+            ),
+            (
+                torch.cat([x.reshape(-1, 128) for x in actual_w_active]),
+                torch.cat([x.reshape(-1, 128) for x in expected_w]),
+            ),
+        ):
             self.assertTrue(torch.isfinite(actual).all())
-            nrmse = (actual.float() - expected.float()).square().mean().sqrt() / expected.float().square().mean().sqrt().clamp_min(1e-8)
+            nrmse = (
+                actual.float() - expected.float()
+            ).square().mean().sqrt() / expected.float().square().mean().sqrt().clamp_min(
+                1e-8
+            )
             self.assertLessEqual(nrmse.item(), 2e-3)
 
     def test_separated_bt16_residual_and_state_ragged(self):
@@ -229,28 +334,61 @@ class TestGDNRecurrent(V100TestCase):
         q, k, v, decay, beta, cu = self._inputs(lengths, 96)
         _, a16 = compute_gram_a16(q, k, decay, beta, cu, max(lengths))
         u16, w16 = compute_wy16(q, k, v, decay, beta, cu, max(lengths), a16)
-        actual_h, actual_r32, actual_r16, actual_rd, actual_state = compute_r_state16(k, decay, cu, max(lengths), u16, w16)
+        actual_h, actual_r32, actual_r16, actual_rd, actual_state = compute_r_state16(
+            k, decay, cu, max(lengths), u16, w16
+        )
         state = torch.zeros_like(actual_state)
         expected_h, expected_r, expected_rd = [], [], []
         actual_h_active, actual_r_active, actual_rd_active = [], [], []
-        for seq, (start, end) in enumerate(zip(cu[:-1].cpu().tolist(), cu[1:].cpu().tolist())):
+        for seq, (start, end) in enumerate(
+            zip(cu[:-1].cpu().tolist(), cu[1:].cpu().tolist())
+        ):
             for chunk, block_start in enumerate(range(start, end, 16)):
                 n = min(16, end - block_start)
                 h16 = state[seq].half()
-                r32 = u16[seq, chunk, :, :n].float() - torch.bmm(w16[seq, chunk, :, :n].float(), h16.float().transpose(1, 2))
-                g = torch.cumsum(decay[block_start:block_start + n].transpose(0, 1), dim=1)
+                r32 = u16[seq, chunk, :, :n].float() - torch.bmm(
+                    w16[seq, chunk, :, :n].float(), h16.float().transpose(1, 2)
+                )
+                g = torch.cumsum(
+                    decay[block_start : block_start + n].transpose(0, 1), dim=1
+                )
                 rd = (r32 * torch.exp(g[:, -1:] - g).unsqueeze(2)).half()
-                kh = k[block_start:block_start + n].repeat_interleave(2, dim=1).permute(1, 0, 2).float()
-                state[seq] = torch.exp(g[:, -1]).view(32, 1, 1) * state[seq] + torch.bmm(rd.float().transpose(1, 2), kh)
+                kh = (
+                    k[block_start : block_start + n]
+                    .repeat_interleave(2, dim=1)
+                    .permute(1, 0, 2)
+                    .float()
+                )
+                state[seq] = torch.exp(g[:, -1]).view(32, 1, 1) * state[
+                    seq
+                ] + torch.bmm(rd.float().transpose(1, 2), kh)
                 expected_h.append(h16)
                 expected_r.append(r32)
                 expected_rd.append(rd.transpose(1, 2))
                 actual_h_active.append(actual_h[seq, chunk])
                 actual_r_active.append(actual_r32[seq, chunk, :, :n])
                 actual_rd_active.append(actual_rd[seq, chunk, :, :, :n])
-        for actual, expected in ((torch.cat([x.reshape(-1) for x in actual_h_active]), torch.cat([x.reshape(-1) for x in expected_h])), (torch.cat([x.reshape(-1) for x in actual_r_active]), torch.cat([x.reshape(-1) for x in expected_r])), (torch.cat([x.reshape(-1) for x in actual_rd_active]), torch.cat([x.reshape(-1) for x in expected_rd])), (actual_state.reshape(-1), state.reshape(-1))):
+        for actual, expected in (
+            (
+                torch.cat([x.reshape(-1) for x in actual_h_active]),
+                torch.cat([x.reshape(-1) for x in expected_h]),
+            ),
+            (
+                torch.cat([x.reshape(-1) for x in actual_r_active]),
+                torch.cat([x.reshape(-1) for x in expected_r]),
+            ),
+            (
+                torch.cat([x.reshape(-1) for x in actual_rd_active]),
+                torch.cat([x.reshape(-1) for x in expected_rd]),
+            ),
+            (actual_state.reshape(-1), state.reshape(-1)),
+        ):
             self.assertTrue(torch.isfinite(actual).all())
-            nrmse = (actual.float() - expected.float()).square().mean().sqrt() / expected.float().square().mean().sqrt().clamp_min(1e-8)
+            nrmse = (
+                actual.float() - expected.float()
+            ).square().mean().sqrt() / expected.float().square().mean().sqrt().clamp_min(
+                1e-8
+            )
             self.assertLessEqual(nrmse.item(), 2e-3)
         # Fresh allocations make repeated current-call evaluations bitwise stable.
         repeat = compute_r_state16(k, decay, cu, max(lengths), u16, w16)
@@ -259,4 +397,51 @@ class TestGDNRecurrent(V100TestCase):
         empty_k = k[:0]
         empty_decay, empty_u, empty_w = decay[:0], u16[:1, :1], w16[:1, :1]
         empty = compute_r_state16(empty_k, empty_decay, empty_cu, 0, empty_u, empty_w)
-        torch.testing.assert_close(empty[-1], torch.zeros_like(empty[-1]), rtol=0, atol=0)
+        torch.testing.assert_close(
+            empty[-1], torch.zeros_like(empty[-1]), rtol=0, atol=0
+        )
+
+    def test_merged_projection_row_views_match_contiguous_gdn_inputs(self):
+        torch.manual_seed(916)
+        tokens = 3
+        merged = torch.randn((tokens, 12288), device="cuda", dtype=torch.float16)
+        qkv = merged[:, :8192]
+        weight = torch.randn((8192, 4), device="cuda", dtype=torch.float16)
+        cu = torch.tensor([0, tokens], device="cuda", dtype=torch.int32)
+        torch.testing.assert_close(
+            depthwise_conv4_silu(qkv, weight, None, cu),
+            depthwise_conv4_silu(qkv.contiguous(), weight, None, cu),
+            rtol=0,
+            atol=0,
+        )
+        ba = torch.randn((tokens, 64), device="cuda", dtype=torch.float16)
+        b, a = ba[:, :32], ba[:, 32:]
+        alog = torch.randn((32,), device="cuda", dtype=torch.float16)
+        dt = torch.randn_like(alog)
+        decay, beta = prepare_gates(a, b, alog, dt)
+        expected_decay, expected_beta = prepare_gates(
+            a.contiguous(), b.contiguous(), alog, dt
+        )
+        torch.testing.assert_close(decay, expected_decay, rtol=0, atol=0)
+        torch.testing.assert_close(beta, expected_beta, rtol=0, atol=0)
+
+    def test_gdn_rejects_overlapping_or_nonunit_inner_stride_rows(self):
+        bad = torch.empty((1, 16384), device="cuda", dtype=torch.float16)[:, ::2]
+        weight = torch.empty((8192, 4), device="cuda", dtype=torch.float16)
+        cu = torch.tensor([0, 1], device="cuda", dtype=torch.int32)
+        with self.assertRaisesRegex(ValueError, "unit-inner-stride"):
+            depthwise_conv4_silu(bad, weight, None, cu)
+        a = torch.empty((1, 64), device="cuda", dtype=torch.float16)[:, ::2]
+        params = torch.empty((32,), device="cuda", dtype=torch.float16)
+        with self.assertRaisesRegex(ValueError, "unit-inner-stride"):
+            prepare_gates(a, a, params, params)
+
+    def test_stream_reset_poisoned_state_and_empty_sequences(self):
+        lengths = [0, 1, 17, 65, 0]
+        q, k, v, decay, beta, cu = self._inputs(lengths, 990)
+        expected, expected_state = chunk_gdn(q, k, v, decay, beta, cu, 65)
+        poisoned = torch.full_like(expected_state, float("nan"))
+        actual = torch.empty_like(expected)
+        stream_gdn16(q, k, v, decay, beta, cu, 65, out=actual, state=poisoned)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        torch.testing.assert_close(poisoned, expected_state, rtol=0, atol=0)

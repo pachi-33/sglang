@@ -7,6 +7,7 @@ It is written for auditability and test inputs, not performance.
 from __future__ import annotations
 
 import math
+
 import numpy as np
 import torch
 
@@ -19,7 +20,11 @@ def _e4m3_values() -> list[tuple[int, float]]:
                 # E4M3FN reserves only exp=15,mantissa=7 as NaN.
                 if exponent == 15 and mantissa == 7:
                     continue
-                magnitude = (mantissa / 8.0 * 2.0**-6 if exponent == 0 else (1.0 + mantissa / 8.0) * 2.0 ** (exponent - 7))
+                magnitude = (
+                    mantissa / 8.0 * 2.0**-6
+                    if exponent == 0
+                    else (1.0 + mantissa / 8.0) * 2.0 ** (exponent - 7)
+                )
                 code = (sign << 7) | (exponent << 3) | mantissa
                 values.append((code, -magnitude if sign else magnitude))
     return values
@@ -29,8 +34,12 @@ _E4M3 = _e4m3_values()
 _E4M3_DECODE_ARRAY = np.full(256, np.nan, dtype=np.float32)
 for _code, _value in _E4M3:
     _E4M3_DECODE_ARRAY[_code] = _value
-_E4M3_POSITIVE = np.array([value for code, value in _E4M3 if code < 128], dtype=np.float64)
-_E4M3_POSITIVE_CODES = np.array([code for code, value in _E4M3 if code < 128], dtype=np.uint8)
+_E4M3_POSITIVE = np.array(
+    [value for code, value in _E4M3 if code < 128], dtype=np.float64
+)
+_E4M3_POSITIVE_CODES = np.array(
+    [code for code, value in _E4M3 if code < 128], dtype=np.uint8
+)
 
 
 def decode_e4m3fn(data: torch.Tensor) -> torch.Tensor:
@@ -39,7 +48,9 @@ def decode_e4m3fn(data: torch.Tensor) -> torch.Tensor:
     return torch.from_numpy(decoded.copy()).to(device=data.device).reshape(data.shape)
 
 
-def _encode_positive_nearest_even(values: np.ndarray, candidates: np.ndarray, codes: np.ndarray) -> np.ndarray:
+def _encode_positive_nearest_even(
+    values: np.ndarray, candidates: np.ndarray, codes: np.ndarray
+) -> np.ndarray:
     """Vectorized finite saturation and exact RNE selection for sorted values."""
     clipped = np.clip(values, candidates[0], candidates[-1])
     right = np.searchsorted(candidates, clipped, side="left")
@@ -57,7 +68,9 @@ def encode_e4m3fn(values: torch.Tensor) -> torch.Tensor:
     flat = values.detach().to(device="cpu", dtype=torch.float64).numpy().reshape(-1)
     sign = np.signbit(flat)
     magnitude = np.where(np.isnan(flat), 0.0, np.abs(flat))
-    codes = _encode_positive_nearest_even(magnitude, _E4M3_POSITIVE, _E4M3_POSITIVE_CODES)
+    codes = _encode_positive_nearest_even(
+        magnitude, _E4M3_POSITIVE, _E4M3_POSITIVE_CODES
+    )
     codes = codes | (sign.astype(np.uint8) << 7)
     return torch.from_numpy(codes.copy()).to(device=values.device).reshape(values.shape)
 
@@ -91,7 +104,9 @@ def quantize_a8(x: torch.Tensor, group_size: int = 128):
     shaped = x.float().reshape(x.shape[0], -1, group_size)
     # Keep this as a float32 reciprocal multiply.  The production kernels use
     # the same frozen RN32 scale contract; division changes rare E4M3 ties.
-    scale = shaped.abs().amax(dim=-1).float() * torch.tensor(1.0 / 448.0, dtype=torch.float32, device=shaped.device)
+    scale = shaped.abs().amax(dim=-1).float() * torch.tensor(
+        1.0 / 448.0, dtype=torch.float32, device=shaped.device
+    )
     # A8 retains an IEEE signed zero even when its whole K128 scale is zero.
     # This matches the CUDA producer/quantizer.  NVFP4 deliberately differs:
     # its zero local-scale payload is canonically all-zero nibbles.
@@ -108,15 +123,22 @@ def quantize_a4(x: torch.Tensor, global_scale: torch.Tensor, group_size: int = 1
         raise ValueError("global_scale must be scalar or one value per row")
     u = x.float() * g
     shaped = u.reshape(x.shape[0], -1, group_size)
-    scale = encode_e4m3fn(shaped.abs().amax(dim=-1).float() * torch.tensor(1.0 / 6.0, dtype=torch.float32, device=shaped.device))
+    scale = encode_e4m3fn(
+        shaped.abs().amax(dim=-1).float()
+        * torch.tensor(1.0 / 6.0, dtype=torch.float32, device=shaped.device)
+    )
     decoded_scale = decode_e4m3fn(scale)[..., None]
-    normalized = torch.where(decoded_scale == 0, torch.zeros_like(shaped), shaped / decoded_scale)
+    normalized = torch.where(
+        decoded_scale == 0, torch.zeros_like(shaped), shaped / decoded_scale
+    )
     q = encode_e2m1(normalized.reshape_as(x))
     packed = q[:, 0::2] | (q[:, 1::2] << 4)
     return packed, scale, g.squeeze(1)
 
 
-def unpack_a4(data: torch.Tensor, scale: torch.Tensor, global_scale: torch.Tensor) -> torch.Tensor:
+def unpack_a4(
+    data: torch.Tensor, scale: torch.Tensor, global_scale: torch.Tensor
+) -> torch.Tensor:
     low = data & 15
     high = data >> 4
     q = torch.stack((low, high), dim=-1).reshape(data.shape[0], -1)
