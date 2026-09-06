@@ -45,8 +45,8 @@ rounds to zero. Report max/P99 errors and non-finite values as well as NRMSE.
 | ID | Deliverable | Status |
 |---|---|---|
 | M0 | Environment, SM70 baseline, manifest, interfaces | M0a passed; model/config interface pending |
-| M1 | Independent references and codec tests | Pending |
-| M2a | Common layers, W8A8 and Full Attention | Pending |
+| M1 | Independent references and codec tests | Codec / activation contract passed |
+| M2a | Common layers, W8A8 and Full Attention | Common layers and W8A8 passed; attention pending |
 | M2b | Fused NVFP4 / FP16 routed MoE | Pending |
 | M2c | Stateless GDN recurrent and chunk paths | Pending |
 | M3 | All 40 real layers independently checked | Pending |
@@ -106,3 +106,45 @@ malformed FP8 NaN decoding. Initial nested shell/test `flock` acquisition was
 also corrected: unittest classes own the lock; standalone probes use shell
 `flock`. Quantized production kernels, attention, GDN, model wiring and full
 coverage remain in later milestones.
+
+## M1 / M2a-W8 — actual Triton codecs and fused W8A8
+
+Implemented GPU E4M3FN/E2M1 encode/decode, A8 group128 and static-global A4
+group16 activation quantization, and W8A8 GEMM with tile decoding fused into
+Volta HMMA. Four K32 dot products accumulate a K128 partial before FP32
+activation/weight scale application. Unverified noncontiguous payloads are
+rejected. There is no full dequantized FP8 weight intermediate.
+
+The quantization test launches the actual Triton codec helpers. It covers all
+256 E4M3FN decodings (including both NaN codes), all finite round trips, all
+adjacent-value midpoints and their nextafter neighbors with both signs, E2M1
+codewords/ties, packed nibble order, signed zero, zero local scales, independent
+A8/A4 payload comparison and multiple real GEMM sizes.
+
+```bash
+CUDA_VISIBLE_DEVICES=GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96 \
+PYTHONPATH=python:. \
+/home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python -m unittest \
+  test.Qwen3_5MoECompat.unit.test_quantization -v
+```
+
+Result: **5 tests passed** on the V100. Each GEMM reference reads the actual
+stored FP16 weight scales; the NRMSE gate is 2e-3, not an elementwise loose
+tolerance against a different scale tensor.
+
+| M,N,K | W8A8 NRMSE |
+|---|---:|
+| 1,256,2048 | 1.8405264e-4 |
+| 17,256,4096 | 2.0427280e-4 |
+| 128,256,2048 | 2.0639937e-4 |
+| 0,256,2048 | empty output / payload validated |
+
+An additional constant-matrix probe returns exactly 128 for a sum of 128 ones;
+the compiled quantized GEMM PTX contains `.target sm_70` and
+`mma.sync.aligned.m8n8k4`.
+
+FP32 scale formation uses reciprocal-multiply semantics
+`RN32(amax * RN32(1/448))` (or `1/6` for the NVFP4 local scale). The normalized
+payload quotient uses `div_rn`; replacing it with approximate division caused
+midpoint code differences during implementation and is not an allowed tuning
+change. NVFP4 MoE fusion, Full Attention and GDN remain unaccepted at this point.
