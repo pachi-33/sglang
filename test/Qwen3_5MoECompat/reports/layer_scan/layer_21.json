@@ -1,0 +1,746 @@
+{
+  "budgets": {
+    "gdn_recurrent": 0.0001,
+    "local": 0.005,
+    "projection": 0.002
+  },
+  "components": {
+    "attention_or_gdn": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.00048828125,
+      "nrmse": 0.00034092512214556336,
+      "p99": 0.0001220703125,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "composed_route_ids": {
+      "actual_margin_8_9_min": 0.001953125,
+      "budget": "diagnostic: propagated post-norm router IDs",
+      "finite": true,
+      "ids_exact": true,
+      "reference_margin_8_9_min": 0.001953125,
+      "shape": [
+        32,
+        8
+      ]
+    },
+    "gdn_a": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.0001220703125,
+      "nrmse": 4.800689566764049e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        32
+      ]
+    },
+    "gdn_a8_boundary": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 6.103515625e-05,
+      "nrmse": 2.5095494038396282e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        4096
+      ]
+    },
+    "gdn_a8_codec": {
+      "budget": "exact codec bytes/scales",
+      "finite": true,
+      "pass": true,
+      "payload_bytes_exact": true,
+      "scale_exact": true,
+      "shape": [
+        32,
+        4096
+      ]
+    },
+    "gdn_b": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.0009765625,
+      "nrmse": 4.7118341171881184e-05,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        32
+      ]
+    },
+    "gdn_beta": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.0,
+      "nrmse": 0.0,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        32
+      ]
+    },
+    "gdn_conv": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.0001220703125,
+      "nrmse": 4.914242254017154e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        8192
+      ]
+    },
+    "gdn_decay": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 2.4184584617614746e-05,
+      "nrmse": 1.1504297390274587e-06,
+      "p99": 1.1920928955078125e-07,
+      "pass": true,
+      "shape": [
+        32,
+        32
+      ]
+    },
+    "gdn_k": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 9.1552734375e-05,
+      "nrmse": 6.996438514761394e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        16,
+        128
+      ]
+    },
+    "gdn_q": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.0001220703125,
+      "nrmse": 6.8180070229573175e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        16,
+        128
+      ]
+    },
+    "gdn_recurrent_output": {
+      "budget": 0.0001,
+      "finite": true,
+      "max": 5.587935447692871e-09,
+      "nrmse": 2.1891121093631227e-07,
+      "p99": 1.4551915228366852e-10,
+      "pass": true,
+      "shape": [
+        32,
+        32,
+        128
+      ]
+    },
+    "gdn_recurrent_propagated_output": {
+      "budget": null,
+      "finite": true,
+      "max": 1.9211438484489918e-07,
+      "nrmse": 7.602170626341831e-06,
+      "p99": 3.27054294757545e-09,
+      "shape": [
+        32,
+        32,
+        128
+      ],
+      "status": "reported; independently propagated GDN inputs"
+    },
+    "gdn_recurrent_state": {
+      "budget": 0.0001,
+      "finite": true,
+      "max": 1.1920928955078125e-07,
+      "nrmse": 2.633892961512174e-07,
+      "p99": 3.725290298461914e-09,
+      "pass": true,
+      "shape": [
+        1,
+        32,
+        128,
+        128
+      ]
+    },
+    "gdn_v": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.0001220703125,
+      "nrmse": 9.080837116925977e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        32,
+        128
+      ]
+    },
+    "input_norm": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.0,
+      "nrmse": 0.0,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "layer_output_composed": {
+      "budget": null,
+      "finite": true,
+      "max": 0.0064697265625,
+      "nrmse": 0.003108223667368293,
+      "p99": 0.00213623046875,
+      "shape": [
+        32,
+        2048
+      ],
+      "status": "reported; no whole-layer acceptance budget is assigned"
+    },
+    "layer_output_local": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.000244140625,
+      "nrmse": 6.481433229055256e-05,
+      "p99": 3.0517578125e-05,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "linear_attn.in_proj_qkv_math": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.001953125,
+      "nrmse": 1.4154000382404774e-05,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        8192
+      ]
+    },
+    "linear_attn.in_proj_qkv_semantic": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.0009765625,
+      "nrmse": 5.3381704674393404e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        8192
+      ]
+    },
+    "linear_attn.in_proj_z_math": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.0009765625,
+      "nrmse": 8.793480446911417e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        4096
+      ]
+    },
+    "linear_attn.in_proj_z_semantic": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.00048828125,
+      "nrmse": 4.275561877875589e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        4096
+      ]
+    },
+    "linear_attn.out_proj_math": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 6.103515625e-05,
+      "nrmse": 8.901801265892573e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "linear_attn.out_proj_semantic": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.0001220703125,
+      "nrmse": 8.923686436901335e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "moe_natural": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.000244140625,
+      "nrmse": 0.00013227651652414352,
+      "p99": 3.0517578125e-05,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "moe_propagated_post_same_ids": {
+      "budget": null,
+      "finite": true,
+      "max": 0.00630950927734375,
+      "nrmse": 0.010111036710441113,
+      "p99": 0.002141207456588745,
+      "shape": [
+        32,
+        2048
+      ],
+      "status": "reported; propagated post-norm difference with identical IDs"
+    },
+    "moe_propagated_route_effect": {
+      "budget": null,
+      "finite": true,
+      "max": 0.0,
+      "nrmse": 0.0,
+      "p99": 0.0,
+      "shape": [
+        32,
+        2048
+      ],
+      "status": "reported; natural vs same propagated route IDs"
+    },
+    "post_attention_norm": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.0078125,
+      "nrmse": 0.0002566128969192505,
+      "p99": 0.001953125,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "residual": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.00048828125,
+      "nrmse": 0.00021573026606347412,
+      "p99": 0.0001220703125,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "routed_forced_all_256": {
+      "budget": 0.005,
+      "expert_coverage": 256,
+      "finite": true,
+      "max": 1.52587890625e-05,
+      "nrmse": 4.538554549071705e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "routed_forced_per_expert": {
+      "budget": 0.005,
+      "expert_coverage": 256,
+      "finite": true,
+      "max_expert_nrmse": 4.088776040589437e-05,
+      "nrmse": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        4.088776040589437e-05,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.963285987789277e-05,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.2510877240856644e-05,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.0265448256395757e-05,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pass": true,
+      "shape": [
+        256,
+        2048
+      ]
+    },
+    "router_natural_t17": {
+      "budget": "exact lower-ID IDs for same logits; matmul swaps reported",
+      "finite": true,
+      "fp16_matmul_ids_exact": true,
+      "same_logits_ids_exact": true,
+      "score_margin_8_9_min": 0.0001220703125,
+      "shape": [
+        17,
+        8
+      ]
+    },
+    "router_projection": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.001953125,
+      "nrmse": 2.884066998376511e-05,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        256
+      ]
+    },
+    "shared_down_projection": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.000244140625,
+      "nrmse": 0.00012235940084792674,
+      "p99": 3.0517578125e-05,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "shared_expert": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.0001220703125,
+      "nrmse": 0.00012878559937234968,
+      "p99": 1.52587890625e-05,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "shared_gate_projection": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.0,
+      "nrmse": 0.0,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        1
+      ]
+    },
+    "shared_gate_up_projection": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.0009765625,
+      "nrmse": 2.4661942006787285e-05,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        1024
+      ]
+    },
+    "shared_swiglu": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.00146484375,
+      "nrmse": 5.8779762184713036e-05,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        512
+      ]
+    }
+  },
+  "environment": {
+    "capability": [
+      7,
+      0
+    ],
+    "cuda": "12.1",
+    "device": "Tesla V100-SXM2-16GB",
+    "platform": "Linux-6.12.73+deb13-amd64-x86_64-with-glibc2.41",
+    "python": "3.10.0",
+    "torch": "2.3.1+cu121",
+    "triton": "2.3.1",
+    "uuid_required": "GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96"
+  },
+  "expert_execution_backend": "fused paired G1/SwiGLU/A4",
+  "layer": 21,
+  "math_contract": "qwen35-m3-fp8-block-semantic-v4",
+  "seed": 20260927,
+  "source_sha256": "ff462157f05883b765b4f5110b64fa8f43fb798a153c2703eed3bb3d026694cb",
+  "tokens": 32
+}

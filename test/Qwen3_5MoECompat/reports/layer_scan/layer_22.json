@@ -1,0 +1,746 @@
+{
+  "budgets": {
+    "gdn_recurrent": 0.0001,
+    "local": 0.005,
+    "projection": 0.002
+  },
+  "components": {
+    "attention_or_gdn": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.00018310546875,
+      "nrmse": 0.0001634678483242169,
+      "p99": 5.340576171875e-05,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "composed_route_ids": {
+      "actual_margin_8_9_min": 0.0009765625,
+      "budget": "diagnostic: propagated post-norm router IDs",
+      "finite": true,
+      "ids_exact": true,
+      "reference_margin_8_9_min": 0.0009765625,
+      "shape": [
+        32,
+        8
+      ]
+    },
+    "gdn_a": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.000244140625,
+      "nrmse": 1.3204405149735976e-05,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        32
+      ]
+    },
+    "gdn_a8_boundary": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.0001220703125,
+      "nrmse": 9.284187399316579e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        4096
+      ]
+    },
+    "gdn_a8_codec": {
+      "budget": "exact codec bytes/scales",
+      "finite": true,
+      "pass": true,
+      "payload_bytes_exact": true,
+      "scale_exact": true,
+      "shape": [
+        32,
+        4096
+      ]
+    },
+    "gdn_b": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.0009765625,
+      "nrmse": 5.152349331183359e-05,
+      "p99": 3.671739250421524e-07,
+      "pass": true,
+      "shape": [
+        32,
+        32
+      ]
+    },
+    "gdn_beta": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.000244140625,
+      "nrmse": 1.9717492250492796e-05,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        32
+      ]
+    },
+    "gdn_conv": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 6.103515625e-05,
+      "nrmse": 2.8985382414248306e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        8192
+      ]
+    },
+    "gdn_decay": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 3.668665885925293e-05,
+      "nrmse": 3.7279535263223806e-06,
+      "p99": 1.1920928955078125e-07,
+      "pass": true,
+      "shape": [
+        32,
+        32
+      ]
+    },
+    "gdn_k": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 6.103515625e-05,
+      "nrmse": 3.400699824851472e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        16,
+        128
+      ]
+    },
+    "gdn_q": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.0001220703125,
+      "nrmse": 7.077619557094295e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        16,
+        128
+      ]
+    },
+    "gdn_recurrent_output": {
+      "budget": 0.0001,
+      "finite": true,
+      "max": 2.3283064365386963e-09,
+      "nrmse": 1.651384593515104e-07,
+      "p99": 1.1641532182693481e-10,
+      "pass": true,
+      "shape": [
+        32,
+        32,
+        128
+      ]
+    },
+    "gdn_recurrent_propagated_output": {
+      "budget": null,
+      "finite": true,
+      "max": 2.0131119526922703e-07,
+      "nrmse": 6.622513865295332e-06,
+      "p99": 2.9685907065868378e-09,
+      "shape": [
+        32,
+        32,
+        128
+      ],
+      "status": "reported; independently propagated GDN inputs"
+    },
+    "gdn_recurrent_state": {
+      "budget": 0.0001,
+      "finite": true,
+      "max": 1.1920928955078125e-07,
+      "nrmse": 2.298128976008229e-07,
+      "p99": 3.725290298461914e-09,
+      "pass": true,
+      "shape": [
+        1,
+        32,
+        128,
+        128
+      ]
+    },
+    "gdn_v": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 1.52587890625e-05,
+      "nrmse": 2.666032287379494e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        32,
+        128
+      ]
+    },
+    "input_norm": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.0009765625,
+      "nrmse": 4.719458502222551e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "layer_output_composed": {
+      "budget": null,
+      "finite": true,
+      "max": 0.0035400390625,
+      "nrmse": 0.0014487865846604109,
+      "p99": 0.0009765625,
+      "shape": [
+        32,
+        2048
+      ],
+      "status": "reported; no whole-layer acceptance budget is assigned"
+    },
+    "layer_output_local": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.000244140625,
+      "nrmse": 5.573805538006127e-05,
+      "p99": 1.52587890625e-05,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "linear_attn.in_proj_qkv_math": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.001953125,
+      "nrmse": 1.5169895959843416e-05,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        8192
+      ]
+    },
+    "linear_attn.in_proj_qkv_semantic": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.0009765625,
+      "nrmse": 5.071795840194682e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        8192
+      ]
+    },
+    "linear_attn.in_proj_z_math": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.0009765625,
+      "nrmse": 9.869425412034616e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        4096
+      ]
+    },
+    "linear_attn.in_proj_z_semantic": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.001953125,
+      "nrmse": 1.237005471921293e-05,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        4096
+      ]
+    },
+    "linear_attn.out_proj_math": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 6.103515625e-05,
+      "nrmse": 1.0865614967769943e-05,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "linear_attn.out_proj_semantic": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.0001220703125,
+      "nrmse": 1.2889942809124477e-05,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "moe_natural": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.000244140625,
+      "nrmse": 0.00010378935257904232,
+      "p99": 1.52587890625e-05,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "moe_propagated_post_same_ids": {
+      "budget": null,
+      "finite": true,
+      "max": 0.003627777099609375,
+      "nrmse": 0.004051136784255505,
+      "p99": 0.0009815394878387451,
+      "shape": [
+        32,
+        2048
+      ],
+      "status": "reported; propagated post-norm difference with identical IDs"
+    },
+    "moe_propagated_route_effect": {
+      "budget": null,
+      "finite": true,
+      "max": 0.0,
+      "nrmse": 0.0,
+      "p99": 0.0,
+      "shape": [
+        32,
+        2048
+      ],
+      "status": "reported; natural vs same propagated route IDs"
+    },
+    "post_attention_norm": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.00390625,
+      "nrmse": 0.00011777456529671326,
+      "p99": 0.0009765625,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "residual": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.000244140625,
+      "nrmse": 0.00010563331306912005,
+      "p99": 6.103515625e-05,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "routed_forced_all_256": {
+      "budget": 0.005,
+      "expert_coverage": 256,
+      "finite": true,
+      "max": 7.62939453125e-06,
+      "nrmse": 1.4383641655513202e-06,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "routed_forced_per_expert": {
+      "budget": 0.005,
+      "expert_coverage": 256,
+      "finite": true,
+      "max_expert_nrmse": 2.26060383283766e-05,
+      "nrmse": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        6.18469630353502e-06,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.26060383283766e-05,
+        0.0,
+        0.0,
+        6.384444986906601e-06,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pass": true,
+      "shape": [
+        256,
+        2048
+      ]
+    },
+    "router_natural_t17": {
+      "budget": "exact lower-ID IDs for same logits; matmul swaps reported",
+      "finite": true,
+      "fp16_matmul_ids_exact": true,
+      "same_logits_ids_exact": true,
+      "score_margin_8_9_min": 7.62939453125e-05,
+      "shape": [
+        17,
+        8
+      ]
+    },
+    "router_projection": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.0009765625,
+      "nrmse": 1.512542712589493e-05,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        256
+      ]
+    },
+    "shared_down_projection": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.000244140625,
+      "nrmse": 8.86259731487371e-05,
+      "p99": 3.0517578125e-05,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "shared_expert": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.0001220703125,
+      "nrmse": 9.167787357000634e-05,
+      "p99": 1.52587890625e-05,
+      "pass": true,
+      "shape": [
+        32,
+        2048
+      ]
+    },
+    "shared_gate_projection": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.0,
+      "nrmse": 0.0,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        1
+      ]
+    },
+    "shared_gate_up_projection": {
+      "budget": 0.002,
+      "finite": true,
+      "max": 0.0009765625,
+      "nrmse": 2.6655688998289406e-05,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        1024
+      ]
+    },
+    "shared_swiglu": {
+      "budget": 0.005,
+      "finite": true,
+      "max": 0.0009765625,
+      "nrmse": 3.9246271626325324e-05,
+      "p99": 0.0,
+      "pass": true,
+      "shape": [
+        32,
+        512
+      ]
+    }
+  },
+  "environment": {
+    "capability": [
+      7,
+      0
+    ],
+    "cuda": "12.1",
+    "device": "Tesla V100-SXM2-16GB",
+    "platform": "Linux-6.12.73+deb13-amd64-x86_64-with-glibc2.41",
+    "python": "3.10.0",
+    "torch": "2.3.1+cu121",
+    "triton": "2.3.1",
+    "uuid_required": "GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96"
+  },
+  "expert_execution_backend": "fused paired G1/SwiGLU/A4",
+  "layer": 22,
+  "math_contract": "qwen35-m3-fp8-block-semantic-v4",
+  "seed": 20260928,
+  "source_sha256": "ff462157f05883b765b4f5110b64fa8f43fb798a153c2703eed3bb3d026694cb",
+  "tokens": 32
+}

@@ -53,7 +53,7 @@ chronological evidence, including limitations subsequently resolved.
 | M2a | Common layers, W8A8 and Full Attention | Passed, including merged projections and strided consumers |
 | M2b | Fused NVFP4 / FP16 routed MoE | Passed, including mandatory fusion, stable dispatch and CTA320 tuning |
 | M2c | Stateless GDN recurrent and chunk paths | FP32 recurrent and bounded streamed BT16 WY passed |
-| M3 | All 40 real layers independently checked | Pending |
+| M3 | All 40 real layers independently checked | Passed: v4 independent math/semantic references, all 256 experts per layer |
 | M4 | Real layers 0-3 integration | Passed, including natural sequence isolation and both T2048 memory gates |
 | M5 | Performance / backend audit and documentation | Kernel optimizations passed; final-source profiler and documentation acceptance pending |
 
@@ -456,3 +456,47 @@ additional AST-level documentation edit states the internal stream helper's
 positive-max precondition. A CPU backend-classifier fixture was corrected to
 use an exact specialized PTX entry; production allowlist matching was not
 weakened.
+
+## M3 — all 40 original layers, frozen v4 references — 2026-09-07
+
+The coordinator completed `integration.layer_scan --layers 0-39` on the required
+V100. All 40 reports have contract `qwen35-m3-fp8-block-semantic-v4` and source
+SHA256 `ff462157f05883b765b4f5110b64fa8f43fb798a153c2703eed3bb3d026694cb`.
+Each layer uses independent T32 input, natural routing, and balanced forced
+Top-8 routes `8*token+slot`. Every one of its 256 experts executes gate/up/down;
+per-expert output gates prevent cancellation in combine from hiding a bad
+expert. Coverage is 130 FP8 matrices, 29,184 NVFP4 matrices, 1,536 FP16 expert
+matrices, and 10,240 independently checked expert instances.
+
+FP8 projection reports separately accept an independent fully dequantized FP32
+math oracle and a K128 partial / A-scale / W-scale sequential FP32 semantic
+oracle. NVFP4 uses exact local FP16 decoded operands and applies global
+reciprocals after FP32 accumulation. A layer-9 midpoint investigation showed
+that pre-scaling operands in the earlier reference can change one down A4
+nibble. Correcting that reference restores the frozen post-global contract;
+it does not change production kernels or relax a budget. Independent CPU tests
+cover block scale shapes/order, and route-report tests reject a single bad or
+nonfinite expert even if other routes agree.
+
+| Accepted measurement | Worst NRMSE | Budget |
+|---|---:|---:|
+| FP8 mathematical oracle | 2.2602488e-5 | 2e-3 |
+| FP8 block-semantic oracle | 1.5385138e-5 | 2e-3 |
+| One expert, layer39 expert106 | 4.0272632e-4 | 5e-3 |
+| Attention/GDN branch, layer14 | 4.4264463e-3 | 5e-3 |
+| Natural MoE, layer9 | 2.8615829e-4 | 5e-3 |
+
+All same-logit Top-8 checks and captured-boundary A8 bytes/scales pass. Reports
+include local components, recurrent output/state, natural-router margins,
+propagated route effects, max/P99 errors and finite-value checks. The largest
+whole-layer independently propagated diagnostic is **0.015154175 at layer35**.
+No whole-layer budget was frozen, so these records use `budget:null`, report
+status only, and no pass flag. Local acceptance does not establish full-model
+generation quality.
+
+Full raw reports, concise summary and the completed CLI log are committed in
+`reports/layer_scan/`, `reports/layer_scan_summary.json` and
+`reports/layer_scan_validation.txt`. `VALIDATION.md` contains all 40 rows.
+The raw v4 `expert_execution_backend` label is generic and inaccurate for
+layers0/39; their actual execution and reference are FP16. The validation
+erratum states this explicitly without changing measured values.
