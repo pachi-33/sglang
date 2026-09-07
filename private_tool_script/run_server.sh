@@ -47,7 +47,8 @@ export GLOO_SOCKET_IFNAME=lo
 export TRANSFORMERS_VERBOSITY=error
 
 # MODEL_PATH=/home/weights/Qwen3.6-27B-W8A8
-MODEL_PATH=/home/weights/Qwen3-Next-80B-A3B-Instruct
+# MODEL_PATH=/home/weights/Qwen3-Next-80B-A3B-Instruct
+MODEL_PATH=/home/weights/Qwen3-30B-A3B-W8A8 
 
 export SGLANG_NPU_PROFILING=0
 
@@ -55,7 +56,7 @@ export SGLANG_NPU_PROFILING_BS=16
 
 export PYTHONPATH=/home/y00951466/sglang/python:$PYTHONPATH
 
-export ASCEND_RT_VISIBLE_DEVICES=15
+export ASCEND_RT_VISIBLE_DEVICES=14,15
 
 python3 -m sglang.launch_server \
         --model-path $MODEL_PATH \

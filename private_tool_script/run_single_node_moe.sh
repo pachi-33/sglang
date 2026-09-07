@@ -6,16 +6,16 @@ set -Eeuo pipefail
 # 2 卡: NUM_NPUS=2，ASCEND_RT_VISIBLE_DEVICES=0,1
 # 4 卡: NUM_NPUS=4，ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
 # 8 卡: NUM_NPUS=8，ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-NUM_NPUS=8
-export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+NUM_NPUS=2
+export ASCEND_RT_VISIBLE_DEVICES=14,15
 
-MODEL_PATH=/home/chenxu/glm5_2_weight/
-SERVED_MODEL_NAME=glm52
+MODEL_PATH=/home/weights/Qwen3-30B-A3B-W8A8 
+SERVED_MODEL_NAME=qwen3
 SERVER_HOST=127.0.0.1
-SERVER_PORT=6677
+SERVER_PORT=8818
 
 # Decode CUDA Graph；在 NPU 上底层实际使用 NPUGraph。
-CUDA_GRAPH_BACKEND_DECODE=full
+CUDA_GRAPH_BACKEND_DECODE=disabled #full
 CUDA_GRAPH_MAX_BS_DECODE=5
 # ==================================================
 
@@ -142,7 +142,7 @@ exec python3 -m sglang.launch_server \
   --cuda-graph-max-bs-decode "${CUDA_GRAPH_MAX_BS_DECODE}" \
   --disable-prefill-cuda-graph \
   --max-running-requests "${MAX_RUNNING_REQUESTS}" \
-  --mem-fraction-static 0.86 \
+  --mem-fraction-static 0.4 \
   --quantization modelslim \
   --max-prefill-tokens "${MAX_PREFILL_TOKENS}" \
   --chunked-prefill-size 65536 \
