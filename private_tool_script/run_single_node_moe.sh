@@ -20,10 +20,10 @@ CUDA_GRAPH_BACKEND_DECODE=disabled #full
 CUDA_GRAPH_MAX_BS_DECODE=5
 
 # 1: 开启 NEXTN 投机解码；0: 关闭投机解码。
-ENABLE_SPECULATIVE=1
+ENABLE_SPECULATIVE=0
 
 # 1: 主模型 KV Cache 使用 FP8；0: 使用 BF16。
-ENABLE_FP8_KV_CACHE=1
+ENABLE_FP8_KV_CACHE=0
 # ==================================================
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
