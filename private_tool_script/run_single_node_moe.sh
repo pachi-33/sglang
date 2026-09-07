@@ -21,6 +21,9 @@ CUDA_GRAPH_MAX_BS_DECODE=5
 
 # 1: 开启 NEXTN 投机解码；0: 关闭投机解码。
 ENABLE_SPECULATIVE=1
+
+# 1: 主模型 KV Cache 使用 FP8；0: 使用 BF16。
+ENABLE_FP8_KV_CACHE=1
 # ==================================================
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -47,6 +50,15 @@ export SGLANG_NPU_USE_MLAPO=1
 export TRANSFORMERS_VERBOSITY=error
 
 export DEEPEP_HCCL_BUFFSIZE=1000
+
+case "${ENABLE_FP8_KV_CACHE}" in
+  1) KV_CACHE_DTYPE=fp8_e4m3 ;;
+  0) KV_CACHE_DTYPE=bf16 ;;
+  *)
+    echo "ERROR: ENABLE_FP8_KV_CACHE must be 0 or 1." >&2
+    exit 2
+    ;;
+esac
 
 case "${ENABLE_SPECULATIVE}" in
   1)
@@ -103,7 +115,8 @@ MAX_RUNNING_REQUESTS                            = ${MAX_RUNNING_REQUESTS}
 MEM_FRACTION_STATIC                             = ${MEM_FRACTION_STATIC}
 MAX_PREFILL_TOKENS                              = ${MAX_PREFILL_TOKENS}
 CHUNKED_PREFILL_SIZE                            = 65536
-KV_CACHE_DTYPE                                  = fp8_e4m3
+ENABLE_FP8_KV_CACHE                             = ${ENABLE_FP8_KV_CACHE}
+KV_CACHE_DTYPE                                  = ${KV_CACHE_DTYPE}
 PYTORCH_NPU_ALLOC_CONF                          = ${PYTORCH_NPU_ALLOC_CONF}
 
 [CUDA Graph / NPU Graph]
@@ -171,7 +184,7 @@ exec python3 -m sglang.launch_server \
   --quantization modelslim \
   --max-prefill-tokens "${MAX_PREFILL_TOKENS}" \
   --chunked-prefill-size 65536 \
-  --kv-cache-dtype fp8_e4m3 \
+  --kv-cache-dtype "${KV_CACHE_DTYPE}" \
   --load-balance-method round_robin \
   --moe-a2a-backend deepep \
   --deepep-mode auto \
