@@ -1,4 +1,4 @@
-"""HTTP API for the fixed two-GPU Qwen3.5 single-request pipeline.
+"""HTTP API for the configurable two-GPU Qwen3.5 single-request pipeline.
 
 This adapter deliberately preserves the pipeline's narrow execution contract:
 one active request, batch one, greedy decoding, and non-streaming responses.
@@ -29,10 +29,11 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, Stri
 from starlette.concurrency import run_in_threadpool
 
 from .pipeline import (
+    DEFAULT_BACK_UUID,
+    DEFAULT_FRONT_UUID,
+    DEFAULT_SPLIT_LAYER,
     EOS_TOKEN_IDS,
     MODEL_DIR_DEFAULT,
-    SM89_UUID,
-    V100_UUID,
     PipelineProtocolError,
     PipelineWorkerError,
     Qwen35Pipeline,
@@ -510,8 +511,17 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model-dir", default=MODEL_DIR_DEFAULT)
     parser.add_argument("--served-model-name")
     parser.add_argument("--capacity", type=int, default=2048)
-    parser.add_argument("--v100-uuid", default=V100_UUID)
-    parser.add_argument("--sm89-uuid", default=SM89_UUID)
+    parser.add_argument(
+        "--front-uuid",
+        help=f"GPU UUID for embedding/front layers/head (default: {DEFAULT_FRONT_UUID})",
+    )
+    parser.add_argument(
+        "--back-uuid",
+        help=f"GPU UUID for remaining layers (default: {DEFAULT_BACK_UUID})",
+    )
+    parser.add_argument("--split-layer", type=int, default=DEFAULT_SPLIT_LAYER)
+    parser.add_argument("--v100-uuid", help=argparse.SUPPRESS)
+    parser.add_argument("--sm89-uuid", help=argparse.SUPPRESS)
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--api-key", default=os.environ.get("SGLANG_API_KEY"))
@@ -529,6 +539,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     pipeline = Qwen35Pipeline(
         model_dir,
         capacity=args.capacity,
+        front_uuid=args.front_uuid,
+        back_uuid=args.back_uuid,
+        split_layer=args.split_layer,
         v100_uuid=args.v100_uuid,
         sm89_uuid=args.sm89_uuid,
     )

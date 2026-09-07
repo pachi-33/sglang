@@ -5,6 +5,7 @@ import json
 import socket
 import struct
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -22,11 +23,19 @@ class _ScriptedWorker:
         self,
         role,
         *,
+        layer_ids=None,
         tokens=(17, 18, 19),
         fail_command=None,
         validation_route_delta=None,
     ):
         self.role = role
+        self.layer_ids = tuple(
+            layer_ids
+            if layer_ids is not None
+            else (
+                pipeline.FRONT_LAYER_IDS if role == "front" else pipeline.BACK_LAYER_IDS
+            )
+        )
         self.tokens = iter(tokens)
         self.fail_command = fail_command
         self.validation_route_delta = validation_route_delta
@@ -43,11 +52,7 @@ class _ScriptedWorker:
         return bytes(rows * 2048 * 2)
 
     def _router_capture(self, command):
-        layer_ids = (
-            list(pipeline.FRONT_LAYER_IDS)
-            if self.role == "front"
-            else list(pipeline.BACK_LAYER_IDS)
-        )
+        layer_ids = list(self.layer_ids)
         expert_ids = [
             [(layer_id + slot) % 256 for slot in range(pipeline.ROUTER_TOP_K)]
             for layer_id in layer_ids
@@ -313,6 +318,93 @@ class TestPipelineFrames(unittest.TestCase):
                     )
 
 
+class TestPipelineLayout(unittest.TestCase):
+    @staticmethod
+    def _fake_worker(created):
+        class FakeWorker:
+            def __init__(
+                self, role, gpu_uuid, model_dir, capacity, layer_start, layer_end
+            ):
+                self.role = role
+                self.gpu_uuid = gpu_uuid
+                self.closed = False
+                self.last_response = None
+                capability = [8, 9] if gpu_uuid == pipeline.SM89_UUID else [7, 0]
+                self.ready = {
+                    "kind": "READY",
+                    "role": role,
+                    "capability": capability,
+                    "layer_start": layer_start,
+                    "layer_end": layer_end,
+                    "capacity": capacity,
+                }
+                created.append((role, gpu_uuid, capacity, layer_start, layer_end))
+
+            def wait_ready(self):
+                return self.ready
+
+            def close(self):
+                self.closed = True
+
+        return FakeWorker
+
+    def test_default_layout_puts_4070_front_with_fewer_layers(self):
+        created = []
+        with tempfile.TemporaryDirectory() as model_dir, mock.patch.object(
+            pipeline, "_WorkerClient", self._fake_worker(created)
+        ):
+            instance = pipeline.Qwen35Pipeline(model_dir)
+        try:
+            self.assertEqual(instance.front_uuid, pipeline.SM89_UUID)
+            self.assertEqual(instance.back_uuid, pipeline.V100_UUID)
+            self.assertEqual(instance.split_layer, 17)
+            self.assertEqual(instance.front_layer_ids, tuple(range(17)))
+            self.assertEqual(instance.back_layer_ids, tuple(range(17, 40)))
+            self.assertEqual(
+                created,
+                [
+                    ("front", pipeline.SM89_UUID, 2048, 0, 17),
+                    ("back", pipeline.V100_UUID, 2048, 17, 40),
+                ],
+            )
+        finally:
+            instance.close()
+
+    def test_physical_roles_can_be_swapped_back_with_an_explicit_split(self):
+        created = []
+        with tempfile.TemporaryDirectory() as model_dir, mock.patch.object(
+            pipeline, "_WorkerClient", self._fake_worker(created)
+        ):
+            instance = pipeline.Qwen35Pipeline(
+                model_dir,
+                front_uuid=pipeline.V100_UUID,
+                back_uuid=pipeline.SM89_UUID,
+                split_layer=20,
+            )
+        try:
+            self.assertEqual(instance.front_layer_ids, tuple(range(20)))
+            self.assertEqual(instance.back_layer_ids, tuple(range(20, 40)))
+            self.assertEqual(created[0][1:], (pipeline.V100_UUID, 2048, 0, 20))
+            self.assertEqual(created[1][1:], (pipeline.SM89_UUID, 2048, 20, 40))
+        finally:
+            instance.close()
+
+    def test_invalid_layout_is_rejected_before_workers_start(self):
+        with tempfile.TemporaryDirectory() as model_dir, mock.patch.object(
+            pipeline, "_WorkerClient"
+        ) as worker:
+            for split in (True, 0, 40):
+                with self.subTest(split=split), self.assertRaises(
+                    (TypeError, ValueError)
+                ):
+                    pipeline.Qwen35Pipeline(model_dir, split_layer=split)
+            with self.assertRaisesRegex(ValueError, "different GPUs"):
+                pipeline.Qwen35Pipeline(
+                    model_dir, front_uuid="GPU-same", back_uuid="GPU-same"
+                )
+        worker.assert_not_called()
+
+
 class TestPipelineInputValidation(unittest.TestCase):
     @staticmethod
     def _unstarted_pipeline(capacity):
@@ -322,6 +414,8 @@ class TestPipelineInputValidation(unittest.TestCase):
         instance.capacity = capacity
         instance._closed = False
         instance._epoch = 0
+        instance.front_layer_ids = pipeline.FRONT_LAYER_IDS
+        instance.back_layer_ids = pipeline.BACK_LAYER_IDS
         instance.front = mock.Mock()
         instance.back = mock.Mock()
         return instance
@@ -329,8 +423,12 @@ class TestPipelineInputValidation(unittest.TestCase):
     @classmethod
     def _scripted_pipeline(cls, capacity, **worker_kwargs):
         instance = cls._unstarted_pipeline(capacity)
-        instance.front = _ScriptedWorker("front", **worker_kwargs)
-        instance.back = _ScriptedWorker("back", **worker_kwargs)
+        instance.front = _ScriptedWorker(
+            "front", layer_ids=instance.front_layer_ids, **worker_kwargs
+        )
+        instance.back = _ScriptedWorker(
+            "back", layer_ids=instance.back_layer_ids, **worker_kwargs
+        )
         instance.last_validation = []
         return instance
 
@@ -663,9 +761,11 @@ class TestPipelineInputValidation(unittest.TestCase):
                 response = dict(response)
                 response[pipeline.ROUTER_CAPTURE_KEY] = {
                     "layer_ids": list(pipeline.BACK_LAYER_IDS),
-                    "expert_ids": [[20] * pipeline.ROUTER_TOP_K] * 20,
+                    "expert_ids": [
+                        [20] * pipeline.ROUTER_TOP_K for _ in pipeline.BACK_LAYER_IDS
+                    ],
                     # IDs and probabilities must have matching Top-8 shape.
-                    "probabilities": [[1.0]] * 20,
+                    "probabilities": [[1.0] for _ in pipeline.BACK_LAYER_IDS],
                 }
             return response, body
 
@@ -698,10 +798,13 @@ class TestWorkerClientValidation(unittest.TestCase):
             "Popen",
             return_value=process,
         ) as popen:
-            client = pipeline._WorkerClient("front", "GPU-test", "/model", 4)
+            client = pipeline._WorkerClient("front", "GPU-test", "/model", 4, 0, 17)
         self.assertIs(client.process, process)
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
         self.assertEqual(popen.call_args.kwargs["pass_fds"], (17,))
+        command = popen.call_args.args[0]
+        self.assertEqual(command[command.index("--layer-start") + 1], "0")
+        self.assertEqual(command[command.index("--layer-end") + 1], "17")
         child_sock.close.assert_called_once_with()
         parent_sock.settimeout.assert_called_once_with(
             pipeline._STARTUP_TIMEOUT_SECONDS

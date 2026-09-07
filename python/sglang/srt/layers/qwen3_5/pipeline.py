@@ -31,8 +31,15 @@ EOS_TOKEN_IDS = (248046, 248044)
 PROTOCOL_VERSION = 1
 ROUTER_TOP_K = 8
 ROUTER_CAPTURE_KEY = "router_top8"
-FRONT_LAYER_IDS = tuple(range(20))
-BACK_LAYER_IDS = tuple(range(20, 40))
+NUM_HIDDEN_LAYERS = 40
+DEFAULT_SPLIT_LAYER = 17
+DEFAULT_FRONT_UUID = SM89_UUID
+DEFAULT_BACK_UUID = V100_UUID
+SUPPORTED_CAPABILITIES = ((7, 0), (8, 9))
+# Kept as public aliases for callers which inspect the production-default
+# layout. Runtime validation uses each pipeline instance's layer IDs instead.
+FRONT_LAYER_IDS = tuple(range(DEFAULT_SPLIT_LAYER))
+BACK_LAYER_IDS = tuple(range(DEFAULT_SPLIT_LAYER, NUM_HIDDEN_LAYERS))
 
 _MAGIC = b"Q35P"
 _FRAME = struct.Struct("!4sIQ")
@@ -286,6 +293,8 @@ class _WorkerClient:
         gpu_uuid: str,
         model_dir: str | Path,
         capacity: int,
+        layer_start: int,
+        layer_end: int,
     ) -> None:
         parent_sock, child_sock = socket.socketpair()
         self.role = role
@@ -306,6 +315,10 @@ class _WorkerClient:
             str(model_dir),
             "--capacity",
             str(capacity),
+            "--layer-start",
+            str(layer_start),
+            "--layer-end",
+            str(layer_end),
         ]
         try:
             self.process = subprocess.Popen(
@@ -419,38 +432,115 @@ class _WorkerClient:
 
 
 class Qwen35Pipeline:
-    """Fixed 20/20 two-GPU pipeline with one reusable request slot."""
+    """Configurable two-GPU layer pipeline with one reusable request slot.
+
+    The front worker always owns embedding/final norm/LM head and layers
+    ``[0, split_layer)``. The back worker owns the remaining transformer
+    layers. GPU architecture is deliberately independent from that role.
+    """
 
     def __init__(
         self,
         model_dir: str | Path = MODEL_DIR_DEFAULT,
         *,
         capacity: int = 2048,
-        v100_uuid: str = V100_UUID,
-        sm89_uuid: str = SM89_UUID,
+        front_uuid: str | None = None,
+        back_uuid: str | None = None,
+        split_layer: int = DEFAULT_SPLIT_LAYER,
+        # Deprecated physical-device aliases retained for existing launchers.
+        # In the new default layout SM89 is front and V100 is back.
+        v100_uuid: str | None = None,
+        sm89_uuid: str | None = None,
     ) -> None:
         if isinstance(capacity, bool) or not isinstance(capacity, int):
             raise TypeError("capacity must be a Python int")
         if not 1 <= capacity <= 2048:
             raise ValueError("capacity must be in [1,2048]")
+        if isinstance(split_layer, bool) or not isinstance(split_layer, int):
+            raise TypeError("split_layer must be a Python int")
+        if not 1 <= split_layer < NUM_HIDDEN_LAYERS:
+            raise ValueError(f"split_layer must be in [1,{NUM_HIDDEN_LAYERS - 1}]")
+        if front_uuid is not None and sm89_uuid is not None:
+            raise ValueError("front_uuid and sm89_uuid aliases are mutually exclusive")
+        if back_uuid is not None and v100_uuid is not None:
+            raise ValueError("back_uuid and v100_uuid aliases are mutually exclusive")
+        resolved_front_uuid = (
+            front_uuid
+            if front_uuid is not None
+            else sm89_uuid if sm89_uuid is not None else DEFAULT_FRONT_UUID
+        )
+        resolved_back_uuid = (
+            back_uuid
+            if back_uuid is not None
+            else v100_uuid if v100_uuid is not None else DEFAULT_BACK_UUID
+        )
+        for value, label in (
+            (resolved_front_uuid, "front_uuid"),
+            (resolved_back_uuid, "back_uuid"),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise TypeError(f"{label} must be a nonempty string")
+        if resolved_front_uuid == resolved_back_uuid:
+            raise ValueError("front_uuid and back_uuid must identify different GPUs")
         self.model_dir = Path(model_dir)
         if not self.model_dir.is_dir():
             raise FileNotFoundError(self.model_dir)
         self.capacity = capacity
+        self.split_layer = split_layer
+        self.front_uuid = resolved_front_uuid
+        self.back_uuid = resolved_back_uuid
+        self.front_layer_ids = tuple(range(split_layer))
+        self.back_layer_ids = tuple(range(split_layer, NUM_HIDDEN_LAYERS))
         self._epoch = 0
         self._closed = False
         self.last_validation: list[dict[str, Any]] = []
-        self.front = _WorkerClient("front", v100_uuid, self.model_dir, capacity)
+        self.front = _WorkerClient(
+            "front",
+            resolved_front_uuid,
+            self.model_dir,
+            capacity,
+            0,
+            split_layer,
+        )
         try:
-            self.back = _WorkerClient("back", sm89_uuid, self.model_dir, capacity)
+            self.back = _WorkerClient(
+                "back",
+                resolved_back_uuid,
+                self.model_dir,
+                capacity,
+                split_layer,
+                NUM_HIDDEN_LAYERS,
+            )
             front_ready = self.front.wait_ready()
             back_ready = self.back.wait_ready()
-            _require_exact_shape(
-                front_ready.get("capability"), [7, 0], "front capability"
-            )
-            _require_exact_shape(
-                back_ready.get("capability"), [8, 9], "back capability"
-            )
+            for ready, role, start, end in (
+                (front_ready, "front", 0, split_layer),
+                (back_ready, "back", split_layer, NUM_HIDDEN_LAYERS),
+            ):
+                capability = ready.get("capability")
+                if not isinstance(capability, list) or len(capability) != 2:
+                    raise PipelineProtocolError(
+                        f"{role} worker returned malformed capability"
+                    )
+                parsed_capability = tuple(
+                    _require_exact_int(value, f"{role} capability[{index}]")
+                    for index, value in enumerate(capability)
+                )
+                if parsed_capability not in SUPPORTED_CAPABILITIES:
+                    raise PipelineProtocolError(
+                        f"{role} worker capability {parsed_capability} is not validated"
+                    )
+                if (
+                    _require_exact_int(ready.get("layer_start"), f"{role} layer_start")
+                    != start
+                    or _require_exact_int(ready.get("layer_end"), f"{role} layer_end")
+                    != end
+                    or _require_exact_int(ready.get("capacity"), f"{role} capacity")
+                    != capacity
+                ):
+                    raise PipelineProtocolError(
+                        f"{role} worker READY does not match requested layout"
+                    )
         except Exception:
             self.front.close()
             if hasattr(self, "back"):
@@ -655,7 +745,7 @@ class Qwen35Pipeline:
         )
         self._expect_hidden(front_header, front_payload, tokens)
         stateless_front_routes = self._expect_router_capture(
-            front_header, FRONT_LAYER_IDS, enabled=True
+            front_header, self.front_layer_ids, enabled=True
         )
         back_header, back_payload = self.back.request(
             {
@@ -672,7 +762,7 @@ class Qwen35Pipeline:
         )
         oracle_hidden = self._expect_hidden(back_header, back_payload, 1)
         stateless_back_routes = self._expect_router_capture(
-            back_header, BACK_LAYER_IDS, enabled=True
+            back_header, self.back_layer_ids, enabled=True
         )
         self._check_progress(front_header, back_header, tokens)
         oracle_token, oracle_logits = self._sample(
@@ -775,7 +865,7 @@ class Qwen35Pipeline:
             )
             self._expect_hidden(front_header, front_payload, len(ids))
             cached_front_routes = self._expect_router_capture(
-                front_header, FRONT_LAYER_IDS, enabled=validate_stateless
+                front_header, self.front_layer_ids, enabled=validate_stateless
             )
             back_header, back_payload = self.back.request(
                 {
@@ -792,7 +882,7 @@ class Qwen35Pipeline:
             )
             last_hidden = self._expect_hidden(back_header, back_payload, 1)
             cached_back_routes = self._expect_router_capture(
-                back_header, BACK_LAYER_IDS, enabled=validate_stateless
+                back_header, self.back_layer_ids, enabled=validate_stateless
             )
             self._check_progress(front_header, back_header, len(ids))
             first_token, first_logits = self._sample(
@@ -833,7 +923,7 @@ class Qwen35Pipeline:
                 )
                 self._expect_hidden(front_header, front_payload, 1)
                 cached_front_routes = self._expect_router_capture(
-                    front_header, FRONT_LAYER_IDS, enabled=validate_stateless
+                    front_header, self.front_layer_ids, enabled=validate_stateless
                 )
                 back_header, back_payload = self.back.request(
                     {
@@ -850,7 +940,7 @@ class Qwen35Pipeline:
                 )
                 last_hidden = self._expect_hidden(back_header, back_payload, 1)
                 cached_back_routes = self._expect_router_capture(
-                    back_header, BACK_LAYER_IDS, enabled=validate_stateless
+                    back_header, self.back_layer_ids, enabled=validate_stateless
                 )
                 self._check_progress(front_header, back_header, prefix_len + 1)
                 token, logits = self._sample(
@@ -968,7 +1058,14 @@ def _router_capture_header(
     }
 
 
-def _worker_main(role: str, fd: int, model_dir: str, capacity: int) -> int:
+def _worker_main(
+    role: str,
+    fd: int,
+    model_dir: str,
+    capacity: int,
+    layer_start: int,
+    layer_end: int,
+) -> int:
     # Imports happen only after CUDA_VISIBLE_DEVICES was fixed by Popen.
     import torch
 
@@ -976,8 +1073,20 @@ def _worker_main(role: str, fd: int, model_dir: str, capacity: int) -> int:
 
     if role not in ("front", "back"):
         raise ValueError("worker role must be front or back")
+    if (
+        isinstance(layer_start, bool)
+        or not isinstance(layer_start, int)
+        or isinstance(layer_end, bool)
+        or not isinstance(layer_end, int)
+        or not 0 <= layer_start < layer_end <= NUM_HIDDEN_LAYERS
+    ):
+        raise ValueError("worker layer range is invalid")
+    if (role == "front" and layer_start != 0) or (
+        role == "back" and layer_end != NUM_HIDDEN_LAYERS
+    ):
+        raise ValueError("worker layer range does not match its pipeline role")
     sock = socket.socket(fileno=fd)
-    layer_ids = range(20) if role == "front" else range(20, 40)
+    layer_ids = tuple(range(layer_start, layer_end))
     runner = Qwen35StatelessRunner(
         model_dir,
         layer_ids,
@@ -994,8 +1103,8 @@ def _worker_main(role: str, fd: int, model_dir: str, capacity: int) -> int:
             "role": role,
             "device_name": torch.cuda.get_device_name(),
             "capability": capability,
-            "layer_start": 0 if role == "front" else 20,
-            "layer_end": 20 if role == "front" else 40,
+            "layer_start": layer_start,
+            "layer_end": layer_end,
             "capacity": capacity,
             **_memory_header(torch),
         },
@@ -1150,7 +1259,7 @@ def _worker_main(role: str, fd: int, model_dir: str, capacity: int) -> int:
                         _router_capture_header(
                             torch,
                             router_capture,
-                            FRONT_LAYER_IDS if role == "front" else BACK_LAYER_IDS,
+                            runner.layer_ids,
                         )
                         if router_capture is not None
                         else {}
@@ -1215,7 +1324,7 @@ def _worker_main(role: str, fd: int, model_dir: str, capacity: int) -> int:
                         _router_capture_header(
                             torch,
                             router_capture,
-                            FRONT_LAYER_IDS if role == "front" else BACK_LAYER_IDS,
+                            runner.layer_ids,
                         )
                         if router_capture is not None
                         else {}
@@ -1295,7 +1404,7 @@ def _worker_main(role: str, fd: int, model_dir: str, capacity: int) -> int:
                         _router_capture_header(
                             torch,
                             router_capture,
-                            FRONT_LAYER_IDS if role == "front" else BACK_LAYER_IDS,
+                            runner.layer_ids,
                         )
                         if router_capture is not None
                         else {}
@@ -1383,8 +1492,17 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--max-new-tokens", type=int, default=64)
     parser.add_argument("--capacity", type=int, default=2048)
-    parser.add_argument("--v100-uuid", default=V100_UUID)
-    parser.add_argument("--sm89-uuid", default=SM89_UUID)
+    parser.add_argument(
+        "--front-uuid",
+        help=f"GPU UUID for embedding/front layers/head (default: {DEFAULT_FRONT_UUID})",
+    )
+    parser.add_argument(
+        "--back-uuid",
+        help=f"GPU UUID for the remaining layers (default: {DEFAULT_BACK_UUID})",
+    )
+    parser.add_argument("--split-layer", type=int, default=DEFAULT_SPLIT_LAYER)
+    parser.add_argument("--v100-uuid", help=argparse.SUPPRESS)
+    parser.add_argument("--sm89-uuid", help=argparse.SUPPRESS)
     parser.add_argument("--print-token-ids", action="store_true")
     parser.add_argument(
         "--validate-stateless",
@@ -1395,19 +1513,34 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--worker-role", choices=("front", "back"), help=argparse.SUPPRESS
     )
     parser.add_argument("--worker-fd", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--layer-start", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--layer-end", type=int, help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.worker_role is not None:
-        if args.worker_fd is None:
-            raise SystemExit("--worker-fd is required with --worker-role")
+        if args.worker_fd is None or args.layer_start is None or args.layer_end is None:
+            raise SystemExit(
+                "--worker-fd, --layer-start and --layer-end are required with "
+                "--worker-role"
+            )
         return _worker_main(
-            args.worker_role, args.worker_fd, args.model_dir, args.capacity
+            args.worker_role,
+            args.worker_fd,
+            args.model_dir,
+            args.capacity,
+            args.layer_start,
+            args.layer_end,
         )
-    if args.worker_fd is not None:
-        raise SystemExit("--worker-fd is internal and requires --worker-role")
+    if any(
+        value is not None
+        for value in (args.worker_fd, args.layer_start, args.layer_end)
+    ):
+        raise SystemExit(
+            "worker process options are internal and require --worker-role"
+        )
     prompt = args.prompt if args.prompt is not None else sys.stdin.read()
     if not prompt:
         raise SystemExit("prompt must not be empty")
@@ -1423,6 +1556,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     with Qwen35Pipeline(
         args.model_dir,
         capacity=args.capacity,
+        front_uuid=args.front_uuid,
+        back_uuid=args.back_uuid,
+        split_layer=args.split_layer,
         v100_uuid=args.v100_uuid,
         sm89_uuid=args.sm89_uuid,
     ) as pipeline:

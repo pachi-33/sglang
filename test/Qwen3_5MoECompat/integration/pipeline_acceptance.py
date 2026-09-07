@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manual, repeatable acceptance test for the real Qwen3.5 20/20 pipeline.
+"""Manual, repeatable acceptance test for the real Qwen3.5 layer pipeline.
 
 This is deliberately a standalone executable rather than a ``test_*.py``
 module: it loads the 35B checkpoint into both physical GPUs and takes a
@@ -75,6 +75,9 @@ class PipelineAcceptance:
             "schema_version": 1,
             "model_dir": str(Path(args.model_dir)),
             "capacity": args.capacity,
+            "split_layer": args.split_layer,
+            "front_uuid": args.front_uuid,
+            "back_uuid": args.back_uuid,
             "validation_steps": args.validation_steps,
             "chat_max_new_tokens": args.chat_max_new_tokens,
         }
@@ -84,8 +87,9 @@ class PipelineAcceptance:
             self.pipe = q35.Qwen35Pipeline(
                 self.args.model_dir,
                 capacity=self.args.capacity,
-                v100_uuid=self.args.v100_uuid,
-                sm89_uuid=self.args.sm89_uuid,
+                front_uuid=self.args.front_uuid,
+                back_uuid=self.args.back_uuid,
+                split_layer=self.args.split_layer,
             )
             front, back = self.pipe.worker_info
             self.report["workers"] = {"front": front, "back": back}
@@ -609,8 +613,9 @@ class PipelineAcceptance:
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", default=q35.MODEL_DIR_DEFAULT)
-    parser.add_argument("--v100-uuid", default=q35.V100_UUID)
-    parser.add_argument("--sm89-uuid", default=q35.SM89_UUID)
+    parser.add_argument("--front-uuid", default=q35.DEFAULT_FRONT_UUID)
+    parser.add_argument("--back-uuid", default=q35.DEFAULT_BACK_UUID)
+    parser.add_argument("--split-layer", type=int, default=q35.DEFAULT_SPLIT_LAYER)
     parser.add_argument("--capacity", type=int, default=2048)
     parser.add_argument("--validation-steps", type=int, default=8)
     parser.add_argument("--chat-max-new-tokens", type=int, default=8)
@@ -639,6 +644,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "schema_version": 1,
         "model_dir": str(Path(args.model_dir)),
         "capacity": args.capacity,
+        "split_layer": args.split_layer,
+        "front_uuid": args.front_uuid,
+        "back_uuid": args.back_uuid,
         "validation_steps": args.validation_steps,
         "chat_max_new_tokens": args.chat_max_new_tokens,
     }

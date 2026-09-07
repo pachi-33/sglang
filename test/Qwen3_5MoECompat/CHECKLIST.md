@@ -1,7 +1,8 @@
 # Qwen3.5 SM70/SM89 单请求与无状态路径核对清单
 
 本清单用于代码审阅、复现和验收。范围是文本模型、TP=1，以及 V100/SM70 与
-4070 SUPER/SM89 的固定 20/20 分层推理。生产路径仅维护一个请求：整段 fresh prefill
+4070 SUPER/SM89 的可配置分层推理。生产默认由 4070 负责前 17 层及全局权重，V100
+负责后 23 层。生产路径仅维护一个请求：整段 fresh prefill
 后逐 token decode，上限 2048。另保留 packed sequence 无状态兼容接口。
 不包含视觉、MTP、radix/sstate 管理、分页 KV、NCCL/P2P、批调度或 ModelRunner 服务。
 所有 Python 命令使用 `sglang-v100` 环境；单卡测试暴露一个指定 UUID，流水线由
@@ -25,7 +26,7 @@ controller 在启动前给两个 worker 分别设置 UUID。
 | 原始 0--3 层端到端入口 | `models/qwen3_5_moe.py` | `integration/test_stateless_model.py` | embedding、4 个原始层、final norm 与选择行 LM head 在同一次无 cache 调用中连接。 |
 | SM70/SM89 设备与锁合同 | `runner.py`、`unit/test_environment.py` | `unit/` | runner 接受 capability `(7,0)`/`(8,9)`；GPU 测试严格校验单一 UUID/capability 配对，各卡使用独立 UUID 锁。V100TestCase 是兼容别名。 |
 | 单请求外部 cache | `runner.py` | `integration/test_stateful_runner.py` | runner 所有权、capacity、前缀长度、空/重复 prefill、单 token decode、容量耗尽；执行失败 poison，reset 清 Conv/GDN 与 KV 有效长度。 |
-| 双 worker 分层流水线 | `pipeline.py` | `unit/test_pipeline.py`、`integration/pipeline_acceptance.py` | V100 embed/0–19/norm/head；4070 20–39；独立子进程、带版本 JSON/FP16 帧、CPU staging，epoch/step/prefix/consumed_len 一致后才推进。半步失败 reset 两侧。 |
+| 双 worker 分层流水线 | `pipeline.py` | `unit/test_pipeline.py`、`integration/pipeline_acceptance.py` | 默认 4070 embed/0–16/norm/head、V100 17–39；front/back UUID 与 split 显式可配；独立子进程、带版本 JSON/FP16 帧、CPU staging，epoch/step/prefix/consumed_len 一致后才推进。半步失败 reset 两侧。 |
 | 文本 greedy CLI | `pipeline.py` | `unit/test_pipeline.py`、`integration/pipeline_acceptance.py` | chat template/raw/stdin、二维 merges 内存兼容、逐 tokenizer ID 对照；屏蔽 `[248077,248320)`，EOS `{248046,248044}`；R 个输出只执行 R−1 次 decode。 |
 | 单请求 HTTP API | `pipeline_api.py` | `unit/test_pipeline_api.py`、真实 HTTP smoke | 持久双 worker；`/generate`、models、OpenAI completions/chat；仅 greedy、非流式、n=1。API key 可选；并发请求返回 429；输出 text、usage、finish reason 和精确 token IDs；关闭时由 controller 向独立 session worker 发送 SHUTDOWN。 |
 

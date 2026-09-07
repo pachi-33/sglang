@@ -1,11 +1,11 @@
 # Qwen3.5 MoE on V100 and RTX 4070 SUPER
 
 This suite implements text-only inference for
-`Qwen-AgentWorld-35B-A3B-NVFP4_fp16`, including a fixed 20/20 two-worker pipeline
+`Qwen-AgentWorld-35B-A3B-NVFP4_fp16`, including a configurable two-worker pipeline
 and a single-request cache. Production generation runs one complete prefill,
-then one-token decode calls. V100 owns embedding, layers 0–19, final norm and
-the LM head; RTX 4070 SUPER owns layers 20–39. Each GPU has its own Python
-process, and hidden states travel through CPU memory.
+then one-token decode calls. By default RTX 4070 SUPER owns embedding, layers
+0–16, final norm and the LM head; V100 owns layers 17–39. Each GPU has its own
+Python process, and hidden states travel through CPU memory.
 
 The selected-layer `forward_no_cache` compatibility API, original layers 0–3
 integration, and independent 40-layer precision scan remain available. The
@@ -67,10 +67,10 @@ The cache holds at most 2048 consumed tokens, with one fresh contiguous prompt
 and no subsequent multi-turn append. For a generation limit R, the public
 context check is `prompt_tokens + R <= 2048`. The final sampled token is not
 cached, but it still counts toward this public context limit.
-Each worker owns 15 GDN Conv tails
-`FP16[3,8192]`, 15 recurrent states `FP32[32,128,128]`, and five Full Attention
-K/V pairs `FP16[capacity,2,256]`. At capacity 2048 this is approximately
-50.70 MiB per worker. GDN prefill retains its final recurrent/WY state and raw
+The default front worker owns 13 GDN Conv tails/recurrent states and four Full
+Attention K/V pairs; the back owns 17 GDN states and six Full Attention pairs.
+At capacity 2048 these caches occupy approximately 42.61 MiB and 58.80 MiB,
+respectively. GDN prefill retains its final recurrent/WY state and raw
 QKV tail; Full Attention retains normalized, RoPE-applied K and projected V.
 Decode updates these buffers in place. KV uses a valid length, without paging
 or concatenation.
@@ -106,6 +106,9 @@ startup; do not expose both GPUs inside one worker, because Triton 2.3.1 caches
 its compilation target per process. The tokenizer's two-dimensional merges
 are converted in memory for the legacy Transformers environment. Sampling
 masks head rows `[248077,248320)` and stops on EOS IDs `{248046,248044}`.
+The production defaults are `--front-uuid <4070 UUID>`,
+`--back-uuid <V100 UUID>`, and `--split-layer 17`; these options can also select
+the legacy V100-front 20/20 layout explicitly.
 
 For a full-prefix test oracle, add `--validate-stateless`. This reports
 cached/stateless greedy, hidden/logits error and router diagnostics; full-prefix
@@ -140,10 +143,11 @@ under `meta_info`. Every response or error still ends with the two-worker reset.
 SM70 and SM89 execute the same Qwen3.5 Python/Triton operator sources, compiled
 independently in their worker processes for each architecture; they do not
 share a compiled binary. GPU numeric indices may appear in either order because
-the controller selects physical devices by UUID. The physical roles are not
-interchangeable in this fixed split: the V100 front allocation is about
-13.10 GB, larger than the 4070 SUPER's 12,282 MiB capacity, and the controller
-therefore continues to require SM70 front plus SM89 back.
+the controller selects physical devices by UUID. Physical roles and the split
+are configurable. The validated production layout gives the smaller 4070 front
+17 layers and its global weights; a trial with 18 front layers passed short
+decode but OOMed during 2048-token prefill, so 17 is the safe default. The old
+V100-front/4070-back 20/20 layout remains selectable.
 
 ## Running tests
 
@@ -212,7 +216,7 @@ is 12 GiB at total tokens <=2048.
 
 [VALIDATION_SM70_SM89_PIPELINE.md](VALIDATION_SM70_SM89_PIPELINE.md) records the
 dual-GPU cache contract, branch verification evidence and repeatable pipeline
-acceptance command. Final-code validation passed 122/122 unit tests and 5/5
+acceptance command. Final-code validation passed 126/126 unit tests and 5/5
 real-layer cache tests on each GPU, with no unit skips/errors. The saved
 [pipeline acceptance JSON](reports/pipeline_acceptance.json) has `ok=true`,
 including eight-step greedy agreement, reset/chat determinism and 2048-token

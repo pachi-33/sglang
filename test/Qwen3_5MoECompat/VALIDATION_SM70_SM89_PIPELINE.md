@@ -9,34 +9,36 @@
 
 | 项目 | 固定值 |
 |---|---|
-| 分支/基线 | `feat/qwen3/pp`，base HEAD `f8694feefeea`；本页验证工作树尚未提交 |
+| 分支 | `feat/qwen3/pp`；实现与本页报告一同提交 |
 | 最终验证日期 | 2026-09-08（Asia/Singapore） |
 | 模型 | `/home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16` |
 | Python | `/home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python` |
 | 运行库 | Torch 2.3.1+cu121、Triton 2.3.1；旧 Transformers 4.43.2 tokenizer 兼容 |
-| Front | V100-SXM2-16GB / SM70，`GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96` |
-| Back | RTX 4070 SUPER / SM89，`GPU-75341d61-b0b3-969b-8ef8-4b750d11ade4` |
-| 分层 | Front：embedding、layers 0–19、final norm/head；Back：layers 20–39 |
+| Front（默认） | RTX 4070 SUPER / SM89，`GPU-75341d61-b0b3-969b-8ef8-4b750d11ade4` |
+| Back（默认） | V100-SXM2-16GB / SM70，`GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96` |
+| 分层（默认） | Front：embedding、layers 0–16、final norm/head；Back：layers 17–39 |
 | 请求 | batch=1、一个活跃请求、`prompt + R ≤2048`（R 为生成上限）、greedy |
 
 Controller 不执行 CUDA 计算。两个独立 Python worker 在启动前各自固定 GPU UUID，
 避免 Triton 2.3.1 的进程级 target cache 混用架构。JSON 元数据与连续 FP16 binary
-payload 使用版本化帧；层 19→20 经 CPU 传递 `[P,2048]` prefill 或 4 KiB decode。
-后半层只返回末行，交由 V100 final norm/head。没有 NCCL、P2P 或 pipeline micro-batch。
+payload 使用版本化帧；层 16→17 经 CPU 传递 `[P,2048]` prefill 或 4 KiB decode。
+后半层只返回末行，交由 4070 final norm/head。没有 NCCL、P2P 或 pipeline micro-batch。
+`front_uuid`、`back_uuid` 与 `split_layer` 均为显式配置，role 不绑定 GPU 架构；默认采用
+实测通过的 4070-front 17/23，旧 V100-front 20/20 仍可显式选择。
 
 生命周期是 `BEGIN → PREFILL → DECODE* → RESET/END`。命令校验 epoch、step_id、
 expected_prefix_len、token_count，双方 ACK 的 consumed_len 一致后才推进。
 整数与 shape 字段必须是精确 JSON integer，不能用 bool/float 相等比较冒充。
 执行异常令 cache poisoned，重试同一步被拒绝，必须 reset；任一侧半步失败会 reset 两侧。
 
-每个 worker 在容量 2048 时保留：
+两个 worker 在默认 17/23 切分、容量 2048 时分别保留：
 
-| 状态 | 每层布局 | 20 层 worker 总量 |
-|---|---|---:|
-| GDN recurrent | 15 × FP32 `[32,128,128]` | 30 MiB |
-| GDN Conv tail | 15 × FP16 `[3,8192]` | 0.703125 MiB |
-| Full Attention K/V | 各 5 × FP16 `[2048,2,256]` | 20 MiB |
-| 合计 | 显式外部 single-request cache | 50.703125 MiB |
+| 状态 | 每层布局 | 4070 front（17 层） | V100 back（23 层） |
+|---|---|---:|---:|
+| GDN recurrent | FP32 `[32,128,128]` | 13 层，26 MiB | 17 层，34 MiB |
+| GDN Conv tail | FP16 `[3,8192]` | 13 层，0.609375 MiB | 17 层，0.796875 MiB |
+| Full Attention K/V | 各 FP16 `[2048,2,256]` | 4 层，16 MiB | 6 层，24 MiB |
+| 合计 | 显式外部 single-request cache | 42.609375 MiB | 58.796875 MiB |
 
 整段 fresh prefill 保存 Conv 前 QKV tail（短序列左补零）、GDN FP32 final state、
 Q/K norm 和 RoPE 后 K，以及投影 V。GDN ≤64 使用 recurrent，>64 使用 chunk/WY。
@@ -59,13 +61,13 @@ Q/K norm 和 RoPE 后 K，以及投影 V。GDN ≤64 使用 recurrent，>64 使�
 | 检查 | 最终结果 |
 |---|---|
 | SM89 顺序门 | 现有算子 unit gate 在 cache/流水线实现前通过；设备合同显式支持 SM89，没有用 monkey patch 绕过 V100 gate |
-| 双端完整 unit 回归 | SM89 122/122，SM70 122/122；无 skip/error |
+| 双端完整 unit 回归 | SM89 126/126，SM70 126/126；无 skip/error |
 | 真实层 cache | `integration.test_stateful_runner` 两卡各 5/5；包含 GDN/Full Attention prefill/decode 对照与生命周期检查 |
 | 修复后的 quantization 模块 | SM70 7/7；SM89 7/7 且 FP8 GEMM filtered memcheck 0 errors |
 | 双卡完整模型短序列 | 8 步 cached/stateless greedy token 均一致 |
 | A→reset→B→reset→A | A1/A2 IDs 均 `[11,271]`；B 为 `[271,248068]` |
 | Chat 连续两次 | IDs 均 `[90700,8340,25,271,16,13,220,2972]`，输出有限 |
-| HTTP API 与 GPU index 倒序 | 父进程按 V100、4070 顺序暴露时，worker 仍按 UUID 正确落卡；native/completions/chat 均为 HTTP 200，auth 401/200 合同通过 |
+| HTTP API 与物理角色交换 | 默认 4070 front、V100 back；worker READY 的 capability 和 0–16/17–39 范围正确；native/completions/chat 均为 HTTP 200，auth 401/200 合同通过 |
 | 完整双卡 acceptance | `ok=true`；容量/epoch/step 错误、半步失败恢复和 reset 显存检查通过 |
 
 8 步 cached/stateless 对照 token IDs：
@@ -80,29 +82,33 @@ Q/K norm 和 RoPE 后 K，以及投影 V。GDN ≤64 使用 recurrent，>64 使�
 | Step | Hidden NRMSE | Hidden max abs | Logits NRMSE | Logits max abs | Router mismatch slots | Router max prob abs |
 |---:|---:|---:|---:|---:|---:|---:|
 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| 1 | 0.0747236681 | 0.2890625 | 0.0845591077 | 0.984375 | 78 | 0.0232492536 |
-| 2 | 0.0662831658 | 0.3525390625 | 0.0741677708 | 0.64697265625 | 57 | 0.0232411176 |
-| 3 | 0.0447978929 | 0.173828125 | 0.0383788166 | 0.517578125 | 62 | 0.0281289220 |
-| 4 | 0.0495112218 | 0.392578125 | 0.0418968353 | 0.453125 | 70 | 0.0204403102 |
-| 5 | 0.0502872879 | 0.40625 | 0.0475888384 | 0.64453125 | 63 | 0.0170825720 |
-| 6 | 0.0351109406 | 0.21875 | 0.0297773969 | 0.359375 | 107 | 0.0175738037 |
-| 7 | 0.0408874003 | 0.234375 | 0.0272356850 | 0.4462890625 | 50 | 0.0134279281 |
+| 1 | 0.0880324941 | 0.328125 | 0.0644059171 | 0.97265625 | 68 | 0.0213265419 |
+| 2 | 0.0606885125 | 0.224853515625 | 0.0797930527 | 0.75390625 | 55 | 0.0192497969 |
+| 3 | 0.0504031262 | 0.265625 | 0.0501716776 | 0.51495361328125 | 79 | 0.0195047855 |
+| 4 | 0.0452422605 | 0.123046875 | 0.0385278462 | 0.48828125 | 58 | 0.0231304467 |
+| 5 | 0.0434926619 | 0.11328125 | 0.0402171735 | 0.478271484375 | 58 | 0.0187364966 |
+| 6 | 0.0405510709 | 0.103515625 | 0.0417209150 | 0.48828125 | 124 | 0.0309149623 |
+| 7 | 0.0335850120 | 0.21484375 | 0.0273354563 | 0.39453125 | 60 | 0.0208339095 |
 
 这些诊断不能描述为满足局部 kernel 的 5e-3 预算，也不意味着 hidden/logits 或 router
 逐项相同。`--validate-stateless` 启用完整前缀及 router 对照；生产生成不捕获 router。
 
-| 显存测量 | V100 allocated | 4070 SUPER allocated |
+| 显存测量 | 4070 SUPER front allocated | V100 back allocated |
 |---|---:|---:|
-| 权重与 capacity-2048 cache 加载后 | 13,096,510,464 B | 11,062,268,928 B |
-| 2048 fresh prefill peak | 13,395,545,600 B | 11,360,799,232 B |
-| 首 decode peak（1-token prefill，prefix_len=1） | 13,166,853,120 B | 11,132,114,432 B |
-| 预热后三轮 reset 后稳定值 | 13,097,016,832 B | 11,062,278,144 B |
+| 权重与 capacity-2048 cache 加载后 | 11,611,956,736 B | 12,546,822,656 B |
+| 2048 fresh prefill peak | 11,910,991,872 B | 12,845,352,960 B |
+| 首 decode peak（1-token prefill，prefix_len=1） | 11,682,299,392 B | 12,616,668,160 B |
+| 预热后三轮 reset 后稳定值 | 11,612,463,104 B | 12,546,831,872 B |
 
-以上案例无 OOM；三轮 reset 的 allocated 与 reserved 都逐字节稳定，reserved 分别为
-V100 13,608,419,328 B、4070 SUPER 11,473,518,592 B。首 decode 列是 1-token prefill
+以上 17/23 案例无 OOM；三轮 reset 的 allocated 与 reserved 都逐字节稳定，reserved 分别为
+4070 SUPER 12,119,441,408 B、V100 12,949,913,600 B。首 decode 列是 1-token prefill
 后首次 decode 完成时的累计 peak，不是单独区间峰值；它不能改称 2048-token prefill 后
 decode。容量 2048 已满时追加 decode 按合同拒绝。脚本分别测量 full-capacity prefill
 与短 prefill/decode，报告中的 prefix_len 应与峰值一起解释。
+
+选择 17 层不是只按权重估算：4070-front 18/22 曾实际加载并完成短 prefill/decode，
+但在 2048 prefill 的 GDN 临时张量分配处 OOM（请求再分配 20 MiB 时失败）。因此生产
+默认回退为 17/23；18/22 不属于通过配置。
 
 错误恢复字段均包含实际 reset 后的新请求 token。真实半步故障中，front 的 step 1
 先返回 `consumed_len=2`，随后 back 因注入的 prefix mismatch 拒绝并 poison；公共
@@ -170,10 +176,10 @@ chat 为 `请用一句话解释 KV 缓存。`；不要把此前不同 B prompt �
 
 HTTP 服务入口为 `-m sglang.srt.layers.qwen3_5.pipeline_api`，提供 `/generate`、
 `/v1/models`、`/v1/completions` 与 `/v1/chat/completions`。真实 smoke 在父进程
-`CUDA_VISIBLE_DEVICES=V100_UUID,4070_UUID`（与机器 GPU index 顺序相反）下完成：
-completion `Hello` 返回 IDs `[11,271]`，chat 返回 `[90700,8340]`，worker 进程查询
-确认 front 位于 V100、back 位于 4070。两卡使用相同算子源码但独立 JIT target；不能把
-物理角色互换，因为约 13.10 GB 的 front 权重/cache 超过 4070 的 12,282 MiB 容量。
+默认 4070-front 17/23 配置下完成：completion `Hello` 返回 IDs `[11,271]`，chat
+返回 `[90700,8340]`，worker READY 确认 front 位于 SM89、back 位于 SM70。两卡使用
+相同算子源码但独立 JIT target。API CLI 同样暴露 `--front-uuid`、`--back-uuid` 和
+`--split-layer`；GPU index 顺序不会影响 UUID 选卡。
 
 当前支持范围为单请求连续状态、文本 greedy CLI 与非流式 HTTP API；多轮 append、
 prefix sharing、radix attention、通用 sstate、分页 KV、服务端调度、视觉/MTP、

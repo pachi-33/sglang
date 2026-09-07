@@ -5,7 +5,7 @@ Current branch: `feat/qwen3/pp`; M0–M5 below preserve the earlier
 
 The implementation preserves the checkpoint's 130 FP8 W8A8 attention matrices
 and 29,184 NVFP4 W4A4 routed-expert matrices. All layer numbers are zero based.
-Production compute uses Triton on validated SM70 and SM89. The fixed 20/20
+Production compute uses Triton on validated SM70 and SM89. The configurable
 pipeline keeps one request's Conv tail, FP32 GDN state and continuous Full
 Attention KV across prefill/decode calls. The selected-layer stateless API
 remains call-local. M0–M5 measurements below retain their original SM70 scope;
@@ -16,10 +16,10 @@ new pipeline evidence is recorded separately rather than assigned their hashes.
 - Python: `/home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python`.
 - Initial packages: Python 3.10, torch 2.3.1+cu121, Triton 2.3.1,
   transformers 4.43.2, safetensors 0.8.0, numpy 1.26.4.
-- Front device: Tesla V100-SXM2-16GB, SM70,
-  `GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96`.
-- Back device: RTX 4070 SUPER, SM89,
-  `GPU-75341d61-b0b3-969b-8ef8-4b750d11ade4`.
+- Default front device: RTX 4070 SUPER, SM89,
+  `GPU-75341d61-b0b3-969b-8ef8-4b750d11ade4`, layers 0–16 plus globals.
+- Default back device: Tesla V100-SXM2-16GB, SM70,
+  `GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96`, layers 17–39.
 - GPU tests use one visible UUID and acquire
   `/tmp/qwen35-gpu-<UUID>-sm<capability>.lock`; V100-only benchmark/scan commands
   share the V100 UUID lock. Historical sections may mention the former lock.
@@ -65,8 +65,8 @@ chronological evidence, including limitations subsequently resolved.
 | M5 | Performance / backend audit and documentation | Passed: fusion/packing comparisons, final-source Triton audit, complete design/checklist |
 | P0 | Explicit SM70/SM89 correctness contract | Original SM89 unit gate passed before cache implementation; expanded dual-device regression recorded separately |
 | P1 | Single-request Conv/GDN/KV cache and decode | Implemented; kernel and real-layer continuity/lifecycle tests available |
-| P2 | Fixed 20/20 dual-worker greedy CLI | Implemented; cached/stateless greedy, reset/chat determinism and memory measurements recorded in pipeline validation |
-| P3 | Persistent single-request HTTP API | Implemented; native and non-streaming OpenAI completion/chat routes, auth, strict greedy contract, 429 concurrency guard and reversed parent GPU-index smoke passed |
+| P2 | Configurable dual-worker greedy CLI | Implemented; default SM89-front 17/23 split passed 2048 prefill; cached/stateless greedy, reset/chat determinism and memory measurements recorded in pipeline validation |
+| P3 | Persistent single-request HTTP API | Implemented; configurable front/back/split, native and non-streaming OpenAI completion/chat routes, auth, strict greedy contract and 429 concurrency guard |
 
 The P0–P3 evidence, exact command lines, failure investigation and remaining
 measurement distinctions are in

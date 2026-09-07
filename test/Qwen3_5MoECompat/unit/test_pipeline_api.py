@@ -254,6 +254,26 @@ class TestPipelineAPI(unittest.TestCase):
         self.assertEqual(response.json()["error"]["type"], "worker_error")
         self.assertEqual(len(fake.calls), 1)
 
+    def test_server_cli_exposes_front_back_and_split_layout(self):
+        defaults = pipeline_api._parse_args([])
+        self.assertIsNone(defaults.front_uuid)
+        self.assertIsNone(defaults.back_uuid)
+        self.assertEqual(defaults.split_layer, 17)
+
+        configured = pipeline_api._parse_args(
+            [
+                "--front-uuid",
+                "GPU-front",
+                "--back-uuid",
+                "GPU-back",
+                "--split-layer",
+                "13",
+            ]
+        )
+        self.assertEqual(configured.front_uuid, "GPU-front")
+        self.assertEqual(configured.back_uuid, "GPU-back")
+        self.assertEqual(configured.split_layer, 13)
+
 
 if __name__ == "__main__":
     unittest.main()
