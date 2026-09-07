@@ -1,4 +1,4 @@
-"""A deliberately small stateless runner for selected Qwen3.5 layers."""
+"""A small Qwen3.5 layer runner with stateless and single-request paths."""
 
 from __future__ import annotations
 
@@ -8,14 +8,17 @@ from typing import Iterable, Mapping
 
 import torch
 
-from .attention import causal_gqa
+from .attention import causal_gqa, causal_gqa_decode
 from .checkpoint import Qwen35Checkpoint
 from .dense import fp16_embedding, linear_fp16
 from .gdn import (
     chunk_gdn,
     depthwise_conv4_silu,
+    depthwise_conv4_silu_decode,
     l2_normalize_qk,
     prepare_gates,
+    recurrent_gdn,
+    recurrent_gdn_decode,
     recurrent_gdn_short_output,
 )
 from .model_ops import (
@@ -49,8 +52,46 @@ class StatelessLayer:
         return "linear_attn.in_proj_qkv" in self.weights
 
 
+@dataclass
+class GDNLayerCache:
+    """Persistent state for one Gated DeltaNet layer and one request."""
+
+    conv_history: torch.Tensor
+    recurrent_state: torch.Tensor
+
+
+@dataclass
+class FullAttentionLayerCache:
+    """Continuous, logical-position KV storage for one full-attention layer."""
+
+    key: torch.Tensor
+    value: torch.Tensor
+
+
+LayerCache = GDNLayerCache | FullAttentionLayerCache
+RouterCapture = dict[int, tuple[torch.Tensor, torch.Tensor]]
+
+
+@dataclass
+class SingleRequestCache:
+    """Explicit cache owned by one runner and one active request at a time."""
+
+    capacity: int
+    device: torch.device
+    layer_ids: tuple[int, ...]
+    layers: dict[int, LayerCache]
+    owner_id: int
+    consumed_len: int = 0
+    poisoned: bool = False
+
+
 class Qwen35StatelessRunner:
-    """Executes a selected original-layer slice with no KV or recurrent state."""
+    """Execute a selected original-layer slice.
+
+    ``forward_hidden`` remains the packed, stateless compatibility API.  The
+    prefill/decode methods use an explicit :class:`SingleRequestCache`; the
+    runner itself never shares prefix state between cache objects or requests.
+    """
 
     def __init__(
         self,
@@ -69,10 +110,14 @@ class Qwen35StatelessRunner:
             if requested_device.index is None
             else requested_device
         )
-        if not torch.cuda.is_available() or torch.cuda.get_device_capability(
-            self.device
-        ) != (7, 0):
-            raise RuntimeError("Qwen3.5 compatibility runner requires an SM70 V100")
+        if not torch.cuda.is_available():
+            raise RuntimeError("Qwen3.5 compatibility runner requires CUDA")
+        capability = torch.cuda.get_device_capability(self.device)
+        if capability not in ((7, 0), (8, 9)):
+            raise RuntimeError(
+                "Qwen3.5 compatibility runner supports only validated "
+                f"SM70/SM89 devices, got SM{capability[0]}{capability[1]}"
+            )
         ids = tuple(layer_ids)
         if (
             not ids
@@ -91,6 +136,71 @@ class Qwen35StatelessRunner:
         self.global_weights = (
             loader.load_global_tensors(self.device) if load_globals else None
         )
+
+    def allocate_request_cache(self, capacity: int = 2048) -> SingleRequestCache:
+        """Allocate fixed-capacity, batch-one state for this runner's layers."""
+        if (
+            isinstance(capacity, bool)
+            or not isinstance(capacity, int)
+            or not 1 <= capacity <= 2048
+        ):
+            raise ValueError("cache capacity must be a Python int in [1,2048]")
+        caches: dict[int, LayerCache] = {}
+        for layer in self.layers:
+            if layer.is_gdn:
+                caches[layer.layer_id] = GDNLayerCache(
+                    conv_history=torch.zeros(
+                        (3, 8192), device=self.device, dtype=torch.float16
+                    ),
+                    recurrent_state=torch.zeros(
+                        (32, 128, 128), device=self.device, dtype=torch.float32
+                    ),
+                )
+            else:
+                caches[layer.layer_id] = FullAttentionLayerCache(
+                    key=torch.empty(
+                        (capacity, 2, 256), device=self.device, dtype=torch.float16
+                    ),
+                    value=torch.empty(
+                        (capacity, 2, 256), device=self.device, dtype=torch.float16
+                    ),
+                )
+        return SingleRequestCache(
+            capacity=capacity,
+            device=self.device,
+            layer_ids=self.layer_ids,
+            layers=caches,
+            owner_id=id(self),
+        )
+
+    def _validate_request_cache(self, cache: SingleRequestCache) -> None:
+        if not isinstance(cache, SingleRequestCache):
+            raise TypeError("cache must be a SingleRequestCache")
+        if (
+            cache.owner_id != id(self)
+            or cache.device != self.device
+            or cache.layer_ids != self.layer_ids
+        ):
+            raise ValueError("cache belongs to a different Qwen3.5 runner")
+        if cache.poisoned:
+            raise RuntimeError("request cache is poisoned; reset it before reuse")
+
+    def reset_request_cache(self, cache: SingleRequestCache) -> None:
+        """Invalidate KV and explicitly clear all recurrent/Conv state."""
+        if not isinstance(cache, SingleRequestCache):
+            raise TypeError("cache must be a SingleRequestCache")
+        if (
+            cache.owner_id != id(self)
+            or cache.device != self.device
+            or cache.layer_ids != self.layer_ids
+        ):
+            raise ValueError("cache belongs to a different Qwen3.5 runner")
+        for layer_cache in cache.layers.values():
+            if isinstance(layer_cache, GDNLayerCache):
+                layer_cache.conv_history.zero_()
+                layer_cache.recurrent_state.zero_()
+        cache.consumed_len = 0
+        cache.poisoned = False
 
     def _gdn(
         self,
@@ -164,11 +274,140 @@ class Qwen35StatelessRunner:
         )
         return projected
 
+    def _gdn_prefill(
+        self,
+        hidden: torch.Tensor,
+        layer: StatelessLayer,
+        layer_cache: GDNLayerCache,
+        cu_seqlens: torch.Tensor,
+    ) -> torch.Tensor:
+        """Fresh, single-sequence GDN prefill that captures continuation state."""
+        w = layer.weights
+        normed = gemma_rms_norm(hidden, w["input_layernorm.weight"])
+        a8 = quantize_fp8(normed)
+        qkv_z = linear_fp8(a8, w["linear_attn.in_proj_qkv_z"])
+        qkv, z = qkv_z[:, :8192], qkv_z[:, 8192:]
+        ba = linear_fp16(normed, w["linear_attn.in_proj_ba"])
+        b, a = ba[:, :32], ba[:, 32:]
+        conv = depthwise_conv4_silu(
+            qkv, w["linear_attn.conv1d.weight"], None, cu_seqlens
+        )
+        history_rows = min(3, qkv.shape[0])
+        layer_cache.conv_history.zero_()
+        layer_cache.conv_history[-history_rows:].copy_(qkv[-history_rows:])
+        q, k, v = split_gdn_qkv(conv)
+        q, k = l2_normalize_qk(q, k)
+        decay, beta = prepare_gates(
+            a, b, w["linear_attn.A_log"], w["linear_attn.dt_bias"]
+        )
+        if hidden.shape[0] <= 64:
+            attended, final_state = recurrent_gdn(
+                q, k, v, decay, beta, cu_seqlens, hidden.shape[0]
+            )
+        else:
+            attended, final_state = chunk_gdn(
+                q, k, v, decay, beta, cu_seqlens, hidden.shape[0]
+            )
+        layer_cache.recurrent_state.copy_(final_state[0])
+        out_a8 = gated_gdn_fp8(attended, z, w["linear_attn.norm.weight"])
+        return linear_fp8(out_a8, w["linear_attn.out_proj"])
+
+    def _gdn_decode(
+        self,
+        hidden: torch.Tensor,
+        layer: StatelessLayer,
+        layer_cache: GDNLayerCache,
+    ) -> torch.Tensor:
+        """Advance one GDN layer by exactly one logical token."""
+        w = layer.weights
+        normed = gemma_rms_norm(hidden, w["input_layernorm.weight"])
+        a8 = quantize_fp8(normed)
+        qkv_z = linear_fp8(a8, w["linear_attn.in_proj_qkv_z"])
+        qkv, z = qkv_z[:, :8192], qkv_z[:, 8192:]
+        ba = linear_fp16(normed, w["linear_attn.in_proj_ba"])
+        b, a = ba[:, :32], ba[:, 32:]
+        conv = depthwise_conv4_silu_decode(
+            qkv,
+            w["linear_attn.conv1d.weight"],
+            None,
+            layer_cache.conv_history,
+        )
+        q, k, v = split_gdn_qkv(conv)
+        q, k = l2_normalize_qk(q, k)
+        decay, beta = prepare_gates(
+            a, b, w["linear_attn.A_log"], w["linear_attn.dt_bias"]
+        )
+        attended = recurrent_gdn_decode(
+            q, k, v, decay, beta, layer_cache.recurrent_state
+        )
+        out_a8 = gated_gdn_fp8(attended, z, w["linear_attn.norm.weight"])
+        return linear_fp8(out_a8, w["linear_attn.out_proj"])
+
+    def _full_attention_prefill(
+        self,
+        hidden: torch.Tensor,
+        layer: StatelessLayer,
+        layer_cache: FullAttentionLayerCache,
+        positions: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+    ) -> torch.Tensor:
+        """Fresh full-attention prefill with continuous KV capture."""
+        w = layer.weights
+        normed = gemma_rms_norm(hidden, w["input_layernorm.weight"])
+        a8 = quantize_fp8(normed)
+        qkv = linear_fp8(a8, w["self_attn.qkv_proj"])
+        qgate, k, vflat = qkv[:, :8192], qkv[:, 8192:8704], qkv[:, 8704:]
+        q, k, gate = full_qk_rope_gate(
+            qgate,
+            k,
+            positions,
+            w["self_attn.q_norm.weight"],
+            w["self_attn.k_norm.weight"],
+        )
+        value = vflat.view(vflat.shape[0], 2, 256)
+        layer_cache.key[: hidden.shape[0]].copy_(k)
+        layer_cache.value[: hidden.shape[0]].copy_(value)
+        attended = causal_gqa(q, k, value, cu_seqlens, hidden.shape[0])
+        return linear_fp8(gated_attention_fp8(attended, gate), w["self_attn.o_proj"])
+
+    def _full_attention_decode(
+        self,
+        hidden: torch.Tensor,
+        layer: StatelessLayer,
+        layer_cache: FullAttentionLayerCache,
+        position: torch.Tensor,
+        prefix_len: int,
+    ) -> torch.Tensor:
+        """Append one K/V pair and attend the current Q to the valid prefix."""
+        w = layer.weights
+        normed = gemma_rms_norm(hidden, w["input_layernorm.weight"])
+        a8 = quantize_fp8(normed)
+        qkv = linear_fp8(a8, w["self_attn.qkv_proj"])
+        qgate, k, vflat = qkv[:, :8192], qkv[:, 8192:8704], qkv[:, 8704:]
+        q, k, gate = full_qk_rope_gate(
+            qgate,
+            k,
+            position,
+            w["self_attn.q_norm.weight"],
+            w["self_attn.k_norm.weight"],
+        )
+        layer_cache.key[prefix_len].copy_(k[0])
+        layer_cache.value[prefix_len].copy_(vflat.view(2, 256))
+        attended = causal_gqa_decode(
+            q, layer_cache.key, layer_cache.value, prefix_len + 1
+        )
+        return linear_fp8(gated_attention_fp8(attended, gate), w["self_attn.o_proj"])
+
     def _moe(
-        self, hidden: torch.Tensor, normalized: torch.Tensor, layer: StatelessLayer
+        self,
+        hidden: torch.Tensor,
+        normalized: torch.Tensor,
+        layer: StatelessLayer,
+        *,
+        router_capture: RouterCapture | None = None,
     ) -> torch.Tensor:
         w = layer.weights
-        return fused_moe(
+        result = fused_moe(
             normalized,
             MoeWeights(
                 router=w["mlp.gate"],
@@ -179,7 +418,130 @@ class Qwen35StatelessRunner:
                 shared_gate=w["mlp.shared_expert_gate"],
             ),
             residual=hidden,
+            capture_router=router_capture is not None,
         )
+        if router_capture is None:
+            return result
+        output, ids, probabilities = result
+        # Keep only the last logical token.  This is deliberately a CUDA view:
+        # the pipeline's validation worker is the sole caller that later makes
+        # an explicit D2H copy for its compact diagnostic frame.
+        router_capture[layer.layer_id] = (ids[-1], probabilities[-1])
+        return output
+
+    def _finish_layer(
+        self,
+        hidden: torch.Tensor,
+        projected: torch.Tensor,
+        layer: StatelessLayer,
+        *,
+        router_capture: RouterCapture | None = None,
+    ) -> torch.Tensor:
+        hidden, post_norm = residual_add_gemma_rms_norm(
+            hidden, projected, layer.weights["post_attention_layernorm.weight"]
+        )
+        return self._moe(hidden, post_norm, layer, router_capture=router_capture)
+
+    def prefill_hidden(
+        self,
+        hidden: torch.Tensor,
+        *,
+        cache: SingleRequestCache,
+        router_capture: RouterCapture | None = None,
+    ) -> torch.Tensor:
+        """Run one nonempty fresh sequence and populate its continuation cache."""
+        _require_cuda_matrix(hidden, "hidden_states")
+        self._validate_request_cache(cache)
+        if hidden.device != self.device:
+            raise ValueError("hidden_states must be on the runner's CUDA device")
+        tokens = hidden.shape[0]
+        if not 1 <= tokens <= cache.capacity:
+            raise ValueError("prefill length must be in [1, cache.capacity]")
+        if cache.consumed_len != 0:
+            raise RuntimeError("prefill requires an empty request cache")
+        positions = torch.arange(tokens, device=self.device, dtype=torch.int32)
+        cu_seqlens = torch.tensor([0, tokens], device=self.device, dtype=torch.int32)
+        try:
+            for layer in self.layers:
+                layer_cache = cache.layers[layer.layer_id]
+                if layer.is_gdn:
+                    if not isinstance(layer_cache, GDNLayerCache):
+                        raise TypeError("GDN layer received a full-attention cache")
+                    projected = self._gdn_prefill(
+                        hidden, layer, layer_cache, cu_seqlens
+                    )
+                else:
+                    if not isinstance(layer_cache, FullAttentionLayerCache):
+                        raise TypeError("full-attention layer received a GDN cache")
+                    projected = self._full_attention_prefill(
+                        hidden, layer, layer_cache, positions, cu_seqlens
+                    )
+                hidden = self._finish_layer(
+                    hidden, projected, layer, router_capture=router_capture
+                )
+            # Cache progress is transactional: surface asynchronous kernel
+            # failures before publishing a new consumed length.  The pipeline
+            # immediately performs a D2H boundary copy anyway, so this does not
+            # add another synchronization to its production critical path.
+            torch.cuda.synchronize(self.device)
+        except Exception:
+            cache.poisoned = True
+            raise
+        cache.consumed_len = tokens
+        return hidden
+
+    def decode_hidden(
+        self,
+        hidden: torch.Tensor,
+        *,
+        cache: SingleRequestCache,
+        expected_prefix_len: int,
+        router_capture: RouterCapture | None = None,
+    ) -> torch.Tensor:
+        """Advance an existing single-sequence cache by one token."""
+        _require_cuda_matrix(hidden, "hidden_states")
+        self._validate_request_cache(cache)
+        if hidden.device != self.device:
+            raise ValueError("hidden_states must be on the runner's CUDA device")
+        if hidden.shape[0] != 1:
+            raise ValueError("decode_hidden requires exactly one token")
+        if isinstance(expected_prefix_len, bool) or not isinstance(
+            expected_prefix_len, int
+        ):
+            raise TypeError("expected_prefix_len must be a Python int")
+        if expected_prefix_len != cache.consumed_len:
+            raise RuntimeError(
+                f"expected prefix {expected_prefix_len}, cache has "
+                f"{cache.consumed_len} tokens"
+            )
+        if cache.consumed_len == 0:
+            raise RuntimeError("decode requires a completed prefill")
+        if cache.consumed_len >= cache.capacity:
+            raise RuntimeError("request cache capacity is exhausted")
+        prefix_len = cache.consumed_len
+        position = torch.tensor([prefix_len], device=self.device, dtype=torch.int32)
+        try:
+            for layer in self.layers:
+                layer_cache = cache.layers[layer.layer_id]
+                if layer.is_gdn:
+                    if not isinstance(layer_cache, GDNLayerCache):
+                        raise TypeError("GDN layer received a full-attention cache")
+                    projected = self._gdn_decode(hidden, layer, layer_cache)
+                else:
+                    if not isinstance(layer_cache, FullAttentionLayerCache):
+                        raise TypeError("full-attention layer received a GDN cache")
+                    projected = self._full_attention_decode(
+                        hidden, layer, layer_cache, position, prefix_len
+                    )
+                hidden = self._finish_layer(
+                    hidden, projected, layer, router_capture=router_capture
+                )
+            torch.cuda.synchronize(self.device)
+        except Exception:
+            cache.poisoned = True
+            raise
+        cache.consumed_len = prefix_len + 1
+        return hidden
 
     def forward_hidden(
         self,
@@ -188,6 +550,7 @@ class Qwen35StatelessRunner:
         positions: torch.Tensor,
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
+        router_capture: RouterCapture | None = None,
     ) -> torch.Tensor:
         _require_cuda_matrix(hidden, "hidden_states")
         if hidden.device != self.device:
@@ -202,8 +565,27 @@ class Qwen35StatelessRunner:
                 positions=positions,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                router_capture=router_capture,
             )
         return hidden
+
+    def forward_no_cache(
+        self,
+        hidden: torch.Tensor,
+        *,
+        positions: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_seqlen: int,
+        router_capture: RouterCapture | None = None,
+    ) -> torch.Tensor:
+        """Compatibility name for the packed stateless execution path."""
+        return self.forward_hidden(
+            hidden,
+            positions=positions,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
+            router_capture=router_capture,
+        )
 
     def forward_layer(
         self,
@@ -213,6 +595,7 @@ class Qwen35StatelessRunner:
         positions: torch.Tensor,
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
+        router_capture: RouterCapture | None = None,
     ) -> torch.Tensor:
         """Run one explicitly loaded original layer, without global tensors.
 
@@ -237,10 +620,9 @@ class Qwen35StatelessRunner:
             if layer.is_gdn
             else self._full_attention(hidden, layer, positions, cu_seqlens, max_seqlen)
         )
-        hidden, post_norm = residual_add_gemma_rms_norm(
-            hidden, projected, layer.weights["post_attention_layernorm.weight"]
+        return self._finish_layer(
+            hidden, projected, layer, router_capture=router_capture
         )
-        return self._moe(hidden, post_norm, layer)
 
     def embed(self, input_ids: torch.Tensor) -> torch.Tensor:
         if self.global_weights is None:

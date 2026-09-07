@@ -9,6 +9,7 @@ import os
 import statistics
 import time
 from pathlib import Path
+from test.Qwen3_5MoECompat.unit.test_environment import V100_GPU_LOCK_PATH
 
 import torch
 
@@ -111,7 +112,7 @@ def main() -> None:
         raise RuntimeError("set CUDA_VISIBLE_DEVICES to the required V100 UUID")
     if torch.cuda.get_device_capability() != (7, 0):
         raise RuntimeError(f"expected SM70, got {torch.cuda.get_device_capability()}")
-    lock = open("/tmp/qwen35-v100-gpu.lock", "a+")
+    lock = open(V100_GPU_LOCK_PATH, "a+")
     fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
     layer = Qwen35Checkpoint(ROOT).load_layer(1, device="cuda")
     records = []

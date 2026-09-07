@@ -1,21 +1,28 @@
-# Qwen3.5 MoE V100 implementation milestones
+# Qwen3.5 MoE SM70/SM89 implementation milestones
 
-Branch: `feat/qwen3/compat`.
+Current branch: `feat/qwen3/pp`; M0–M5 below preserve the earlier
+`feat/qwen3/compat` stateless implementation evidence.
 
 The implementation preserves the checkpoint's 130 FP8 W8A8 attention matrices
 and 29,184 NVFP4 W4A4 routed-expert matrices. All layer numbers are zero based.
-Production compute uses Triton on SM70. No persistent inference cache is part of
-this implementation. Temporary Conv, attention and FP32 GDN state are local to a
-single full-sequence call.
+Production compute uses Triton on validated SM70 and SM89. The fixed 20/20
+pipeline keeps one request's Conv tail, FP32 GDN state and continuous Full
+Attention KV across prefill/decode calls. The selected-layer stateless API
+remains call-local. M0–M5 measurements below retain their original SM70 scope;
+new pipeline evidence is recorded separately rather than assigned their hashes.
 
 ## Environment and review contract
 
 - Python: `/home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python`.
 - Initial packages: Python 3.10, torch 2.3.1+cu121, Triton 2.3.1,
   transformers 4.43.2, safetensors 0.8.0, numpy 1.26.4.
-- Device: Tesla V100-SXM2-16GB, SM70,
+- Front device: Tesla V100-SXM2-16GB, SM70,
   `GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96`.
-- All GPU tests and benchmarks take `/tmp/qwen35-v100-gpu.lock`.
+- Back device: RTX 4070 SUPER, SM89,
+  `GPU-75341d61-b0b3-969b-8ef8-4b750d11ade4`.
+- GPU tests use one visible UUID and acquire
+  `/tmp/qwen35-gpu-<UUID>-sm<capability>.lock`; V100-only benchmark/scan commands
+  share the V100 UUID lock. Historical sections may mention the former lock.
 - Astra ultra owns numerical/interface review. Terra agents implement code.
   Only the root coordinator stages explicit paths and commits milestones.
 - Reference checkout: local SGLang `4349538c02e1566a1424510d5ac3ae853f49feef`.
@@ -56,6 +63,13 @@ chronological evidence, including limitations subsequently resolved.
 | M3 | All 40 real layers independently checked | Passed: v4 independent math/semantic references, all 256 experts per layer |
 | M4 | Real layers 0-3 integration | Passed, including natural sequence isolation and both T2048 memory gates |
 | M5 | Performance / backend audit and documentation | Passed: fusion/packing comparisons, final-source Triton audit, complete design/checklist |
+| P0 | Explicit SM70/SM89 correctness contract | Original SM89 unit gate passed before cache implementation; expanded dual-device regression recorded separately |
+| P1 | Single-request Conv/GDN/KV cache and decode | Implemented; kernel and real-layer continuity/lifecycle tests available |
+| P2 | Fixed 20/20 dual-worker greedy CLI | Implemented; cached/stateless greedy, reset/chat determinism and memory measurements recorded in pipeline validation |
+
+The P0–P2 evidence, exact command lines, failure investigation and remaining
+measurement distinctions are in
+[VALIDATION_SM70_SM89_PIPELINE.md](VALIDATION_SM70_SM89_PIPELINE.md).
 
 ## Pre-implementation feasibility evidence
 

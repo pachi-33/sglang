@@ -299,9 +299,9 @@ def split_gdn_qkv(
         or conv.shape[1] != 8192
         or conv.dtype != torch.float16
         or not conv.is_cuda
-        or not conv.is_contiguous()
+        or conv.stride() != (8192, 1)
     ):
-        raise ValueError("conv must be contiguous CUDA FP16 [T,8192]")
+        raise ValueError("conv must be canonical contiguous CUDA FP16 [T,8192]")
     t = conv.shape[0]
     q = torch.empty((t, 16, 128), dtype=conv.dtype, device=conv.device)
     k = torch.empty_like(q)

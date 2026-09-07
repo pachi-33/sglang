@@ -18,7 +18,7 @@ from sglang.srt.layers.qwen3_5.quantization import (
     quantize_nvfp4,
     unpack_e2m1,
 )
-from sglang.srt.layers.qwen3_5.weights import Weight
+from sglang.srt.layers.qwen3_5.weights import QuantActivation, Weight
 
 
 class TestQwen35Quantization(V100TestCase):
@@ -116,6 +116,43 @@ class TestQwen35Quantization(V100TestCase):
             torch.ones((2, 16), dtype=torch.float16, device="cuda"),
         )
         self.assertEqual(tuple(linear_fp8(empty, weight).shape), (0, 256))
+
+    def test_fp8_partial_tile_scale_at_storage_end(self):
+        # Put scales at the very end of their backing storage.  On SM89,
+        # Triton 2.3.1's original masked scale load read masked-off rows;
+        # a usual small caching-allocator slice hid that read.  This layout
+        # also makes the regression directly usable with compute-sanitizer.
+        n, k = 256, 4096
+        groups = k // 128
+        weight = Weight(
+            "fp8",
+            torch.full((n, k), 0x38, dtype=torch.uint8, device="cuda"),
+            (n, k),
+            torch.ones((n // 128, groups), dtype=torch.float16, device="cuda"),
+        )
+        for m in (1, 2, 3, 17, 31, 33):
+            with self.subTest(m=m):
+                data = torch.full((m, k), 0x38, dtype=torch.uint8, device="cuda")
+                backing = torch.full(
+                    (2 * 1024**2 // 4,),
+                    float("nan"),
+                    dtype=torch.float32,
+                    device="cuda",
+                )
+                scale = backing[-m * groups :].view(m, groups)
+                scale.copy_(
+                    (
+                        torch.arange(m * groups, device="cuda", dtype=torch.float32)
+                        .remainder(11)
+                        .add(1)
+                        / 4096
+                    ).view(m, groups)
+                )
+                qa = QuantActivation("fp8", data, (m, k), scale)
+                actual = linear_fp8(qa, weight)
+                expected = (scale.sum(dim=1, keepdim=True) * 128).expand(m, n)
+                torch.testing.assert_close(actual.float(), expected, rtol=0, atol=0)
+                self.assertTrue(torch.isnan(backing[: -m * groups]).all())
 
     def _check_fp8_block_gemm(self, m: int, k: int) -> None:
         x = torch.randn((m, k), dtype=torch.float16, device="cuda")

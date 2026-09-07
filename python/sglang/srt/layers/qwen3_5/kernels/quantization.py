@@ -230,11 +230,13 @@ def fp8_block128_gemm_kernel(
                 _decode_e4m3fn(w).to(tl.float16),
             )
         group_k = k0 // 128
-        ascale = tl.load(
-            a_scale_ptr + offs_m * stride_as_m + group_k,
-            mask=offs_m < m,
-            other=0.0,
-        )
+        # Triton 2.3.1 on SM89 can issue an out-of-range activation-scale
+        # read for a partial M tile despite the one-dimensional load mask.
+        # Keep every address valid before lowering to the MMA layout; the
+        # wrapper already handles m == 0, so m - 1 is always a valid row.
+        scale_rows = tl.minimum(offs_m, m - 1)
+        ascale = tl.load(a_scale_ptr + scale_rows * stride_as_m + group_k)
+        ascale = tl.where(offs_m < m, ascale, 0.0)
         wscale = tl.load(
             w_scale_ptr + (offs_n // 128) * stride_ws_n + group_k * stride_ws_k,
             mask=offs_n < n,

@@ -1,4 +1,4 @@
-"""Stateless causal GQA kernel for Qwen3.5 Full-Attention layers."""
+"""Packed-prefill and contiguous-cache GQA kernels for Qwen3.5."""
 
 import math
 
@@ -7,6 +7,103 @@ import triton
 import triton.language as tl
 
 from .attention_slab import causal_gqa_slab
+
+# Decode is deliberately a separate path from ``causal_gqa``.  The latter is
+# a packed prefill kernel, while this path consumes the already materialised
+# contiguous KV cache of one request.  Keeping the cache indexing here makes
+# it impossible for the caller to accidentally turn a decode into a
+# concatenate-and-prefill operation.
+_DECODE_MAX_KV = 2048
+_DECODE_BLOCK_N = 128
+_DECODE_BLOCK_D = 16
+
+
+@triton.jit
+def _causal_gqa_decode_scores_kernel(
+    q,
+    k_cache,
+    scores,
+    kv_len,
+    SCALE: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    """Produce one FP32 score row for each of Qwen's 16 query heads."""
+    head = tl.program_id(0)
+    block = tl.program_id(1)
+    offsets_n = block * BLOCK_N + tl.arange(0, BLOCK_N)
+    kv_head = head // 8
+    acc = tl.zeros((BLOCK_N,), tl.float32)
+    # 256 is fixed by the Qwen3.5 Full Attention contract.  Loading K in
+    # small tiles is SM70-safe and avoids relying on newer attention ops.
+    for start_d in range(0, 256, BLOCK_K):
+        offsets_d = start_d + tl.arange(0, BLOCK_K)
+        q_tile = tl.load(q + head * 256 + offsets_d).to(tl.float32)
+        k_tile = tl.load(
+            k_cache
+            + offsets_n[:, None] * (2 * 256)
+            + kv_head * 256
+            + offsets_d[None, :],
+            mask=offsets_n[:, None] < kv_len,
+            other=0.0,
+        ).to(tl.float32)
+        acc += tl.sum(k_tile * q_tile[None, :], axis=1)
+    tl.store(
+        scores + head * _DECODE_MAX_KV + offsets_n,
+        acc * SCALE,
+        mask=offsets_n < kv_len,
+    )
+
+
+@triton.jit
+def _causal_gqa_decode_pv_kernel(
+    scores,
+    v_cache,
+    out,
+    kv_len,
+    BLOCK_N: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+):
+    """Softmax a score row and reduce its V values for one D tile."""
+    head = tl.program_id(0)
+    d_block = tl.program_id(1)
+    offsets_d = d_block * BLOCK_D + tl.arange(0, BLOCK_D)
+    max_score = -float("inf")
+    # This fixed trip count is intentional: it keeps Triton 2.3's generated
+    # SM70 code simple.  Every load is masked by the runtime valid length, so
+    # cache capacity beyond ``kv_len`` is never read (and may contain NaNs).
+    for start_n in range(0, _DECODE_MAX_KV, BLOCK_N):
+        offsets_n = start_n + tl.arange(0, BLOCK_N)
+        block_scores = tl.load(
+            scores + head * _DECODE_MAX_KV + offsets_n,
+            mask=offsets_n < kv_len,
+            other=-float("inf"),
+        )
+        max_score = tl.maximum(max_score, tl.max(block_scores, axis=0))
+
+    denom = 0.0
+    acc = tl.zeros((BLOCK_D,), tl.float32)
+    kv_head = head // 8
+    for start_n in range(0, _DECODE_MAX_KV, BLOCK_N):
+        offsets_n = start_n + tl.arange(0, BLOCK_N)
+        block_scores = tl.load(
+            scores + head * _DECODE_MAX_KV + offsets_n,
+            mask=offsets_n < kv_len,
+            other=-float("inf"),
+        )
+        probabilities = tl.exp(block_scores - max_score)
+        probabilities = tl.where(offsets_n < kv_len, probabilities, 0.0)
+        denom += tl.sum(probabilities, axis=0)
+        values = tl.load(
+            v_cache
+            + offsets_n[:, None] * (2 * 256)
+            + kv_head * 256
+            + offsets_d[None, :],
+            mask=offsets_n[:, None] < kv_len,
+            other=0.0,
+        ).to(tl.float32)
+        acc += tl.sum(probabilities[:, None] * values, axis=0)
+    tl.store(out + head * 256 + offsets_d, acc / denom)
 
 
 @triton.jit
@@ -111,6 +208,78 @@ def causal_gqa(q, k, v, cu_seqlens, max_seqlen: int, softmax_scale=None, out=Non
     if max_seqlen == 0:
         raise ValueError("nonempty q requires max_seqlen > 0")
     return causal_gqa_slab(q, k, v, cu_seqlens, max_seqlen, out)
+
+
+def causal_gqa_decode(q_new, k_cache, v_cache, kv_len: int, scale=1.0 / 16.0):
+    """Attend one Qwen3.5 query token over a contiguous request KV cache.
+
+    ``k_cache`` and ``v_cache`` must already contain the new token at logical
+    index ``kv_len - 1``.  Thus ``kv_len`` is the number of readable entries,
+    not the old prefix length.  The function has no cache mutation and does
+    not concatenate tensors; writing the new K/V is deliberately owned by the
+    request-cache caller so that failures can be handled transactionally.
+    """
+    if q_new.shape != (1, 16, 256):
+        raise ValueError("q_new must have shape [1, 16, 256]")
+    if k_cache.ndim != 3 or k_cache.shape[1:] != (2, 256):
+        raise ValueError("k_cache must have shape [capacity, 2, 256]")
+    if v_cache.shape != k_cache.shape:
+        raise ValueError("v_cache must match k_cache shape")
+    if k_cache.shape[0] > _DECODE_MAX_KV:
+        raise ValueError("causal_gqa_decode supports cache capacity at most 2048")
+    if not (q_new.is_cuda and k_cache.is_cuda and v_cache.is_cuda):
+        raise ValueError("causal_gqa_decode requires CUDA tensors")
+    if not (q_new.device == k_cache.device == v_cache.device):
+        raise ValueError("causal_gqa_decode inputs must be on one CUDA device")
+    if (
+        q_new.dtype != torch.float16
+        or k_cache.dtype != torch.float16
+        or v_cache.dtype != torch.float16
+    ):
+        raise TypeError("causal_gqa_decode currently supports FP16 only")
+    if not (
+        q_new.is_contiguous() and k_cache.is_contiguous() and v_cache.is_contiguous()
+    ):
+        raise ValueError("causal_gqa_decode requires contiguous Q and KV cache")
+    if isinstance(kv_len, bool) or not isinstance(kv_len, int):
+        raise TypeError("kv_len must be a Python int")
+    if kv_len < 1 or kv_len > k_cache.shape[0]:
+        raise ValueError("kv_len must be in [1, cache capacity]")
+    if isinstance(scale, bool) or not isinstance(scale, (int, float)):
+        raise TypeError("scale must be a finite positive Python number")
+    scale = float(scale)
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError("scale must be finite and positive")
+    if scale != 1.0 / 16.0:
+        raise ValueError("Qwen3.5 decode attention scale is fixed at 1/16")
+
+    # The score scratch is intentionally fixed-sized.  Both kernels mask all
+    # reads with kv_len, while a fixed 2048 stride avoids a new Triton compile
+    # variant for every prefix length.
+    scores = torch.empty((16, _DECODE_MAX_KV), device=q_new.device, dtype=torch.float32)
+    out = torch.empty_like(q_new)
+    _causal_gqa_decode_scores_kernel[(16, triton.cdiv(kv_len, _DECODE_BLOCK_N))](
+        q_new,
+        k_cache,
+        scores,
+        kv_len,
+        SCALE=scale,
+        BLOCK_N=_DECODE_BLOCK_N,
+        BLOCK_K=32,
+        num_warps=4,
+        num_stages=1,
+    )
+    _causal_gqa_decode_pv_kernel[(16, 256 // _DECODE_BLOCK_D)](
+        scores,
+        v_cache,
+        out,
+        kv_len,
+        BLOCK_N=_DECODE_BLOCK_N,
+        BLOCK_D=_DECODE_BLOCK_D,
+        num_warps=4,
+        num_stages=1,
+    )
+    return out
 
 
 def partial_neox_rope(x, positions, theta: float = 10_000_000.0, out=None):

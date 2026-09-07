@@ -1,6 +1,6 @@
-"""Full-Attention composition without cache or prefix-state inputs."""
+"""Qwen3.5 Full-Attention primitives for prefill and cached decode."""
 
-from .kernels.attention import causal_gqa, partial_neox_rope
+from .kernels.attention import causal_gqa, causal_gqa_decode, partial_neox_rope
 from .ops import gemma_rms_norm
 
 
@@ -17,4 +17,9 @@ def normalize_and_rope_qk(q, k, q_weight, k_weight, positions, theta=10_000_000.
     )
 
 
-__all__ = ["causal_gqa", "partial_neox_rope", "normalize_and_rope_qk"]
+__all__ = [
+    "causal_gqa",
+    "causal_gqa_decode",
+    "partial_neox_rope",
+    "normalize_and_rope_qk",
+]

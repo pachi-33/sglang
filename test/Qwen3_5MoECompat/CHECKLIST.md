@@ -1,8 +1,11 @@
-# Qwen3.5 V100 无状态路径核对清单
+# Qwen3.5 SM70/SM89 单请求与无状态路径核对清单
 
-本清单用于代码审阅、复现和验收。范围是文本模型、TP=1、SM70 V100、单次完整
-packed sequence；不包含 KV cache、视觉、MTP、分布式和常驻服务状态。所有 Python
-命令使用 `sglang-v100` 环境，并在 GPU 测试中设置指定的 `CUDA_VISIBLE_DEVICES`。
+本清单用于代码审阅、复现和验收。范围是文本模型、TP=1，以及 V100/SM70 与
+4070 SUPER/SM89 的固定 20/20 分层推理。生产路径仅维护一个请求：整段 fresh prefill
+后逐 token decode，上限 2048。另保留 packed sequence 无状态兼容接口。
+不包含视觉、MTP、radix/sstate 管理、分页 KV、NCCL/P2P、批调度或 ModelRunner 服务。
+所有 Python 命令使用 `sglang-v100` 环境；单卡测试暴露一个指定 UUID，流水线由
+controller 在启动前给两个 worker 分别设置 UUID。
 
 
 路径约定：`layers/...` 表示 `python/sglang/srt/layers/...`；`kernels/...`
@@ -20,13 +23,17 @@ packed sequence；不包含 KV cache、视觉、MTP、分布式和常驻服务�
 | 压缩 `Weight` 合同 | `layers/qwen3_5/weights.py` | `unit/test_checkpoint.py`、`unit/test_quantization.py` | FP16、FP8、NVFP4 的物理存储、scale 和 global scale 不允许混用。 |
 | 无状态编排和 metadata | `layers/qwen3_5/runner.py` | `integration/test_stateless_model.py`、`unit/test_gdn.py` | 隐藏态为连续 FP16 `[T,2048]`，`T<=2048`；`positions=[T]`、`cu_seqlens` 为同卡连续 int32/int64。调用者信任 `cu` 的内容：首项为 0、末项为 T、单调、每段长度不超过 `max_seqlen`，内核不为热路径回读同步验证。无 KV 或 recurrent state 跨调用保存。 |
 | 原始 0--3 层端到端入口 | `models/qwen3_5_moe.py` | `integration/test_stateless_model.py` | embedding、4 个原始层、final norm 与选择行 LM head 在同一次无 cache 调用中连接。 |
+| SM70/SM89 设备与锁合同 | `runner.py`、`unit/test_environment.py` | `unit/` | runner 接受 capability `(7,0)`/`(8,9)`；GPU 测试严格校验单一 UUID/capability 配对，各卡使用独立 UUID 锁。V100TestCase 是兼容别名。 |
+| 单请求外部 cache | `runner.py` | `integration/test_stateful_runner.py` | runner 所有权、capacity、前缀长度、空/重复 prefill、单 token decode、容量耗尽；执行失败 poison，reset 清 Conv/GDN 与 KV 有效长度。 |
+| 双 worker 分层流水线 | `pipeline.py` | `unit/test_pipeline.py`、`integration/pipeline_acceptance.py` | V100 embed/0–19/norm/head；4070 20–39；独立子进程、带版本 JSON/FP16 帧、CPU staging，epoch/step/prefix/consumed_len 一致后才推进。半步失败 reset 两侧。 |
+| 文本 greedy CLI | `pipeline.py` | `unit/test_pipeline.py`、`integration/pipeline_acceptance.py` | chat template/raw/stdin、二维 merges 内存兼容、逐 tokenizer ID 对照；屏蔽 `[248077,248320)`，EOS `{248046,248044}`；R 个输出只执行 R−1 次 decode。 |
 
 ## 量化、线性层和投影打包
 
 | 算子/边界 | 生产源码 | 独立参考或测试 | 核对点 |
 |---|---|---|---|
 | E4M3FN 编解码、A8 K128 quantize | `layers/qwen3_5/quantization.py`、`kernels/quantization.py` | `reference/codec.py`、`unit/test_reference_codec.py`、`unit/test_quantization.py` | 有限饱和/RNE、NaN 编码、signed zero、FP32 reciprocal scale 形成。 |
-| W8A8 K128 GEMM | `layers/qwen3_5/quantization.py`、`kernels/quantization.py` | `reference/model.py`、`unit/test_reference_model.py` | 每 K128 partial 的 FP16 E4M3 decode、FP32 partial/scale/cross-K 累加、输出 FP16。语义参考不声称逐 HMMA 指令 bitwise 一致。 |
+| W8A8 K128 GEMM | `layers/qwen3_5/quantization.py`、`kernels/quantization.py` | `reference/model.py`、`unit/test_reference_model.py`、`unit/test_quantization.py` | 每 K128 partial 的 FP16 E4M3 decode、FP32 partial/scale/cross-K 累加、输出 FP16。部分 M tile 的 scale 地址先限制到合法行再清零无效行；storage-tail 回归覆盖 M=1/2/3/17/31/33，避免 SM89/Triton 2.3.1 masked-load 越界。 |
 | FP16 linear、embedding、LM head | `layers/qwen3_5/dense.py`、`kernels/dense.py` | `unit/test_dense_ops.py` | 隐藏维 `H=2048`；embedding/LM head 为 `[248320,2048]`，默认只选择每序列末 token logits；显式 `logits_indices` 可选择任意行或全部行，此时输出和显存按所选行数增长。 |
 | Gemma RMSNorm、ordinary RMSNorm、residual add | `layers/qwen3_5/ops.py`、`kernels/ops.py` | `unit/test_dense_ops.py`、`unit/test_model_ops.py` | Gemma 使用 `FP16(x * rsqrt(mean(x²)+1e-6) * (1+w))`；GDN ordinary norm 使用 `w` 而非 `1+w`；residual add 先产生 FP16 sum，`residual_add_gemma_rms_norm` 以该 sum 再做 norm。 |
 | GDN QKV+Z / B+A 打包 | `layers/qwen3_5/checkpoint.py`、`runner.py` | `unit/test_projection_packing.py` | CPU 排列为 `[QKV,Z]`、`[B,A]`；GPU 只传 merged storage，公开 component `Weight` 是别名视图。 |
@@ -38,9 +45,11 @@ packed sequence；不包含 KV cache、视觉、MTP、分布式和常驻服务�
 | 算子/边界 | 生产源码 | 测试 | 核对点 |
 |---|---|---|---|
 | Conv4 + SiLU | `kernels/gdn.py` | `unit/test_gdn.py` | packed sequence 左边界清零；投影 column view 可有大于逻辑宽度的 token stride；输出连续。 |
+| Conv 单 token decode | `kernels/gdn.py`、`runner.py` | `unit/test_gdn.py` | 读取 `[3,8192]` 原始 QKV tail 和当前行，计算 Conv/SiLU 后原位推进；短 prompt 左补零；对照完整卷积输出与 tail。 |
 | Q/K/V 布局和 L2Norm | `kernels/model_ops.py`、`kernels/gdn.py` | `unit/test_gdn.py` | `Q/K=[T,16,128]`、`V=[T,32,128]`，Q/K L2Norm 在 FP32 中计算。 |
 | A/B gate | `kernels/gdn.py` | `unit/test_gdn.py` | B/A merged 输出的 stride=64 被接受；softplus 稳定；beta 有明确 FP16 边界。 |
 | 短序列递推 | `kernels/gdn.py` | `unit/test_gdn.py` | 实际长度 1--64 使用 FP32 state recurrence，65 及以上不被短路径覆盖。 |
+| GDN cache continuation | `kernels/gdn.py`、`runner.py` | `unit/test_gdn.py`、`integration/test_stateful_runner.py` | prefill 保存 FP32 `[32,128,128]` final state；decode 接受非零 initial state 并原位更新。纯 recurrent relative L2 ≤1e-4，chunk-prefill 接 decode NRMSE ≤5e-3；out/state 不允许 storage 别名。 |
 | BT16 WY chunk | `kernels/gdn_chunk.py`、`kernels/gdn.py` | `unit/test_gdn.py` | Gram、FP32 三角求解、U/W、R/state/output 分阶段；ragged tail 和 O(B) workspace 被覆盖。每个 sequence tile 的每个 BT16 chunk 依次发射 14 个阶段 launch；`max_seqlen=2048` 时为 128 chunks，即最多 `14×128×ceil(B/32)` 个有序 launch（短 sequence 在掩码中空转）。这是内存有界实现，不能被描述为低 launch-count 路径。`stream_gdn16` 是内部 `max_seqlen>0` helper，空输入由公开 `chunk_gdn` 处理。 |
 | Z norm/SiLU/A8 producer | `kernels/model_ops.py` | `unit/test_model_ops.py` | `[T,4096]` Z column view 的 token stride 被显式传入；FP16 boundary 与 A8 bytes/scales 分开核对。 |
 
@@ -50,6 +59,7 @@ packed sequence；不包含 KV cache、视觉、MTP、分布式和常驻服务�
 |---|---|---|---|
 | QGate/K norm + partial NeoX RoPE | `kernels/model_ops.py` | `unit/test_model_ops.py` | Q projection 每 head 是 `Q[256], Gate[256]`；Q/K source 可为 merged row view；输出 Q/K/Gate 连续。 |
 | Causal GQA slab | `kernels/attention.py`、`kernels/attention_slab.py` | `unit/test_attention.py` | Q16/KV2/D256、packed ragged causal mask、int32/int64 cu；V 可为 token stride 9216 的 merged view。 |
+| 连续 KV decode attention | `kernels/attention.py`、`runner.py` | `unit/test_attention.py`、`integration/test_stateful_runner.py` | 先写 K/V 位置 L，再读取 `[0:L+1]`；Q head //8 映射 KV head，scale=1/16，无 torch.cat。长度覆盖 1/3/16/17/63/64/65/511/512/513/2048，未用区 NaN 验证逻辑边界。 |
 | Attention gate + O A8 producer | `kernels/model_ops.py` | `unit/test_model_ops.py` | `FP16(attention × sigmoid(gate))` 是 producer boundary，A8 codec 独立检查。 |
 
 ## MoE 路径
@@ -77,13 +87,15 @@ packed sequence；不包含 KV cache、视觉、MTP、分布式和常驻服务�
 | 40 层独立扫描 | `integration/layer_scan.py` | `integration/test_layer_scan.py`、CLI `--layers 0-39` | 投影同时记录 `_math` 与 `_semantic` 两个 2e-3 gate；组成层使用 block-semantic FP8 reference；MoE 强制 256 expert route 逐 expert 报告。 |
 | M3 参考 source hash | `integration/layer_scan.py` | 每层 JSON `source_sha256` | hash 覆盖生产 Qwen3.5 Python、独立 reference 与 scanner，报告必须和 source hash/contract 一起解释。 |
 | 完整后端 PTX 审计 | `bench/backend_audit.py` | `unit/test_backend_audit.py`、backend audit JSON | profiler CUDA compute events 必须精确匹配本进程 PTX entry；memory event 单列；framework/cublas/cutlass/未知 compute 失败。专门化 entry 名需原样写进 allowlist。 |
+| 完整 40 层 cached/stateless 对照 | `pipeline.py`、`integration/pipeline_acceptance.py` | 手动双卡 acceptance CLI | 固定短序列逐步 greedy 一致；hidden/logits NRMSE 和最大误差、router IDs/概率差异为独立诊断，不能用局部 5e-3 预算冒充完整模型误差验收。 |
+| 双卡生命周期和显存 | `integration/pipeline_acceptance.py` | 手动双卡 acceptance CLI | A→reset→B→reset→A、chat 双跑、2048 fresh prefill、首 decode、重复 reset、epoch/step/容量错误与半步失败恢复；结果写入单份 JSON。 |
 | 格式/导入 | `python/sglang/srt/layers/qwen3_5/`、`models/qwen3_5_moe.py`、`test/Qwen3_5MoECompat/` | `isort==5.13.2 --check`、`black==24.10.0 --check`、`py_compile` | 格式检查不替代 GPU 精度或性能验收。 |
 
 ## 执行前后核对
 
-1. 运行前确认 required interpreter、`PYTHONPATH=python:.`、V100 UUID 和 capability `(7,0)`。
-2. GPU unittest 自己持有 `/tmp/qwen35-v100-gpu.lock`；不要再套 shell `flock`。
+1. 运行前确认 required interpreter、`PYTHONPATH=python:.` 和单卡测试的 UUID/capability 配对；双 worker 分别启动，不能在同一进程切换 Triton target。
+2. GPU unittest 自己持有对应 `/tmp/qwen35-gpu-<UUID>-sm<capability>.lock`；不要再套 shell `flock`。
 3. standalone layer scan 和 benchmark 自己持锁；同样不要外层加锁。
 4. 检查 M3 JSON 的 `math_contract`、`source_sha256`、每个 `_math`/`_semantic` projection gate、强制 256-expert route 和 nonfinite 字段。
 5. 检查 projection/MoE/backend benchmark 的 token 覆盖、actual GPU、kernel histogram 与 peak allocation；不要把不同 source hash 或不同 UUID 的报告混用。
-6. M3/M5 已通过本期验收；最终结果、命令输出和限制见 [VALIDATION.md](VALIDATION.md)。只有扫描、unit/integration、精度、内存和 benchmark 对应的验收项全部通过时，才更新里程碑状态；无 cache 的范围不等同于 cache-backed serving。
+6. M3/M5 历史证据见 [VALIDATION.md](VALIDATION.md)，双卡 cache 分支记录见 [VALIDATION_SM70_SM89_PIPELINE.md](VALIDATION_SM70_SM89_PIPELINE.md)。核对报告对应的测试范围、源码与实测来源；既有四层性能数字不能充当双卡 40 层测量。

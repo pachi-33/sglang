@@ -6,6 +6,7 @@ import torch
 
 from sglang.srt.layers.qwen3_5.attention import (
     causal_gqa,
+    causal_gqa_decode,
     normalize_and_rope_qk,
     partial_neox_rope,
 )
@@ -28,6 +29,17 @@ def reference_packed_gqa(q, k, v, cu):
             out[start:end, head] = (
                 scores.softmax(-1) @ v[start:end, kv_head].float()
             ).half()
+    return out
+
+
+def reference_gqa_decode(q_new, k_cache, v_cache, kv_len, scale=1.0 / 16.0):
+    out = torch.empty_like(q_new)
+    for head in range(16):
+        kv_head = head // 8
+        scores = q_new[0, head].float() @ k_cache[:kv_len, kv_head].float().t()
+        out[0, head] = (
+            scores.mul(scale).softmax(0) @ v_cache[:kv_len, kv_head].float()
+        ).half()
     return out
 
 
@@ -186,3 +198,44 @@ class TestCausalGQA(V100TestCase):
         cu = torch.tensor([0, 1], dtype=torch.int32, device="cuda")
         with self.assertRaisesRegex(ValueError, "unit-inner-stride"):
             causal_gqa(q, k, v, cu, max_seqlen=1)
+
+
+class TestCausalGQADecode(V100TestCase):
+    def test_contiguous_kv_decode_matches_reference_and_never_reads_invalid_tail(self):
+        # Cover tile boundaries in both score and softmax/V kernels.  Invalid
+        # cache storage stays NaN; a mistaken over-read makes the result NaN.
+        lengths = (1, 3, 16, 17, 63, 64, 65, 511, 512, 513, 2048)
+        torch.manual_seed(79)
+        capacity = 2048
+        for kv_len in lengths:
+            with self.subTest(kv_len=kv_len):
+                q_new = torch.randn((1, 16, 256), dtype=torch.float16, device="cuda")
+                k_cache = torch.full(
+                    (capacity, 2, 256), float("nan"), dtype=torch.float16, device="cuda"
+                )
+                v_cache = torch.full_like(k_cache, float("nan"))
+                k_cache[:kv_len] = torch.randn_like(k_cache[:kv_len])
+                v_cache[:kv_len] = torch.randn_like(v_cache[:kv_len])
+                actual = causal_gqa_decode(q_new, k_cache, v_cache, kv_len).float()
+                expected = reference_gqa_decode(q_new, k_cache, v_cache, kv_len).float()
+                self.assertTrue(torch.isfinite(actual).all())
+                nrmse = (
+                    actual - expected
+                ).square().mean().sqrt() / expected.square().mean().sqrt()
+                self.assertLessEqual(nrmse.item(), 5e-3)
+
+    def test_decode_rejects_invalid_contracts(self):
+        q = torch.empty((1, 16, 256), dtype=torch.float16, device="cuda")
+        cache = torch.empty((2, 2, 256), dtype=torch.float16, device="cuda")
+        with self.assertRaisesRegex(ValueError, "shape"):
+            causal_gqa_decode(q[0], cache, cache, 1)
+        with self.assertRaisesRegex(ValueError, "contiguous"):
+            causal_gqa_decode(q, cache.transpose(0, 1), cache, 1)
+        with self.assertRaisesRegex(TypeError, "Python int"):
+            causal_gqa_decode(q, cache, cache, torch.tensor(1))
+        with self.assertRaisesRegex(ValueError, "cache capacity"):
+            causal_gqa_decode(q, cache, cache, 0)
+        with self.assertRaisesRegex(ValueError, "finite and positive"):
+            causal_gqa_decode(q, cache, cache, 1, scale=0.0)
+        with self.assertRaisesRegex(ValueError, "fixed at 1/16"):
+            causal_gqa_decode(q, cache, cache, 1, scale=0.5)

@@ -1,4 +1,4 @@
-"""Stateless Gated DeltaNet primitives for SM70."""
+"""Qwen3.5 Gated DeltaNet primitives for validated SM70/SM89 execution."""
 
 import torch
 import triton
@@ -240,6 +240,87 @@ def depthwise_conv4_silu(x, weight, bias, cu_seqlens):
     return out
 
 
+@triton.jit
+def _conv4_silu_decode(
+    x,
+    weight,
+    bias,
+    history,
+    out,
+    channels: tl.constexpr,
+    BLOCK: tl.constexpr,
+    HAS_BIAS: tl.constexpr,
+):
+    """One causal Conv4 step, retaining the three raw input rows."""
+    channel = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    mask = channel < channels
+    if HAS_BIAS:
+        value = tl.load(bias + channel, mask=mask, other=0.0).to(tl.float32)
+    else:
+        value = tl.zeros((BLOCK,), tl.float32)
+    h0 = tl.load(history + channel, mask=mask, other=0.0).to(tl.float32)
+    h1 = tl.load(history + channels + channel, mask=mask, other=0.0).to(tl.float32)
+    h2 = tl.load(history + 2 * channels + channel, mask=mask, other=0.0).to(tl.float32)
+    current = tl.load(x + channel, mask=mask, other=0.0).to(tl.float32)
+    value += h0 * tl.load(weight + channel * 4, mask=mask, other=0.0).to(tl.float32)
+    value += h1 * tl.load(weight + channel * 4 + 1, mask=mask, other=0.0).to(tl.float32)
+    value += h2 * tl.load(weight + channel * 4 + 2, mask=mask, other=0.0).to(tl.float32)
+    value += current * tl.load(weight + channel * 4 + 3, mask=mask, other=0.0).to(
+        tl.float32
+    )
+    tl.store(out + channel, value / (1.0 + tl.exp(-value)), mask=mask)
+    # All three old rows were loaded before this in-place shift.
+    tl.store(history + channel, h1, mask=mask)
+    tl.store(history + channels + channel, h2, mask=mask)
+    tl.store(history + 2 * channels + channel, current, mask=mask)
+
+
+def depthwise_conv4_silu_decode(x, weight, bias, history):
+    """Run one causal depthwise Conv4+SiLU token and advance ``history``.
+
+    ``history`` is a contiguous FP16 ``[3, C]`` buffer ordered oldest to
+    newest.  It is updated in-place only after the output has been computed,
+    making it suitable for a single request's decode cache.
+    """
+    _check_cuda(x, "x", torch.float16, contiguous=False)
+    if x.ndim != 2 or x.shape[0] != 1:
+        raise ValueError("x must have shape [1,C]")
+    _check_strided_rows(x, "x", x.shape[1])
+    _check_cuda(weight, "weight", torch.float16)
+    _check_cuda(history, "history", torch.float16)
+    if bias is not None:
+        _check_cuda(bias, "bias", torch.float16)
+    channels = x.shape[1]
+    if (
+        weight.shape != (channels, 4)
+        or history.shape != (3, channels)
+        or weight.device != x.device
+        or history.device != x.device
+        or (bias is not None and (bias.shape != (channels,) or bias.device != x.device))
+    ):
+        raise ValueError("expected x[1,C], weight[C,4], optional bias[C], history[3,C]")
+    # ``torch.empty_like`` preserves a singleton row's otherwise-irrelevant
+    # source stride.  In particular, the merged QKV view used by decode has
+    # stride ``(12288, 1)`` but only 8192 elements of output storage.  Keep the
+    # producer boundary canonical even for T=1 so downstream Triton kernels do
+    # not see a logical row stride larger than the backing allocation.
+    out = torch.empty((1, channels), device=x.device, dtype=x.dtype)
+    if channels:
+        _conv4_silu_decode[(triton.cdiv(channels, 128),)](
+            x,
+            weight,
+            bias if bias is not None else x,
+            history,
+            out,
+            channels,
+            BLOCK=128,
+            HAS_BIAS=bias is not None,
+            num_warps=4,
+            num_stages=1,
+        )
+    return out
+
+
 def l2_normalize_qk(q, k):
     _check_cuda(q, "q", torch.float16)
     _check_cuda(k, "k", torch.float16)
@@ -367,6 +448,83 @@ def recurrent_gdn_short_output(q, k, v, decay, beta, cu_seqlens, max_seqlen, out
             num_warps=4,
             num_stages=1,
         )
+    return out
+
+
+@triton.jit
+def _recurrent_decode(q, k, v, decay, beta, state, out, BLOCK: tl.constexpr):
+    """One GDN recurrence step for one V head and one V dimension row."""
+    head = tl.program_id(0)
+    row = tl.program_id(1)
+    d = tl.arange(0, BLOCK)
+    kh = head // 2
+    state_ptr = state + (head * 128 + row) * 128 + d
+    kv = tl.load(k + kh * 128 + d).to(tl.float32)
+    qv = tl.load(q + kh * 128 + d).to(tl.float32)
+    old = tl.load(state_ptr).to(tl.float32)
+    decayed = old * tl.exp(tl.load(decay + head).to(tl.float32))
+    prediction = tl.sum(decayed * kv, axis=0)
+    residual = tl.load(beta + head).to(tl.float32) * (
+        tl.load(v + head * 128 + row).to(tl.float32) - prediction
+    )
+    updated = decayed + residual * kv
+    tl.store(state_ptr, updated)
+    tl.store(out + head * 128 + row, tl.sum(updated * qv, axis=0) * 128**-0.5)
+
+
+def recurrent_gdn_decode(q, k, v, decay, beta, state, *, out=None):
+    """Advance a single-request FP32 GDN state by exactly one token.
+
+    The input contracts match one row of :func:`recurrent_gdn`: q/k are FP16
+    ``[1,16,128]``, v is FP16 ``[1,32,128]``, decay is FP32 ``[1,32]``, and
+    beta is FP16 ``[1,32]``.  ``state`` is the continuous FP32
+    ``[32,128,128]`` cache and is updated in-place.  The returned output is
+    FP32 ``[1,32,128]``; an optional matching FP32 ``out`` avoids allocation.
+    """
+    for tensor, name, dtype in (
+        (q, "q", torch.float16),
+        (k, "k", torch.float16),
+        (v, "v", torch.float16),
+        (decay, "decay", torch.float32),
+        (beta, "beta", torch.float16),
+        (state, "state", torch.float32),
+    ):
+        _check_cuda(tensor, name, dtype)
+    if (
+        q.shape != (1, 16, 128)
+        or k.shape != q.shape
+        or v.shape != (1, 32, 128)
+        or decay.shape != (1, 32)
+        or beta.shape != (1, 32)
+        or state.shape != (32, 128, 128)
+        or any(t.device != q.device for t in (k, v, decay, beta, state))
+    ):
+        raise ValueError(
+            "expected q/k[1,16,128], v[1,32,128], decay/beta[1,32], state[32,128,128]"
+        )
+    if out is None:
+        out = torch.empty((1, 32, 128), device=q.device, dtype=torch.float32)
+    else:
+        _check_cuda(out, "out", torch.float32)
+        if out.shape != (1, 32, 128) or out.device != q.device:
+            raise ValueError("out must be FP32 [1,32,128] on the GDN device")
+        if (
+            out.numel()
+            and out.untyped_storage().data_ptr() == state.untyped_storage().data_ptr()
+        ):
+            raise ValueError("out must not alias state")
+    _recurrent_decode[(32, 128)](
+        q,
+        k,
+        v,
+        decay,
+        beta,
+        state,
+        out,
+        BLOCK=128,
+        num_warps=4,
+        num_stages=1,
+    )
     return out
 
 

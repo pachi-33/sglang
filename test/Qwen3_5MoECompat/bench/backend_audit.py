@@ -10,6 +10,7 @@ import os
 import re
 import statistics
 from pathlib import Path
+from test.Qwen3_5MoECompat.unit.test_environment import V100_GPU_LOCK_PATH
 
 import torch
 
@@ -102,7 +103,7 @@ def main():
         or torch.cuda.get_device_capability() != (7, 0)
     ):
         raise RuntimeError("requires the configured SM70 V100 UUID")
-    lock = open("/tmp/qwen35-v100-gpu.lock", "a+")
+    lock = open(V100_GPU_LOCK_PATH, "a+")
     fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
     cache_dir = Path(f"/tmp/qwen35-backend-audit-{os.getpid()}")
     os.environ["TRITON_CACHE_DIR"] = str(cache_dir)

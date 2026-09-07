@@ -1,4 +1,10 @@
-# Qwen3.5 MoE V100 最终精度验收
+# Qwen3.5 MoE V100 独立层与四层无状态精度验收（历史）
+
+本页保留 2026-09-07 的 M0–M5 无状态基线证据及其源码 hash，不能当作当前工作树的
+重新扫描结果。当前分支已增加 SM70/SM89 算子合同、单请求 cache 和完整 20/20 双 worker
+流水线；对应实现范围、验收记录与复现命令见
+[双卡与 Cache 验收](VALIDATION_SM70_SM89_PIPELINE.md)。下面的 93 项是历史完整 discovery
+计数，与后续扩展的 `unit/` 套件计数不同。
 
 最终 v4 扫描完成原始 **0～39 全部 40 层**，每层独立加载真实权重和独立输入。
 所有预先冻结的部件预算、形状、有限值和逐 expert 检查通过，覆盖 **130 个 W8A8 投影、
@@ -117,9 +123,10 @@ smoke，已由单独 40 层 CLI 覆盖；没有因设备或 checkpoint 缺失而
 无框架或未知 compute kernel。完整计时、kernel 数和当前源码 hash 见 [PERFORMANCE.md](PERFORMANCE.md)。
 
 复现命令见 [README.md](README.md)，完整设计图见 [DESIGN.md](DESIGN.md)，
-逐算子清单见 [CHECKLIST.md](CHECKLIST.md)。本期为文本 TP=1，最多 2048 tokens，无
-KV/Conv/SSM 跨调用 cache。验收涵盖独立 40 层与原始 0～3 四层集成，不包含完整 40 层
-串联、模型生成质量、旧 ModelRunner 服务、视觉或 MTP。
+逐算子清单见 [CHECKLIST.md](CHECKLIST.md)。本页历史测量范围为文本 TP=1，最多 2048
+tokens，无 KV/Conv/SSM 跨调用 cache。它涵盖独立 40 层与原始 0～3 四层集成，不包含
+后续完整 40 层 cache 流水线的测量。模型生成质量评测、旧 ModelRunner 服务、视觉和 MTP
+仍不在当前双卡 CLI 的验收范围。
 
 扫描证据对应提交 `41d7d83452` 的源码。随后仅将扫描器输出的第 0/39 层 backend 标签
 改为 FP16；没有更改计算、reference、预算或原始测量值。重跑时源码 hash 会因这项 metadata

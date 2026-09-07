@@ -26,7 +26,11 @@ from test.Qwen3_5MoECompat.reference import moe as reference_moe
 from test.Qwen3_5MoECompat.reference.gdn import (
     recurrent_vectorized as reference_recurrent,
 )
-from test.Qwen3_5MoECompat.unit.test_environment import V100_UUID, V100TestCase
+from test.Qwen3_5MoECompat.unit.test_environment import (
+    V100_GPU_LOCK_PATH,
+    V100_UUID,
+    V100TestCase,
+)
 
 import torch
 import triton
@@ -879,7 +883,7 @@ def main(argv: list[str] | None = None) -> int:
     _RUN_SOURCE_HASH = _source_hash()
     # The standalone CLI owns serialization.  The unittest helper calls
     # scan_layer directly and V100TestCase already holds this same lock.
-    lock = open("/tmp/qwen35-v100-gpu.lock", "a+")
+    lock = open(V100_GPU_LOCK_PATH, "a+")
     try:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         result = scan_layers(

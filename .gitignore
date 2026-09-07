@@ -162,6 +162,7 @@ cython_debug/
 # MacOS
 .DS_Store
 *.json
+!test/Qwen3_5MoECompat/reports/pipeline_acceptance.json
 
 # Vim
 *.swp

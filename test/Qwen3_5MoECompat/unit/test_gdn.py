@@ -1,5 +1,9 @@
 import unittest
-from test.Qwen3_5MoECompat.reference.gdn import recurrent, recurrent_vectorized
+from test.Qwen3_5MoECompat.reference.gdn import (
+    recurrent,
+    recurrent_decode,
+    recurrent_vectorized,
+)
 from test.Qwen3_5MoECompat.unit.test_environment import V100TestCase
 
 import torch
@@ -7,9 +11,11 @@ import torch
 from sglang.srt.layers.qwen3_5.gdn import (
     chunk_gdn,
     depthwise_conv4_silu,
+    depthwise_conv4_silu_decode,
     l2_normalize_qk,
     prepare_gates,
     recurrent_gdn,
+    recurrent_gdn_decode,
     recurrent_gdn_short_output,
 )
 from sglang.srt.layers.qwen3_5.kernels.gdn_chunk import (
@@ -112,6 +118,127 @@ class TestGDNRecurrent(V100TestCase):
                     total += x[index].float() * weight[:, tap].float()
             expected[t] = torch.nn.functional.silu(total).half()
         torch.testing.assert_close(actual, expected, rtol=3e-3, atol=5e-3)
+
+    def test_conv4_silu_decode_history_for_short_prompts_and_splits(self):
+        """The cache tail must be raw inputs, zero-left-padded, oldest first."""
+        torch.manual_seed(811)
+        channels = 257
+        weight = torch.randn((channels, 4), device="cuda", dtype=torch.float16)
+        bias = torch.randn((channels,), device="cuda", dtype=torch.float16)
+        for tokens in (1, 2, 3, 4):
+            with self.subTest(tokens=tokens, mode="all_decode"):
+                x = torch.randn((tokens, channels), device="cuda", dtype=torch.float16)
+                cu = torch.tensor([0, tokens], device="cuda", dtype=torch.int32)
+                expected = depthwise_conv4_silu(x, weight, bias, cu)
+                history = torch.zeros((3, channels), device="cuda", dtype=torch.float16)
+                actual = torch.cat(
+                    [
+                        depthwise_conv4_silu_decode(x[t : t + 1], weight, bias, history)
+                        for t in range(tokens)
+                    ]
+                )
+                torch.testing.assert_close(actual, expected, rtol=3e-3, atol=5e-3)
+                tail = torch.zeros_like(history)
+                tail[-min(tokens, 3) :] = x[-3:]
+                torch.testing.assert_close(history, tail, rtol=0, atol=0)
+
+        # Decode receives a one-row slice of the merged [QKV,Z] projection.
+        # PyTorch considers this view contiguous even though its singleton row
+        # stride exceeds its width.  The Conv producer must canonicalize its
+        # output rather than propagating that misleading stride downstream.
+        merged = torch.randn((1, channels + 31), device="cuda", dtype=torch.float16)
+        row_view = merged[:, :channels]
+        self.assertEqual(row_view.stride(), (channels + 31, 1))
+        history = torch.zeros((3, channels), device="cuda", dtype=torch.float16)
+        canonical = depthwise_conv4_silu_decode(row_view, weight, bias, history)
+        self.assertEqual(canonical.stride(), (channels, 1))
+        self.assertEqual(canonical.untyped_storage().nbytes(), channels * 2)
+
+        # Simulate prefill saving its tail, then continue at each short split.
+        x = torch.randn((9, channels), device="cuda", dtype=torch.float16)
+        expected = depthwise_conv4_silu(
+            x, weight, bias, torch.tensor([0, 9], device="cuda", dtype=torch.int32)
+        )
+        for split in (1, 2, 3, 4):
+            with self.subTest(split=split, mode="prefill_then_decode"):
+                history = torch.zeros((3, channels), device="cuda", dtype=torch.float16)
+                kept = min(split, 3)
+                history[-kept:] = x[split - kept : split]
+                tail = torch.cat(
+                    [
+                        depthwise_conv4_silu_decode(x[t : t + 1], weight, bias, history)
+                        for t in range(split, x.shape[0])
+                    ]
+                )
+                torch.testing.assert_close(tail, expected[split:], rtol=3e-3, atol=5e-3)
+
+    def test_recurrent_gdn_decode_nonzero_state_inplace_and_out(self):
+        q, k, v, decay, beta, _ = self._inputs([3], 812)
+        state = torch.randn((32, 128, 128), device="cuda", dtype=torch.float32)
+        expected_out, expected_state = recurrent_decode(
+            q[:1], k[:1], v[:1], decay[:1], beta[:1], state
+        )
+        original_ptr = state.data_ptr()
+        out = torch.empty((1, 32, 128), device="cuda", dtype=torch.float32)
+        actual = recurrent_gdn_decode(
+            q[:1], k[:1], v[:1], decay[:1], beta[:1], state, out=out
+        )
+        self.assertEqual(actual.data_ptr(), out.data_ptr())
+        self.assertEqual(state.data_ptr(), original_ptr)
+        torch.testing.assert_close(actual, expected_out, rtol=1e-4, atol=1e-4)
+        torch.testing.assert_close(state, expected_state, rtol=1e-4, atol=1e-4)
+
+        # The same cache is continuously updated rather than recreated.
+        expected_out, expected_state = recurrent_decode(
+            q[1:2], k[1:2], v[1:2], decay[1:2], beta[1:2], expected_state
+        )
+        actual = recurrent_gdn_decode(
+            q[1:2], k[1:2], v[1:2], decay[1:2], beta[1:2], state
+        )
+        torch.testing.assert_close(actual, expected_out, rtol=1e-4, atol=1e-4)
+        torch.testing.assert_close(state, expected_state, rtol=1e-4, atol=1e-4)
+
+        overlapping = state.flatten()[128 : 128 + 32 * 128].view(1, 32, 128)
+        with self.assertRaisesRegex(ValueError, "must not alias state"):
+            recurrent_gdn_decode(
+                q[2:3],
+                k[2:3],
+                v[2:3],
+                decay[2:3],
+                beta[2:3],
+                state,
+                out=overlapping,
+            )
+
+    def test_chunk_final_state_continues_through_recurrent_decode(self):
+        """The WY chunk state has the exact [head,V,K] cache layout decoder uses."""
+        q, k, v, decay, beta, _ = self._inputs([68], 813)
+        prefix_cu = torch.tensor([0, 65], device="cuda", dtype=torch.int32)
+        _, state = chunk_gdn(
+            q[:65], k[:65], v[:65], decay[:65], beta[:65], prefix_cu, 65
+        )
+        state = state[0]
+        decoded = []
+        for token in range(65, 68):
+            decoded.append(
+                recurrent_gdn_decode(
+                    q[token : token + 1],
+                    k[token : token + 1],
+                    v[token : token + 1],
+                    decay[token : token + 1],
+                    beta[token : token + 1],
+                    state,
+                )
+            )
+        expected, expected_state = recurrent_vectorized(
+            q, k, v, decay, beta, torch.tensor([0, 68], device="cpu", dtype=torch.int32)
+        )
+        actual = torch.cat(decoded)
+        for value, reference in ((actual, expected[65:]), (state, expected_state[0])):
+            nrmse = (
+                value - reference
+            ).square().mean().sqrt() / reference.square().mean().sqrt().clamp_min(1e-8)
+            self.assertLessEqual(nrmse.item(), 5e-3)
 
     def _check_chunk_nrmse(self, lengths, seed, slow_decay=False):
         q, k, v, decay, beta, cu = self._inputs(lengths, seed)

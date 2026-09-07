@@ -810,8 +810,17 @@ def fused_nvfp4_moe(
     weights: MoeWeights,
     top_k: int = 8,
     residual: torch.Tensor | None = None,
-) -> torch.Tensor:
-    """Router + routed W4A4 MoE + optional FP16 shared expert."""
+    *,
+    capture_router: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Router + routed W4A4 MoE + optional FP16 shared expert.
+
+    ``capture_router`` is an opt-in validation hook.  It returns the normal
+    result along with the selected Top-8 expert IDs and their normalized
+    probabilities, without changing either the route or expert execution.
+    The route tensors stay on CUDA; callers that need host-side diagnostics
+    explicitly choose when to copy them out.
+    """
     if weights.router is None or weights.gate_up is None or weights.down is None:
         raise ValueError("router, gate_up, and down weights are required")
     if residual is not None and (
@@ -845,6 +854,8 @@ def fused_nvfp4_moe(
             shared=shared,
             residual=residual,
         )
+    if capture_router:
+        return out, ids, probs
     return out
 
 

@@ -1,4 +1,9 @@
-"""Text-only, stateless Qwen3.5 MoE entry point for the Volta path."""
+"""Text-only Qwen3.5 stateless compatibility entry point on SM70/SM89.
+
+Single-request cached generation uses the separate
+``sglang.srt.layers.qwen3_5.pipeline`` CLI and its fixed V100/4070 workers.
+This module retains the selected-layer ``forward_no_cache`` API.
+"""
 
 from __future__ import annotations
 
@@ -18,9 +23,11 @@ from sglang.srt.layers.qwen3_5.runner import Qwen35StatelessRunner
 class Qwen3_5MoeForConditionalGeneration(nn.Module):
     """Selected-layer Qwen3.5 text model with no cache or persistent state.
 
-    This intentionally is not a normal SGLang ``ModelRunner`` model.  It is a
-    compatibility entry point for the NVFP4 checkpoint on one V100 and exposes
-    only the packed, call-local stateless API below.
+    This is a compatibility entry point for the NVFP4 checkpoint on one
+    validated SM70 or SM89 device and exposes the packed, call-local API below.
+    Its runner also supports explicit request caches; full-model cached text
+    generation is composed by the separate two-worker pipeline.  Neither entry
+    is integrated into the normal SGLang ``ModelRunner`` serving scheduler.
     """
 
     def __init__(
