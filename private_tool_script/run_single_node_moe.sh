@@ -13,10 +13,14 @@ MODEL_PATH=/home/weights/Qwen3-30B-A3B-W8A8
 SERVED_MODEL_NAME=qwen3
 SERVER_HOST=127.0.0.1
 SERVER_PORT=8818
+MEM_FRACTION_STATIC=0.4
 
 # Decode CUDA Graph；在 NPU 上底层实际使用 NPUGraph。
 CUDA_GRAPH_BACKEND_DECODE=disabled #full
 CUDA_GRAPH_MAX_BS_DECODE=5
+
+# 1: 开启 NEXTN 投机解码；0: 关闭投机解码。
+ENABLE_SPECULATIVE=1
 # ==================================================
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,12 +44,32 @@ export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 export STREAMS_PER_DEVICE=32
 export ASCEND_USE_FIA=1
 export SGLANG_NPU_USE_MLAPO=1
-export SGLANG_ENABLE_OVERLAP_PLAN_STREAM=1
 export TRANSFORMERS_VERBOSITY=error
 
-# 5 个请求/rank × 每轮 6 个 NEXTN draft token = 30。
-export SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK=30
 export DEEPEP_HCCL_BUFFSIZE=1000
+
+case "${ENABLE_SPECULATIVE}" in
+  1)
+    export SGLANG_ENABLE_OVERLAP_PLAN_STREAM=1
+    # 5 个请求/rank × 每轮 6 个 NEXTN draft token = 30。
+    export SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK=30
+    set -- \
+      --speculative-algorithm NEXTN \
+      --speculative-draft-kv-cache-dtype bf16 \
+      --speculative-num-steps 5 \
+      --speculative-eagle-topk 1 \
+      --speculative-num-draft-tokens 6
+    ;;
+  0)
+    export SGLANG_ENABLE_OVERLAP_PLAN_STREAM=0
+    export SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK=5
+    set --
+    ;;
+  *)
+    echo "ERROR: ENABLE_SPECULATIVE must be 0 or 1." >&2
+    exit 2
+    ;;
+esac
 
 cat <<EOF
 ============================================================
@@ -76,7 +100,7 @@ LOAD_BALANCE_METHOD                             = round_robin
 
 [Memory and scheduling]
 MAX_RUNNING_REQUESTS                            = ${MAX_RUNNING_REQUESTS}
-MEM_FRACTION_STATIC                             = 0.86
+MEM_FRACTION_STATIC                             = ${MEM_FRACTION_STATIC}
 MAX_PREFILL_TOKENS                              = ${MAX_PREFILL_TOKENS}
 CHUNKED_PREFILL_SIZE                            = 65536
 KV_CACHE_DTYPE                                  = fp8_e4m3
@@ -106,11 +130,12 @@ DEEPEP_MODE                                     = auto
 SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK = ${SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK}
 
 [Speculative decoding]
-SPECULATIVE_ALGORITHM                           = NEXTN
-SPECULATIVE_DRAFT_KV_CACHE_DTYPE                = bf16
-SPECULATIVE_NUM_STEPS                           = 5
-SPECULATIVE_EAGLE_TOPK                          = 1
-SPECULATIVE_NUM_DRAFT_TOKENS                    = 6
+ENABLE_SPECULATIVE                              = ${ENABLE_SPECULATIVE}
+SPECULATIVE_ALGORITHM                           = NEXTN (used when enabled)
+SPECULATIVE_DRAFT_KV_CACHE_DTYPE                = bf16 (used when enabled)
+SPECULATIVE_NUM_STEPS                           = 5 (used when enabled)
+SPECULATIVE_EAGLE_TOPK                          = 1 (used when enabled)
+SPECULATIVE_NUM_DRAFT_TOKENS                    = 6 (used when enabled)
 SGLANG_ENABLE_OVERLAP_PLAN_STREAM               = ${SGLANG_ENABLE_OVERLAP_PLAN_STREAM}
 
 [Runtime]
@@ -142,7 +167,7 @@ exec python3 -m sglang.launch_server \
   --cuda-graph-max-bs-decode "${CUDA_GRAPH_MAX_BS_DECODE}" \
   --disable-prefill-cuda-graph \
   --max-running-requests "${MAX_RUNNING_REQUESTS}" \
-  --mem-fraction-static 0.4 \
+  --mem-fraction-static "${MEM_FRACTION_STATIC}" \
   --quantization modelslim \
   --max-prefill-tokens "${MAX_PREFILL_TOKENS}" \
   --chunked-prefill-size 65536 \
@@ -150,9 +175,5 @@ exec python3 -m sglang.launch_server \
   --load-balance-method round_robin \
   --moe-a2a-backend deepep \
   --deepep-mode auto \
-  --speculative-algorithm NEXTN \
-  --speculative-draft-kv-cache-dtype bf16 \
-  --speculative-num-steps 5 \
-  --speculative-eagle-topk 1 \
-  --speculative-num-draft-tokens 6 \
+  "$@" \
   --enable-metrics
