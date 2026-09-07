@@ -9,8 +9,9 @@ process, and hidden states travel through CPU memory.
 
 The selected-layer `forward_no_cache` compatibility API, original layers 0–3
 integration, and independent 40-layer precision scan remain available. The
-pipeline is a batch-one greedy text CLI; it is not integrated into SGLang's
-`ModelRunner`, scheduler, radix attention or general sstate management.
+pipeline has a batch-one greedy text CLI and a persistent single-request HTTP
+API; neither is integrated into SGLang's `ModelRunner`, scheduler, radix
+attention or general sstate management.
 
 ## Model structure
 
@@ -60,7 +61,7 @@ are shared by all experts in each routed layer. Down activation globals are
 expert specific. Route weights are applied after the down output boundary;
 combine uses a fixed Top-8 order.
 
-## Single-request state and text CLI
+## Single-request state, text CLI and HTTP API
 
 The cache holds at most 2048 consumed tokens, with one fresh contiguous prompt
 and no subsequent multi-turn append. For a generation limit R, the public
@@ -109,6 +110,40 @@ masks head rows `[248077,248320)` and stops on EOS IDs `{248046,248044}`.
 For a full-prefix test oracle, add `--validate-stateless`. This reports
 cached/stateless greedy, hidden/logits error and router diagnostics; full-prefix
 recomputation is only enabled by this validation option.
+
+To keep both GPU workers loaded and return results over HTTP, start the
+single-process API server:
+
+```bash
+PYTHONPATH=python:. \
+/home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python \
+  -m sglang.srt.layers.qwen3_5.pipeline_api \
+  --host 127.0.0.1 --port 30000 --served-model-name agent-world
+```
+
+Set `--api-key` or `SGLANG_API_KEY` to require a Bearer token. The server
+provides `/health`, `/generate`, `/v1/models`, `/v1/completions`, and
+`/v1/chat/completions`. For example:
+
+```bash
+curl http://127.0.0.1:30000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"agent-world","messages":[{"role":"user","content":"解释 KV cache。"}],"max_completion_tokens":8,"temperature":0}'
+```
+
+The API is deliberately non-streaming, greedy (`temperature=0`, `top_p=1`),
+and `n=1`. A concurrent request receives HTTP 429 instead of being batch
+scheduled. Responses include OpenAI-style text/usage plus exact prompt and
+completion token IDs under `sglang`; native `/generate` returns the same data
+under `meta_info`. Every response or error still ends with the two-worker reset.
+
+SM70 and SM89 execute the same Qwen3.5 Python/Triton operator sources, compiled
+independently in their worker processes for each architecture; they do not
+share a compiled binary. GPU numeric indices may appear in either order because
+the controller selects physical devices by UUID. The physical roles are not
+interchangeable in this fixed split: the V100 front allocation is about
+13.10 GB, larger than the 4070 SUPER's 12,282 MiB capacity, and the controller
+therefore continues to require SM70 front plus SM89 back.
 
 ## Running tests
 
@@ -177,7 +212,7 @@ is 12 GiB at total tokens <=2048.
 
 [VALIDATION_SM70_SM89_PIPELINE.md](VALIDATION_SM70_SM89_PIPELINE.md) records the
 dual-GPU cache contract, branch verification evidence and repeatable pipeline
-acceptance command. Final-code validation passed 114/114 unit tests and 5/5
+acceptance command. Final-code validation passed 122/122 unit tests and 5/5
 real-layer cache tests on each GPU, with no unit skips/errors. The saved
 [pipeline acceptance JSON](reports/pipeline_acceptance.json) has `ok=true`,
 including eight-step greedy agreement, reset/chat determinism and 2048-token

@@ -313,6 +313,10 @@ class _WorkerClient:
                 env=env,
                 stdin=subprocess.DEVNULL,
                 pass_fds=(child_sock.fileno(),),
+                # Keep terminal SIGINT/SIGHUP on the controller.  Long-lived
+                # API workers are shut down through the framed SHUTDOWN command
+                # so they can close their CUDA context without a traceback.
+                start_new_session=True,
             )
         except Exception:
             parent_sock.close()

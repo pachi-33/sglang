@@ -684,6 +684,29 @@ class TestWorkerClientValidation(unittest.TestCase):
         client.closed = False
         return client
 
+    def test_worker_process_isolated_from_controller_terminal_signals(self):
+        parent_sock = mock.Mock()
+        child_sock = mock.Mock()
+        child_sock.fileno.return_value = 17
+        process = mock.Mock()
+        with mock.patch.object(
+            pipeline.socket,
+            "socketpair",
+            return_value=(parent_sock, child_sock),
+        ), mock.patch.object(
+            pipeline.subprocess,
+            "Popen",
+            return_value=process,
+        ) as popen:
+            client = pipeline._WorkerClient("front", "GPU-test", "/model", 4)
+        self.assertIs(client.process, process)
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        self.assertEqual(popen.call_args.kwargs["pass_fds"], (17,))
+        child_sock.close.assert_called_once_with()
+        parent_sock.settimeout.assert_called_once_with(
+            pipeline._STARTUP_TIMEOUT_SECONDS
+        )
+
     def test_response_role_epoch_and_step_are_authenticated(self):
         request = {"command": "BEGIN", "epoch": 7, "step_id": -1}
         invalid = (

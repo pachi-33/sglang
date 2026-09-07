@@ -59,12 +59,13 @@ Q/K norm 和 RoPE 后 K，以及投影 V。GDN ≤64 使用 recurrent，>64 使�
 | 检查 | 最终结果 |
 |---|---|
 | SM89 顺序门 | 现有算子 unit gate 在 cache/流水线实现前通过；设备合同显式支持 SM89，没有用 monkey patch 绕过 V100 gate |
-| 双端完整 unit 回归 | SM89 114/114，SM70 114/114；无 skip/error |
+| 双端完整 unit 回归 | SM89 122/122，SM70 122/122；无 skip/error |
 | 真实层 cache | `integration.test_stateful_runner` 两卡各 5/5；包含 GDN/Full Attention prefill/decode 对照与生命周期检查 |
 | 修复后的 quantization 模块 | SM70 7/7；SM89 7/7 且 FP8 GEMM filtered memcheck 0 errors |
 | 双卡完整模型短序列 | 8 步 cached/stateless greedy token 均一致 |
 | A→reset→B→reset→A | A1/A2 IDs 均 `[11,271]`；B 为 `[271,248068]` |
 | Chat 连续两次 | IDs 均 `[90700,8340,25,271,16,13,220,2972]`，输出有限 |
+| HTTP API 与 GPU index 倒序 | 父进程按 V100、4070 顺序暴露时，worker 仍按 UUID 正确落卡；native/completions/chat 均为 HTTP 200，auth 401/200 合同通过 |
 | 完整双卡 acceptance | `ok=true`；容量/epoch/step 错误、半步失败恢复和 reset 显存检查通过 |
 
 8 步 cached/stateless 对照 token IDs：
@@ -167,6 +168,14 @@ PYTHONPATH=python:. \
 本页数值对应已保存报告。默认 A 为 `Hello`，B 为 `Explain cache reuse in one sentence.`，
 chat 为 `请用一句话解释 KV 缓存。`；不要把此前不同 B prompt 的交互式结果混入这份报告。
 
-当前支持范围为单请求连续状态与文本 greedy CLI；多轮 append、prefix sharing、
-radix attention、通用 sstate、分页 KV、服务端调度、视觉/MTP、批并行均不在此合同内。
+HTTP 服务入口为 `-m sglang.srt.layers.qwen3_5.pipeline_api`，提供 `/generate`、
+`/v1/models`、`/v1/completions` 与 `/v1/chat/completions`。真实 smoke 在父进程
+`CUDA_VISIBLE_DEVICES=V100_UUID,4070_UUID`（与机器 GPU index 顺序相反）下完成：
+completion `Hello` 返回 IDs `[11,271]`，chat 返回 `[90700,8340]`，worker 进程查询
+确认 front 位于 V100、back 位于 4070。两卡使用相同算子源码但独立 JIT target；不能把
+物理角色互换，因为约 13.10 GB 的 front 权重/cache 超过 4070 的 12,282 MiB 容量。
+
+当前支持范围为单请求连续状态、文本 greedy CLI 与非流式 HTTP API；多轮 append、
+prefix sharing、radix attention、通用 sstate、分页 KV、服务端调度、视觉/MTP、
+API streaming、批并行均不在此合同内。
 短序列 token 一致和有限输出是工程验收，不替代广泛 prompt 的生成质量评测。

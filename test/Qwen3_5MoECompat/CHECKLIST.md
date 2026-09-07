@@ -27,6 +27,7 @@ controller 在启动前给两个 worker 分别设置 UUID。
 | 单请求外部 cache | `runner.py` | `integration/test_stateful_runner.py` | runner 所有权、capacity、前缀长度、空/重复 prefill、单 token decode、容量耗尽；执行失败 poison，reset 清 Conv/GDN 与 KV 有效长度。 |
 | 双 worker 分层流水线 | `pipeline.py` | `unit/test_pipeline.py`、`integration/pipeline_acceptance.py` | V100 embed/0–19/norm/head；4070 20–39；独立子进程、带版本 JSON/FP16 帧、CPU staging，epoch/step/prefix/consumed_len 一致后才推进。半步失败 reset 两侧。 |
 | 文本 greedy CLI | `pipeline.py` | `unit/test_pipeline.py`、`integration/pipeline_acceptance.py` | chat template/raw/stdin、二维 merges 内存兼容、逐 tokenizer ID 对照；屏蔽 `[248077,248320)`，EOS `{248046,248044}`；R 个输出只执行 R−1 次 decode。 |
+| 单请求 HTTP API | `pipeline_api.py` | `unit/test_pipeline_api.py`、真实 HTTP smoke | 持久双 worker；`/generate`、models、OpenAI completions/chat；仅 greedy、非流式、n=1。API key 可选；并发请求返回 429；输出 text、usage、finish reason 和精确 token IDs；关闭时由 controller 向独立 session worker 发送 SHUTDOWN。 |
 
 ## 量化、线性层和投影打包
 

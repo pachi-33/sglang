@@ -66,8 +66,9 @@ chronological evidence, including limitations subsequently resolved.
 | P0 | Explicit SM70/SM89 correctness contract | Original SM89 unit gate passed before cache implementation; expanded dual-device regression recorded separately |
 | P1 | Single-request Conv/GDN/KV cache and decode | Implemented; kernel and real-layer continuity/lifecycle tests available |
 | P2 | Fixed 20/20 dual-worker greedy CLI | Implemented; cached/stateless greedy, reset/chat determinism and memory measurements recorded in pipeline validation |
+| P3 | Persistent single-request HTTP API | Implemented; native and non-streaming OpenAI completion/chat routes, auth, strict greedy contract, 429 concurrency guard and reversed parent GPU-index smoke passed |
 
-The P0–P2 evidence, exact command lines, failure investigation and remaining
+The P0–P3 evidence, exact command lines, failure investigation and remaining
 measurement distinctions are in
 [VALIDATION_SM70_SM89_PIPELINE.md](VALIDATION_SM70_SM89_PIPELINE.md).
 
