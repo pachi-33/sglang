@@ -57,6 +57,7 @@ class _FakePipeline:
         self.stream_gate = None
         self.after_first_token_gate = None
         self.stream_finished = threading.Event()
+        self.expert_trace_enabled = False
 
     def generate_ids(self, prompt_ids, **kwargs):
         self.calls.append((list(prompt_ids), dict(kwargs)))
@@ -149,6 +150,67 @@ class TestPipelineAPI(unittest.TestCase):
         )
         self.assertEqual(tokenizer.decoded, [([31, 32], False)])
         self.assertTrue(fake.closed)
+
+    def test_native_expert_trace_uses_response_id_as_local_basename(self):
+        fake, _, _, app = self._fixture([31])
+        fake.expert_trace_enabled = True
+        with TestClient(app) as client:
+            response = client.post(
+                "/generate",
+                json={
+                    "input_ids": [1, 2],
+                    "max_new_tokens": 1,
+                    "expert_trace": True,
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        request_id = response.json()["id"]
+        self.assertTrue(request_id.startswith("gen-"))
+        self.assertEqual(fake.calls[0][1]["expert_trace"], True)
+        self.assertEqual(fake.calls[0][1]["request_id"], request_id)
+
+    def test_expert_trace_requires_a_trace_capable_backend(self):
+        fake, _, _, app = self._fixture([31])
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/completions",
+                json={
+                    "model": "agent-world",
+                    "prompt": "hello",
+                    "max_tokens": 1,
+                    "expert_trace": True,
+                },
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("no trace directory", response.json()["error"]["message"])
+        self.assertEqual(fake.calls, [])
+
+    def test_streaming_expert_trace_uses_sse_request_id(self):
+        fake, _, _, app = self._fixture([41, 42])
+        fake.expert_trace_enabled = True
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "agent-world",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "max_tokens": 2,
+                    "stream": True,
+                    "expert_trace": True,
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        payloads = self._sse_payloads(response)
+        request_ids = {
+            payload["id"]
+            for payload in payloads
+            if isinstance(payload, dict) and "id" in payload
+        }
+        self.assertEqual(len(request_ids), 1)
+        request_id = request_ids.pop()
+        self.assertTrue(request_id.startswith("chatcmpl-"))
+        self.assertEqual(fake.stream_calls[0][1]["expert_trace"], True)
+        self.assertEqual(fake.stream_calls[0][1]["request_id"], request_id)
 
     def test_completion_is_openai_shaped_and_omits_terminal_eos_from_text(self):
         eos = EOS_TOKEN_IDS[0]

@@ -125,6 +125,7 @@ class CompletionRequest(_RequestModel):
     # length.  The backend remains greedy; an empty EOS set only disables the
     # early-stop check.
     ignore_eos: StrictBool = False
+    expert_trace: StrictBool = False
 
 
 class ChatCompletionRequest(_RequestModel):
@@ -146,6 +147,7 @@ class ChatCompletionRequest(_RequestModel):
     seed: StrictInt | None = None
     user: str | None = None
     ignore_eos: StrictBool = False
+    expert_trace: StrictBool = False
 
 
 class NativeGenerateRequest(_RequestModel):
@@ -153,6 +155,7 @@ class NativeGenerateRequest(_RequestModel):
     input_ids: list[StrictInt] | None = None
     messages: list[ChatMessageRequest] | None = None
     max_new_tokens: StrictInt = Field(default=16, ge=1, le=2048)
+    expert_trace: StrictBool = False
 
 
 @dataclass(frozen=True)
@@ -191,11 +194,13 @@ class _PipelineGenerationStream:
         prompt_ids: Sequence[int],
         max_new_tokens: int,
         eos_token_ids: Sequence[int],
+        generation_kwargs: dict[str, Any] | None = None,
     ) -> None:
         self.engine = engine
         self.prompt_ids = tuple(prompt_ids)
         self.max_new_tokens = max_new_tokens
         self.eos_token_ids = tuple(eos_token_ids)
+        self.generation_kwargs = dict(generation_kwargs or {})
         self._generate = generate
         self._events: queue.Queue[_StreamToken | _StreamTerminal] = queue.Queue()
         self._prefetched: _StreamToken | _StreamTerminal | None = None
@@ -277,6 +282,7 @@ class _PipelineGenerationStream:
                     max_new_tokens=self.max_new_tokens,
                     eos_token_ids=self.eos_token_ids,
                     token_callback=token_callback,
+                    **self.generation_kwargs,
                 )
             )
             if generated != callback_ids:
@@ -374,6 +380,8 @@ class Qwen35PipelineAPIEngine:
         max_new_tokens: int,
         *,
         ignore_eos: bool = False,
+        expert_trace: bool = False,
+        request_id: str | None = None,
     ) -> PipelineGeneration:
         if not self._request_lock.acquire(blocking=False):
             raise PipelineBusyError("the single pipeline request slot is busy")
@@ -388,10 +396,12 @@ class Qwen35PipelineAPIEngine:
             if not prompt_ids:
                 raise APIRequestError("prompt must produce at least one token")
             eos_token_ids = () if ignore_eos else EOS_TOKEN_IDS
+            trace_kwargs = self._expert_trace_kwargs(expert_trace, request_id)
             generated = self.pipeline.generate_ids(
                 prompt_ids,
                 max_new_tokens=max_new_tokens,
                 eos_token_ids=eos_token_ids,
+                **trace_kwargs,
             )
             stopped = bool(generated and generated[-1] in eos_token_ids)
             visible_ids = [token for token in generated if token not in eos_token_ids]
@@ -410,6 +420,8 @@ class Qwen35PipelineAPIEngine:
         max_new_tokens: int,
         *,
         ignore_eos: bool = False,
+        expert_trace: bool = False,
+        request_id: str | None = None,
     ) -> _PipelineGenerationStream:
         generate = getattr(self.backend, "generate_ids_stream", None)
         if not callable(generate):
@@ -430,12 +442,14 @@ class Qwen35PipelineAPIEngine:
             if not prompt_ids:
                 raise APIRequestError("prompt must produce at least one token")
             eos_token_ids = () if ignore_eos else EOS_TOKEN_IDS
+            trace_kwargs = self._expert_trace_kwargs(expert_trace, request_id)
             stream = _PipelineGenerationStream(
                 self,
                 generate,
                 prompt_ids,
                 max_new_tokens,
                 eos_token_ids,
+                trace_kwargs,
             )
             stream.start()
             ownership_transferred = True
@@ -450,6 +464,8 @@ class Qwen35PipelineAPIEngine:
         max_new_tokens: int,
         *,
         ignore_eos: bool = False,
+        expert_trace: bool = False,
+        request_id: str | None = None,
     ) -> PipelineGeneration:
         if isinstance(prompt, str):
             if not prompt:
@@ -458,7 +474,13 @@ class Qwen35PipelineAPIEngine:
         else:
             prompt_ids = list(prompt)
             builder = lambda: prompt_ids
-        return self._generate_locked(builder, max_new_tokens, ignore_eos=ignore_eos)
+        return self._generate_locked(
+            builder,
+            max_new_tokens,
+            ignore_eos=ignore_eos,
+            expert_trace=expert_trace,
+            request_id=request_id,
+        )
 
     def stream_raw(
         self,
@@ -466,6 +488,8 @@ class Qwen35PipelineAPIEngine:
         max_new_tokens: int,
         *,
         ignore_eos: bool = False,
+        expert_trace: bool = False,
+        request_id: str | None = None,
     ) -> _PipelineGenerationStream:
         if isinstance(prompt, str):
             if not prompt:
@@ -474,7 +498,13 @@ class Qwen35PipelineAPIEngine:
         else:
             prompt_ids = list(prompt)
             builder = lambda: prompt_ids
-        return self._begin_stream_locked(builder, max_new_tokens, ignore_eos=ignore_eos)
+        return self._begin_stream_locked(
+            builder,
+            max_new_tokens,
+            ignore_eos=ignore_eos,
+            expert_trace=expert_trace,
+            request_id=request_id,
+        )
 
     def complete_chat(
         self,
@@ -482,6 +512,8 @@ class Qwen35PipelineAPIEngine:
         max_new_tokens: int,
         *,
         ignore_eos: bool = False,
+        expert_trace: bool = False,
+        request_id: str | None = None,
     ) -> PipelineGeneration:
         wire_messages = [dict(message) for message in messages]
         if not wire_messages:
@@ -494,6 +526,8 @@ class Qwen35PipelineAPIEngine:
             ),
             max_new_tokens,
             ignore_eos=ignore_eos,
+            expert_trace=expert_trace,
+            request_id=request_id,
         )
 
     def stream_chat(
@@ -502,6 +536,8 @@ class Qwen35PipelineAPIEngine:
         max_new_tokens: int,
         *,
         ignore_eos: bool = False,
+        expert_trace: bool = False,
+        request_id: str | None = None,
     ) -> _PipelineGenerationStream:
         wire_messages = [dict(message) for message in messages]
         if not wire_messages:
@@ -514,7 +550,25 @@ class Qwen35PipelineAPIEngine:
             ),
             max_new_tokens,
             ignore_eos=ignore_eos,
+            expert_trace=expert_trace,
+            request_id=request_id,
         )
+
+    def _expert_trace_kwargs(
+        self, expert_trace: bool, request_id: str | None
+    ) -> dict[str, Any]:
+        if not expert_trace:
+            return {}
+        enabled = getattr(self.backend, "expert_trace_enabled", False)
+        if callable(enabled):
+            enabled = enabled()
+        if not enabled:
+            raise APIRequestError(
+                "expert trace was requested but this backend has no trace directory"
+            )
+        if not isinstance(request_id, str) or not request_id:
+            raise RuntimeError("an expert trace request requires a server request ID")
+        return {"expert_trace": True, "request_id": request_id}
 
     def close(self) -> None:
         # Shutdown waits for an in-flight request so worker sockets cannot be
@@ -882,6 +936,7 @@ def create_app(
         unauthorized = authenticate(raw_request)
         if unauthorized is not None:
             return unauthorized
+        request_id = "gen-" + uuid.uuid4().hex
 
         def run() -> PipelineGeneration:
             selected = sum(
@@ -897,18 +952,28 @@ def create_app(
                     message.model_dump(exclude_none=True)
                     for message in request.messages
                 ]
-                return engine.complete_chat(messages, request.max_new_tokens)
+                return engine.complete_chat(
+                    messages,
+                    request.max_new_tokens,
+                    expert_trace=request.expert_trace,
+                    request_id=request_id,
+                )
             prompt: str | Sequence[int]
             prompt = (
                 request.text if request.text is not None else request.input_ids or []
             )
-            return engine.complete_raw(prompt, request.max_new_tokens)
+            return engine.complete_raw(
+                prompt,
+                request.max_new_tokens,
+                expert_trace=request.expert_trace,
+                request_id=request_id,
+            )
 
         result = await invoke(run)
         if isinstance(result, JSONResponse):
             return result
         return {
-            "id": "gen-" + uuid.uuid4().hex,
+            "id": request_id,
             "text": result.text,
             "token_ids": list(result.completion_token_ids),
             "meta_info": {
@@ -923,6 +988,7 @@ def create_app(
         unauthorized = authenticate(raw_request)
         if unauthorized is not None:
             return unauthorized
+        request_id = "cmpl-" + uuid.uuid4().hex
 
         def run() -> PipelineGeneration | _PipelineGenerationStream:
             _validate_model(engine, request.model)
@@ -932,11 +998,15 @@ def create_app(
                     request.prompt,
                     request.max_tokens,
                     ignore_eos=request.ignore_eos,
+                    expert_trace=request.expert_trace,
+                    request_id=request_id,
                 )
             return engine.complete_raw(
                 request.prompt,
                 request.max_tokens,
                 ignore_eos=request.ignore_eos,
+                expert_trace=request.expert_trace,
+                request_id=request_id,
             )
 
         result = await invoke(run)
@@ -946,7 +1016,6 @@ def create_app(
             handshake_error = await stream_handshake(result)
             if handshake_error is not None:
                 return handshake_error
-            request_id = "cmpl-" + uuid.uuid4().hex
             created = int(time.time())
             return _PipelineStreamingResponse(
                 result,
@@ -960,7 +1029,7 @@ def create_app(
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
         return {
-            "id": "cmpl-" + uuid.uuid4().hex,
+            "id": request_id,
             "object": "text_completion",
             "created": int(time.time()),
             "model": engine.model_id,
@@ -981,6 +1050,7 @@ def create_app(
         unauthorized = authenticate(raw_request)
         if unauthorized is not None:
             return unauthorized
+        request_id = "chatcmpl-" + uuid.uuid4().hex
 
         def run() -> PipelineGeneration | _PipelineGenerationStream:
             _validate_model(engine, request.model)
@@ -993,11 +1063,15 @@ def create_app(
                     messages,
                     _chat_max_tokens(request),
                     ignore_eos=request.ignore_eos,
+                    expert_trace=request.expert_trace,
+                    request_id=request_id,
                 )
             return engine.complete_chat(
                 messages,
                 _chat_max_tokens(request),
                 ignore_eos=request.ignore_eos,
+                expert_trace=request.expert_trace,
+                request_id=request_id,
             )
 
         result = await invoke(run)
@@ -1007,7 +1081,6 @@ def create_app(
             handshake_error = await stream_handshake(result)
             if handshake_error is not None:
                 return handshake_error
-            request_id = "chatcmpl-" + uuid.uuid4().hex
             created = int(time.time())
             return _PipelineStreamingResponse(
                 result,
@@ -1021,7 +1094,7 @@ def create_app(
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
         return {
-            "id": "chatcmpl-" + uuid.uuid4().hex,
+            "id": request_id,
             "object": "chat.completion",
             "created": int(time.time()),
             "model": engine.model_id,

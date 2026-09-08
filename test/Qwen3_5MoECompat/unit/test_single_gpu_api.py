@@ -14,6 +14,7 @@ class TestSingleGPUAPI(unittest.TestCase):
         self.assertEqual(defaults.expert_stage_slots, 16)
         self.assertEqual(defaults.expert_io_workers, 2)
         self.assertEqual(defaults.capacity, 2048)
+        self.assertIsNone(defaults.expert_trace_dir)
         self.assertEqual(defaults.host, "127.0.0.1")
         self.assertEqual(defaults.port, 30000)
 
@@ -31,6 +32,8 @@ class TestSingleGPUAPI(unittest.TestCase):
                 "1024",
                 "--served-model-name",
                 "agent-world",
+                "--expert-trace-dir",
+                "/tmp/expert-traces",
             ]
         )
         self.assertEqual(configured.expert_pack_manifest, "/pack/manifest.json")
@@ -39,6 +42,7 @@ class TestSingleGPUAPI(unittest.TestCase):
         self.assertEqual(configured.expert_io_workers, 1)
         self.assertEqual(configured.capacity, 1024)
         self.assertEqual(configured.served_model_name, "agent-world")
+        self.assertEqual(configured.expert_trace_dir, "/tmp/expert-traces")
 
     def test_main_constructs_one_backend_and_one_uvicorn_worker(self):
         tokenizer = object()
@@ -73,6 +77,8 @@ class TestSingleGPUAPI(unittest.TestCase):
                     "1024",
                     "--stats-path",
                     "/tmp/stats.json",
+                    "--expert-trace-dir",
+                    "/tmp/expert-traces",
                     "--host",
                     "0.0.0.0",
                     "--port",
@@ -86,6 +92,7 @@ class TestSingleGPUAPI(unittest.TestCase):
         _, backend_kwargs = backend_type.call_args
         self.assertEqual(backend_kwargs["expert_cache_mib"], 6144)
         self.assertEqual(backend_kwargs["capacity"], 1024)
+        self.assertEqual(backend_kwargs["expert_trace_dir"], "/tmp/expert-traces")
         engine_type.assert_called_once_with(backend, tokenizer, model_id="agent-world")
         create_app.assert_called_once_with(engine, api_key="secret")
         uvicorn.run.assert_called_once_with(

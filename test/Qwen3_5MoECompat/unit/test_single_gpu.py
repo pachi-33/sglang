@@ -1,8 +1,10 @@
 """CPU-only lifecycle tests for the Qwen3.5 single-GPU entry point."""
 
 import io
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -17,6 +19,7 @@ class _FakeRunner:
         self.embedded = []
         self.prefill_lengths = []
         self.decode_calls = []
+        self.trace_steps = []
         self.reset_calls = 0
         self.closed = False
         self.failed = False
@@ -34,22 +37,28 @@ class _FakeRunner:
         self.embedded.append(values)
         return input_ids.to(dtype=torch.float32).view(-1, 1)
 
-    def prefill_hidden(self, hidden, *, cache):
+    def prefill_hidden(self, hidden, *, cache, expert_trace_step=None):
         if self.prefill_error is not None:
             if self.fail_fatally:
                 self.failed = True
                 cache.poisoned = True
             raise self.prefill_error
         self.prefill_lengths.append(hidden.shape[0])
+        if expert_trace_step is not None:
+            self.trace_steps.append(("prefill", expert_trace_step))
         cache.consumed_len = hidden.shape[0]
         return hidden
 
-    def decode_hidden(self, hidden, *, cache, expected_prefix_len):
+    def decode_hidden(
+        self, hidden, *, cache, expected_prefix_len, expert_trace_step=None
+    ):
         self.decode_calls.append(
             (hidden.to(dtype=torch.int64).view(-1).tolist(), expected_prefix_len)
         )
         if expected_prefix_len != cache.consumed_len:
             raise AssertionError("bad expected prefix")
+        if expert_trace_step is not None:
+            self.trace_steps.append(("decode", expert_trace_step))
         cache.consumed_len += 1
         return hidden
 
@@ -81,8 +90,36 @@ class _FakeRunner:
         self.closed = True
 
 
+class _FakeTraceSession:
+    instances = []
+    finalize_error = None
+
+    def __init__(self, config, **kwargs):
+        self.config = config
+        self.kwargs = kwargs
+        self.steps = []
+        self.commits = []
+        self.finalize_calls = []
+        type(self).instances.append(self)
+
+    def begin_step(self, **kwargs):
+        step = SimpleNamespace(**kwargs)
+        self.steps.append(step)
+        return step
+
+    def commit_step(self, step, sampled_token_id):
+        self.commits.append((step, sampled_token_id))
+
+    def finalize(self, **kwargs):
+        self.finalize_calls.append(kwargs)
+        if type(self).finalize_error is not None:
+            raise type(self).finalize_error
+
+
 class TestSingleGPU(unittest.TestCase):
     def setUp(self):
+        _FakeTraceSession.instances.clear()
+        _FakeTraceSession.finalize_error = None
         self.original_tensor = torch.tensor
         self.cuda_patches = (
             mock.patch.object(single_gpu.torch.cuda, "is_available", return_value=True),
@@ -210,6 +247,98 @@ class TestSingleGPU(unittest.TestCase):
         self.assertEqual(runner.cache.consumed_len, 0)
         self.assertEqual(backend.stats["last_generation"]["status"], "ok")
         self.assertEqual(backend.stats["last_generation"]["completion_tokens"], 3)
+
+    def test_trace_uses_output_attribution_for_prefill_and_decode(self):
+        runner = _FakeRunner((31, 32, 33))
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            single_gpu, "ExpertTraceSession", _FakeTraceSession
+        ):
+            backend, _ = self._backend(runner, capacity=8, expert_trace_dir=directory)
+            with mock.patch.object(
+                backend, "_expert_trace_identity", return_value={"identity": "test"}
+            ):
+                try:
+                    generated = backend.generate_ids(
+                        [10, 11],
+                        max_new_tokens=3,
+                        eos_token_ids=(),
+                        expert_trace=True,
+                        request_id="cmpl-test",
+                    )
+                finally:
+                    backend.close()
+
+        self.assertEqual(generated, [31, 32, 33])
+        self.assertEqual(len(_FakeTraceSession.instances), 1)
+        session = _FakeTraceSession.instances[0]
+        self.assertEqual(session.kwargs["request_id"], "cmpl-test")
+        self.assertEqual(session.kwargs["max_rows"], 3)
+        self.assertEqual(session.kwargs["prompt_tokens"], 2)
+        self.assertEqual(
+            [
+                (step.phase, step.model_input_token_id, step.model_input_position)
+                for step in session.steps
+            ],
+            [
+                (single_gpu.PHASE_PREFILL_LAST, 11, 1),
+                (single_gpu.PHASE_DECODE, 31, 2),
+                (single_gpu.PHASE_DECODE, 32, 3),
+            ],
+        )
+        self.assertEqual(
+            [sampled_token for _, sampled_token in session.commits], [31, 32, 33]
+        )
+        self.assertEqual(
+            [(phase, step) for phase, step in runner.trace_steps],
+            [
+                ("prefill", session.steps[0]),
+                ("decode", session.steps[1]),
+                ("decode", session.steps[2]),
+            ],
+        )
+        self.assertEqual(
+            session.finalize_calls,
+            [{"status": "ok", "stopped_on_eos": False, "error": None}],
+        )
+
+    def test_trace_request_without_config_is_rejected_before_mutation(self):
+        runner = _FakeRunner((31,))
+        backend, _ = self._backend(runner, capacity=4)
+        try:
+            with self.assertRaisesRegex(ValueError, "no expert_trace_dir"):
+                backend.generate_ids(
+                    [1], max_new_tokens=1, expert_trace=True, request_id="test"
+                )
+        finally:
+            backend.close()
+        self.assertEqual(runner.embedded, [])
+        self.assertEqual(backend.stats["request_count"], 0)
+
+    def test_trace_finalize_failure_latches_backend(self):
+        runner = _FakeRunner((31,))
+        _FakeTraceSession.finalize_error = OSError("disk full")
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            single_gpu, "ExpertTraceSession", _FakeTraceSession
+        ):
+            backend, _ = self._backend(runner, capacity=4, expert_trace_dir=directory)
+            with mock.patch.object(backend, "_expert_trace_identity", return_value={}):
+                try:
+                    with self.assertRaisesRegex(OSError, "disk full"):
+                        backend.generate_ids(
+                            [1],
+                            max_new_tokens=1,
+                            expert_trace=True,
+                            request_id="io-test",
+                        )
+                    self.assertTrue(backend.failed)
+                    self.assertTrue(backend.cache.poisoned)
+                    self.assertEqual(
+                        backend.stats["last_generation"]["status"], "failed"
+                    )
+                    with self.assertRaisesRegex(RuntimeError, "restart"):
+                        backend.generate_ids([2], max_new_tokens=1)
+                finally:
+                    backend.close()
 
     def test_callback_failure_resets_and_preserves_nonfatal_reuse(self):
         runner = _FakeRunner((31, 32))
@@ -395,6 +524,21 @@ class TestSingleGPU(unittest.TestCase):
             ):
                 single_gpu._require_single_supported_gpu()
 
+    def test_device_uuid_falls_back_to_nvml_physical_index(self):
+        properties = SimpleNamespace()
+        with mock.patch.object(
+            single_gpu.torch.cuda, "get_device_properties", return_value=properties
+        ), mock.patch.object(
+            single_gpu.torch.cuda, "_get_nvml_device_index", return_value=1
+        ), mock.patch.object(
+            single_gpu.torch.cuda,
+            "_raw_device_uuid_nvml",
+            return_value=["GPU-first", "GPU-second"],
+        ):
+            self.assertEqual(
+                single_gpu._cuda_device_uuid(torch.device("cuda:0")), "GPU-second"
+            )
+
     def test_cli_defaults_and_requested_offload_profile(self):
         defaults = single_gpu._parse_args([])
         self.assertEqual(defaults.expert_cache_mib, 7168)
@@ -472,6 +616,48 @@ class TestSingleGPU(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "decoded\n")
         self.assertIn('QWEN35_SINGLE_GPU={"state": "READY"}', stderr.getvalue())
         self.assertIn("TOKEN_IDS=[31, 32]", stderr.getvalue())
+
+    def test_cli_trace_output_sets_directory_and_request_basename(self):
+        tokenizer = mock.Mock()
+        tokenizer.encode.return_value = [10]
+        tokenizer.decode.return_value = "decoded"
+        backend = mock.MagicMock()
+        backend.__enter__.return_value = backend
+        backend.__exit__.return_value = False
+        backend.generate_ids.return_value = [31]
+        backend.stats = {"state": "READY"}
+        with tempfile.TemporaryDirectory() as directory:
+            output = f"{directory}/hello-trace"
+            with mock.patch.object(
+                single_gpu, "load_tokenizer_compat", return_value=tokenizer
+            ), mock.patch.object(
+                single_gpu, "Qwen35SingleGPU", return_value=backend
+            ) as backend_type, redirect_stdout(
+                io.StringIO()
+            ), redirect_stderr(
+                io.StringIO()
+            ):
+                result = single_gpu.main(
+                    [
+                        "--raw-prompt",
+                        "--prompt",
+                        "Hello",
+                        "--max-new-tokens",
+                        "1",
+                        "--expert-trace-output",
+                        output,
+                    ]
+                )
+        self.assertEqual(result, 0)
+        _, backend_kwargs = backend_type.call_args
+        self.assertEqual(backend_kwargs["expert_trace_dir"], Path(directory))
+        backend.generate_ids.assert_called_once_with(
+            [10],
+            max_new_tokens=1,
+            eos_token_ids=single_gpu.EOS_TOKEN_IDS,
+            expert_trace=True,
+            request_id="hello-trace",
+        )
 
     def test_cli_fatal_prints_stats_closes_and_propagates_for_nonzero_exit(self):
         tokenizer = mock.Mock()

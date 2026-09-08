@@ -13,6 +13,7 @@ from .attention import causal_gqa, causal_gqa_decode
 from .checkpoint import Qwen35Checkpoint
 from .dense import fp16_embedding, linear_fp16
 from .expert_pack.store import ExpertOffloadConfig, ExpertPackStore
+from .expert_trace import ExpertTraceStep
 from .gdn import (
     chunk_gdn,
     depthwise_conv4_silu,
@@ -505,6 +506,7 @@ class Qwen35StatelessRunner:
         layer: StatelessLayer,
         *,
         router_capture: RouterCapture | None = None,
+        expert_trace_step: ExpertTraceStep | None = None,
     ) -> torch.Tensor:
         w = layer.weights
         offloaded = self.expert_store is not None and 1 <= layer.layer_id <= 38
@@ -521,15 +523,20 @@ class Qwen35StatelessRunner:
                 layer_id=layer.layer_id if offloaded else None,
             ),
             residual=hidden,
-            capture_router=router_capture is not None,
+            capture_router=(
+                router_capture is not None or expert_trace_step is not None
+            ),
         )
-        if router_capture is None:
+        if router_capture is None and expert_trace_step is None:
             return result
         output, ids, probabilities = result
-        # Keep only the last logical token.  This is deliberately a CUDA view:
-        # the pipeline's validation worker is the sole caller that later makes
-        # an explicit D2H copy for its compact diagnostic frame.
-        router_capture[layer.layer_id] = (ids[-1], probabilities[-1])
+        if router_capture is not None:
+            # Keep only the last logical token.  This is deliberately a CUDA
+            # view: the pipeline's validation worker is the sole caller that
+            # later makes an explicit D2H copy for its compact diagnostic frame.
+            router_capture[layer.layer_id] = (ids[-1], probabilities[-1])
+        if expert_trace_step is not None:
+            expert_trace_step.capture(layer.layer_id, ids)
         return output
 
     def _finish_layer(
@@ -539,11 +546,18 @@ class Qwen35StatelessRunner:
         layer: StatelessLayer,
         *,
         router_capture: RouterCapture | None = None,
+        expert_trace_step: ExpertTraceStep | None = None,
     ) -> torch.Tensor:
         hidden, post_norm = residual_add_gemma_rms_norm(
             hidden, projected, layer.weights["post_attention_layernorm.weight"]
         )
-        return self._moe(hidden, post_norm, layer, router_capture=router_capture)
+        return self._moe(
+            hidden,
+            post_norm,
+            layer,
+            router_capture=router_capture,
+            expert_trace_step=expert_trace_step,
+        )
 
     def prefill_hidden(
         self,
@@ -551,6 +565,7 @@ class Qwen35StatelessRunner:
         *,
         cache: SingleRequestCache,
         router_capture: RouterCapture | None = None,
+        expert_trace_step: ExpertTraceStep | None = None,
     ) -> torch.Tensor:
         """Run one nonempty fresh sequence and populate its continuation cache."""
         _require_cuda_matrix(hidden, "hidden_states")
@@ -580,7 +595,11 @@ class Qwen35StatelessRunner:
                         hidden, layer, layer_cache, positions, cu_seqlens
                     )
                 hidden = self._finish_layer(
-                    hidden, projected, layer, router_capture=router_capture
+                    hidden,
+                    projected,
+                    layer,
+                    router_capture=router_capture,
+                    expert_trace_step=expert_trace_step,
                 )
             # Cache progress is transactional: surface asynchronous kernel
             # failures before publishing a new consumed length.  The pipeline
@@ -601,6 +620,7 @@ class Qwen35StatelessRunner:
         cache: SingleRequestCache,
         expected_prefix_len: int,
         router_capture: RouterCapture | None = None,
+        expert_trace_step: ExpertTraceStep | None = None,
     ) -> torch.Tensor:
         """Advance an existing single-sequence cache by one token."""
         _require_cuda_matrix(hidden, "hidden_states")
@@ -638,7 +658,11 @@ class Qwen35StatelessRunner:
                         hidden, layer, layer_cache, position, prefix_len
                     )
                 hidden = self._finish_layer(
-                    hidden, projected, layer, router_capture=router_capture
+                    hidden,
+                    projected,
+                    layer,
+                    router_capture=router_capture,
+                    expert_trace_step=expert_trace_step,
                 )
             torch.cuda.synchronize(self.device)
         except Exception as error:

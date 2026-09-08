@@ -31,6 +31,10 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--expert-io-workers", type=int, default=2)
     parser.add_argument("--capacity", type=int, default=2048)
     parser.add_argument("--stats-path")
+    parser.add_argument(
+        "--expert-trace-dir",
+        help="server-local directory for explicitly requested expert traces",
+    )
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--api-key", default=os.environ.get("SGLANG_API_KEY"))
@@ -55,6 +59,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         expert_io_workers=args.expert_io_workers,
         capacity=args.capacity,
         stats_path=args.stats_path,
+        expert_trace_dir=args.expert_trace_dir,
     )
     engine = None
     try:
