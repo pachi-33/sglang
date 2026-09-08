@@ -18,15 +18,15 @@ set -euo pipefail
 # script also emits a structured *.summary.json with distributions and SLOs.
 
 SGLANG_ROOT="${SGLANG_ROOT:-/home/y00951466/sglang}"
-MODEL="${MODEL:-/home/weights/Qwen3.6-27B-W8A8}"
-HOST="${HOST:-61.47.19.76}"
+MODEL="${MODEL:-/home/weights/Qwen3.5-35B-A3B-w8a8-mtp}"
+HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8818}"
 BASE_URL="http://${HOST}:${PORT}"
 
-INPUT_LEN="${INPUT_LEN:-16384}"
-OUTPUT_LEN="${OUTPUT_LEN:-1024}"
+INPUT_LEN="${INPUT_LEN:-1024}"
+OUTPUT_LEN="${OUTPUT_LEN:-128}"
 NUM_REQUESTS="${NUM_REQUESTS:-128}"
-MAX_CONCURRENCY="${MAX_CONCURRENCY:-104}"
+MAX_CONCURRENCY="${MAX_CONCURRENCY:-10}"
 REQUEST_RATE="${REQUEST_RATE:-inf}"
 PAGE_SIZE="${PAGE_SIZE:-auto}"
 # Backward-compatible precedence:
