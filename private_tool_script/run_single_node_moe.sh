@@ -9,8 +9,8 @@ set -Eeuo pipefail
 NUM_NPUS=2
 export ASCEND_RT_VISIBLE_DEVICES=14,15
 
-MODEL_PATH=/home/weights/Qwen3-30B-A3B-W8A8 
-SERVED_MODEL_NAME=qwen3
+MODEL_PATH=/home/weights/Qwen3.5-35B-A3B-w8a8-mtp
+SERVED_MODEL_NAME=qwen3.5
 SERVER_HOST=127.0.0.1
 SERVER_PORT=8818
 MEM_FRACTION_STATIC=0.7
@@ -20,7 +20,7 @@ CUDA_GRAPH_BACKEND_DECODE=full #full disabled
 CUDA_GRAPH_MAX_BS_DECODE=5
 
 # 1: 开启 NEXTN 投机解码；0: 关闭投机解码。
-ENABLE_SPECULATIVE=0
+ENABLE_SPECULATIVE=1
 
 # 1: 主模型 KV Cache 使用 FP8；0: 使用 BF16。
 ENABLE_FP8_KV_CACHE=0
@@ -70,7 +70,8 @@ case "${ENABLE_SPECULATIVE}" in
       --speculative-draft-kv-cache-dtype bf16 \
       --speculative-num-steps 5 \
       --speculative-eagle-topk 1 \
-      --speculative-num-draft-tokens 6
+      --speculative-num-draft-tokens 6 \
+      --speculative-draft-model-quantization unquant
     ;;
   0)
     export SGLANG_ENABLE_OVERLAP_PLAN_STREAM=0
@@ -185,6 +186,7 @@ exec python3 -m sglang.launch_server \
   --max-prefill-tokens "${MAX_PREFILL_TOKENS}" \
   --chunked-prefill-size 65536 \
   --kv-cache-dtype "${KV_CACHE_DTYPE}" \
+  --mamba-ssm-dtype bfloat16 \
   --load-balance-method round_robin \
   --moe-a2a-backend deepep \
   --deepep-mode auto \
