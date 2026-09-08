@@ -1,12 +1,14 @@
-# Qwen3.5 MoE SM70/SM89 implementation milestones
+# Qwen3.5 MoE ExpertPack implementation milestones
 
-Current branch: `feat/qwen3/pp`; M0–M5 below preserve the earlier
-`feat/qwen3/compat` stateless implementation evidence.
+Current branch: `feat/moe-offload-infra`, implementation base
+`26a7b704b631c29f9812cfdc7b478e77ee3940d4`. M0–M5 below preserve the earlier
+stateless operator evidence; P0–P3 preserve the dual-GPU pipeline evidence.
+E0–E5 track the current single-V100 ExpertPack delivery.
 
 The implementation preserves the checkpoint's 130 FP8 W8A8 attention matrices
 and 29,184 NVFP4 W4A4 routed-expert matrices. All layer numbers are zero based.
-Production compute uses Triton on validated SM70 and SM89. The configurable
-pipeline keeps one request's Conv tail, FP32 GDN state and continuous Full
+ExpertPack production compute uses Triton on SM70 only. The retained configurable
+SM70/SM89 pipeline keeps one request's Conv tail, FP32 GDN state and continuous Full
 Attention KV across prefill/decode calls. The selected-layer stateless API
 remains call-local. M0–M5 measurements below retain their original SM70 scope;
 new pipeline evidence is recorded separately rather than assigned their hashes.
@@ -16,9 +18,11 @@ new pipeline evidence is recorded separately rather than assigned their hashes.
 - Python: `/home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python`.
 - Initial packages: Python 3.10, torch 2.3.1+cu121, Triton 2.3.1,
   transformers 4.43.2, safetensors 0.8.0, numpy 1.26.4.
-- Default front device: RTX 4070 SUPER, SM89,
+- ExpertPack target device: Tesla V100-SXM2-16GB, SM70,
+  `GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96`, complete layers 0–39 and globals.
+- Legacy pipeline front device: RTX 4070 SUPER, SM89,
   `GPU-75341d61-b0b3-969b-8ef8-4b750d11ade4`, layers 0–16 plus globals.
-- Default back device: Tesla V100-SXM2-16GB, SM70,
+- Legacy pipeline back device: Tesla V100-SXM2-16GB, SM70,
   `GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96`, layers 17–39.
 - GPU tests use one visible UUID and acquire
   `/tmp/qwen35-gpu-<UUID>-sm<capability>.lock`; V100-only benchmark/scan commands
@@ -67,10 +71,34 @@ chronological evidence, including limitations subsequently resolved.
 | P1 | Single-request Conv/GDN/KV cache and decode | Implemented; kernel and real-layer continuity/lifecycle tests available |
 | P2 | Configurable dual-worker greedy CLI | Implemented; default SM89-front 17/23 split passed 2048 prefill; cached/stateless greedy, reset/chat determinism and memory measurements recorded in pipeline validation |
 | P3 | Persistent single-request HTTP API | Implemented; configurable front/back/split, native and non-streaming OpenAI completion/chat routes, auth, strict greedy contract and 429 concurrency guard |
+| E0 | Freeze Qwen-AgentWorld/V100/ExpertPack ABI | Verified: exact config/index identity and fixed layers 1–38 NVFP4 layout |
+| E1 | Build and validate immutable ExpertPack | Verified: 9,728 payloads/padding/source bytes and whole pack SHA; concurrent publisher lock regression passed |
+| E2 | Typed cache/lease and slot-aware NVFP4 | Verified for CPU contracts, normal execution and H2D fatal propagation; controlled delayed slot-reuse interleaving remains open |
+| E3 | Complete 40-layer single-V100 generation | Verified: raw Hello oracle and A/B/A reset exact |
+| E4 | 2048/context/memory profile | Verified: finite 2048 prefill, capacity recovery, 7168 MiB cache and >1 GiB peak-reserved margin |
+| E5 | HTTP/fatal/stress/release closure | In progress: live HTTP 200/429 and checksum/short-read/H2D→FAILED/503 passed; cancellation, restart, long stress and release commit remain open |
 
 The P0–P3 evidence, exact command lines, failure investigation and remaining
 measurement distinctions are in
 [VALIDATION_SM70_SM89_PIPELINE.md](VALIDATION_SM70_SM89_PIPELINE.md).
+E0–E4 evidence and remaining E5 gates are in [VALIDATION.md](VALIDATION.md).
+
+## ExpertPack evidence snapshot — 2026-09-08
+
+- Artifact: `SGLANG-QWEN35-NVFP4-EXPERTPACK-v1`, 17,253,269,504 bytes,
+  SHA-256 `5d53114a227ed9d7a86e656a557b5c6ffbb9d10f46ddb5ca27671397ccdbe1f5`.
+- Device: one Tesla V100-SXM2-16GB, SM70; 4070 not visible to the process.
+- Acceptance: [expert_offload_acceptance_v100_7168.json](reports/expert_offload_acceptance_v100_7168.json),
+  root-reviewed exit 0 and `status=passed`.
+- Memory: cache 7,515,015,536 B; peak reserved 14,971,568,128 B; margin
+  1,956,773,888 B.
+- Correctness: raw `Hello` tokens exact; A/B/A exact; 2048 prefill finite;
+  capacity error did not corrupt the next request.
+- Passed: live V100 HTTP 200 for `/generate` and both OpenAI routes, concurrent
+  request 429, and checksum/short-read/H2D-triggered FAILED with first/health/later
+  503, cache poison, and no partial resident expert on H2D failure.
+- Pending: connection cancellation with an in-flight lease, fresh-process restart
+  after fatal failure, long stress and a clean release commit.
 
 ## Pre-implementation feasibility evidence
 

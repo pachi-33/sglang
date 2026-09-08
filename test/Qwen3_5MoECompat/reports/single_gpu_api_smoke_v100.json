@@ -1,0 +1,133 @@
+{
+  "chat_completions": {
+    "body": {
+      "choices": [
+        {
+          "finish_reason": "length",
+          "index": 0,
+          "logprobs": null,
+          "message": {
+            "content": "Thinking Process:\n\n",
+            "role": "assistant"
+          }
+        }
+      ],
+      "created": 1788838607,
+      "id": "chatcmpl-c29a9418a23c406dbeb1ae0e1caed7e2",
+      "model": "Qwen-AgentWorld-35B-A3B-NVFP4_fp16",
+      "object": "chat.completion",
+      "sglang": {
+        "completion_token_ids": [
+          90700,
+          8340,
+          25,
+          271
+        ],
+        "prompt_token_ids": [
+          248045,
+          846,
+          198,
+          44240,
+          23066,
+          303,
+          799,
+          3299,
+          13,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          198
+        ]
+      },
+      "usage": {
+        "completion_tokens": 4,
+        "prompt_tokens": 16,
+        "total_tokens": 20
+      }
+    },
+    "status": 200
+  },
+  "checks": {
+    "all_http_200": true,
+    "chat_completion_tokens": 4,
+    "completions_oracle_exact": true,
+    "generate_oracle_exact": true
+  },
+  "completions": {
+    "body": {
+      "choices": [
+        {
+          "finish_reason": "length",
+          "index": 0,
+          "logprobs": null,
+          "text": ",\n\nI am trying to use the"
+        }
+      ],
+      "created": 1788838602,
+      "id": "cmpl-e4075cd87272491eabe5310882e61193",
+      "model": "Qwen-AgentWorld-35B-A3B-NVFP4_fp16",
+      "object": "text_completion",
+      "sglang": {
+        "completion_token_ids": [
+          11,
+          271,
+          40,
+          1044,
+          4313,
+          310,
+          958,
+          279
+        ],
+        "prompt_token_ids": [
+          9419
+        ]
+      },
+      "usage": {
+        "completion_tokens": 8,
+        "prompt_tokens": 1,
+        "total_tokens": 9
+      }
+    },
+    "status": 200
+  },
+  "generate": {
+    "body": {
+      "id": "gen-3c66dd49f483426da69ec2444510da1d",
+      "meta_info": {
+        "completion_token_ids": [
+          11,
+          271,
+          40,
+          1044,
+          4313,
+          310,
+          958,
+          279
+        ],
+        "completion_tokens": 8,
+        "finish_reason": "length",
+        "prompt_token_ids": [
+          9419
+        ],
+        "prompt_tokens": 1,
+        "total_tokens": 9
+      },
+      "text": ",\n\nI am trying to use the",
+      "token_ids": [
+        11,
+        271,
+        40,
+        1044,
+        4313,
+        310,
+        958,
+        279
+      ]
+    },
+    "status": 200
+  },
+  "status": "passed"
+}

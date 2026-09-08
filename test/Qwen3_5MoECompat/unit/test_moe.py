@@ -210,6 +210,54 @@ def _nvfp4_weight(values: torch.Tensor, *, device: str) -> Weight:
     )
 
 
+def _select_nvfp4_experts(weight: Weight, experts: torch.Tensor) -> Weight:
+    """Build a compact physical cache in the requested slot order."""
+    indices = experts.to(device=weight.data.device, dtype=torch.int64)
+    return Weight(
+        "nvfp4",
+        weight.data.index_select(0, indices).contiguous(),
+        (indices.numel(), *weight.logical_shape[1:]),
+        weight.block_scale.index_select(0, indices).contiguous(),
+        weight.global_scale.reshape(-1).index_select(0, indices).contiguous(),
+        weight.input_global_scale.reshape(-1).index_select(0, indices).contiguous(),
+    )
+
+
+def _place_nvfp4_expert_in_high_slot(
+    weight: Weight, logical_expert: int, slot: int
+) -> Weight:
+    """Create a small-shape cache whose only populated entry is a high slot."""
+    capacity = slot + 1
+    data = torch.zeros(
+        (capacity, *weight.data.shape[1:]),
+        dtype=weight.data.dtype,
+        device=weight.data.device,
+    )
+    block_scale = torch.zeros(
+        (capacity, *weight.block_scale.shape[1:]),
+        dtype=weight.block_scale.dtype,
+        device=weight.block_scale.device,
+    )
+    global_scale = torch.ones(
+        (capacity,), dtype=torch.float32, device=weight.data.device
+    )
+    input_global_scale = torch.ones_like(global_scale)
+    data[slot].copy_(weight.data[logical_expert])
+    block_scale[slot].copy_(weight.block_scale[logical_expert])
+    global_scale[slot].copy_(weight.global_scale.reshape(-1)[logical_expert])
+    input_global_scale[slot].copy_(
+        weight.input_global_scale.reshape(-1)[logical_expert]
+    )
+    return Weight(
+        "nvfp4",
+        data,
+        (capacity, *weight.logical_shape[1:]),
+        block_scale,
+        global_scale,
+        input_global_scale,
+    )
+
+
 class TestQwen35MoeGPU(V100TestCase):
     def test_gpu_dispatch_matches_stable_reference(self):
         for tokens, hotspot in (
@@ -287,6 +335,129 @@ class TestQwen35MoeGPU(V100TestCase):
             / baseline.float().square().mean().sqrt()
         ).item()
         self.assertLess(nrmse, 5e-3)
+
+    def test_routed_nvfp4_compact_cache_uses_nonidentity_slot_map(self):
+        torch.manual_seed(101)
+        x = (torch.randn((2, 32), dtype=torch.float16) * 0.1).cuda()
+        gate_base = _nvfp4_weight(
+            torch.randn((256, 64, 32), dtype=torch.float16) * 0.03,
+            device="cuda",
+        )
+        down_base = _nvfp4_weight(
+            torch.randn((256, 32, 32), dtype=torch.float16) * 0.03,
+            device="cuda",
+        )
+        gate_up = Weight(
+            "nvfp4",
+            gate_base.data,
+            gate_base.logical_shape,
+            gate_base.block_scale,
+            torch.linspace(0.8, 1.2, 256, dtype=torch.float32, device="cuda"),
+            torch.linspace(0.7, 1.1, 256, dtype=torch.float32, device="cuda"),
+        )
+        down = Weight(
+            "nvfp4",
+            down_base.data,
+            down_base.logical_shape,
+            down_base.block_scale,
+            torch.linspace(0.9, 1.3, 256, dtype=torch.float32, device="cuda"),
+            torch.linspace(0.6, 1.0, 256, dtype=torch.float32, device="cuda"),
+        )
+        logical = torch.tensor(
+            [0, 7, 19, 31, 48, 63, 79, 96, 112, 127, 143, 160, 191, 207, 231, 255],
+            dtype=torch.int32,
+            device="cuda",
+        )
+        ids = logical.reshape(2, 8)
+        probs = torch.full((2, 8), 0.125, dtype=torch.float32, device="cuda")
+        physical_order = logical[
+            torch.tensor(
+                [5, 13, 1, 9, 15, 3, 11, 7, 0, 14, 4, 12, 2, 10, 6, 8],
+                dtype=torch.int64,
+                device="cuda",
+            )
+        ]
+        cached_gate_up = _select_nvfp4_experts(gate_up, physical_order)
+        cached_down = _select_nvfp4_experts(down, physical_order)
+        expert_to_slot = torch.full((256,), -1, dtype=torch.int32, device="cuda")
+        expert_to_slot[physical_order.to(torch.int64)] = torch.arange(
+            physical_order.numel(), dtype=torch.int32, device="cuda"
+        )
+
+        resident = execute_experts(x, gate_up, down, ids, probs)
+        mapped, mapped_routes, mapped_inverse = execute_experts(
+            x,
+            cached_gate_up,
+            cached_down,
+            ids,
+            probs,
+            expert_to_slot=expert_to_slot,
+            capture_routes=True,
+        )
+        self.assertTrue(torch.equal(mapped, resident))
+        self.assertTrue(
+            torch.equal(
+                mapped,
+                mapped_routes[mapped_inverse].reshape(2, 8, 32).sum(dim=1).half(),
+            )
+        )
+
+        missing = expert_to_slot.clone()
+        missing[logical[3].to(torch.int64)] = -1
+        with self.assertRaisesRegex(ValueError, "missing a routed expert"):
+            execute_experts(
+                x,
+                cached_gate_up,
+                cached_down,
+                ids,
+                probs,
+                expert_to_slot=missing,
+            )
+        outside = expert_to_slot.clone()
+        outside[logical[3].to(torch.int64)] = physical_order.numel()
+        with self.assertRaisesRegex(ValueError, "outside the cache"):
+            execute_experts(
+                x,
+                cached_gate_up,
+                cached_down,
+                ids,
+                probs,
+                expert_to_slot=outside,
+            )
+
+    def test_routed_nvfp4_cache_supports_slot_2048(self):
+        """Keep high cache slots valid without allocating model-size weights."""
+        torch.manual_seed(103)
+        x = (torch.randn((1, 32), dtype=torch.float16) * 0.1).cuda()
+        gate_up = _nvfp4_weight(
+            torch.randn((256, 64, 32), dtype=torch.float16) * 0.03,
+            device="cuda",
+        )
+        down = _nvfp4_weight(
+            torch.randn((256, 32, 32), dtype=torch.float16) * 0.03,
+            device="cuda",
+        )
+        logical_expert = 211
+        high_slot = 2048
+        cached_gate_up = _place_nvfp4_expert_in_high_slot(
+            gate_up, logical_expert, high_slot
+        )
+        cached_down = _place_nvfp4_expert_in_high_slot(down, logical_expert, high_slot)
+        ids = torch.full((1, 8), logical_expert, dtype=torch.int32, device="cuda")
+        probs = torch.full((1, 8), 0.125, dtype=torch.float32, device="cuda")
+        expert_to_slot = torch.full((256,), -1, dtype=torch.int32, device="cuda")
+        expert_to_slot[logical_expert] = high_slot
+
+        resident = execute_experts(x, gate_up, down, ids, probs)
+        mapped = execute_experts(
+            x,
+            cached_gate_up,
+            cached_down,
+            ids,
+            probs,
+            expert_to_slot=expert_to_slot,
+        )
+        self.assertTrue(torch.equal(mapped, resident))
 
     def test_paired_gemm1_swiglu_a4_matches_projection_and_codec(self):
         """Validate the fused boundary without comparing separately-rounded GEMMs' bytes."""

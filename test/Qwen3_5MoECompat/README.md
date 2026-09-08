@@ -1,17 +1,98 @@
-# Qwen3.5 MoE on V100 and RTX 4070 SUPER
+# Qwen3.5 MoE ExpertPack on one V100
 
-This suite implements text-only inference for
-`Qwen-AgentWorld-35B-A3B-NVFP4_fp16`, including a configurable two-worker pipeline
-and a single-request cache. Production generation runs one complete prefill,
-then one-token decode calls. By default RTX 4070 SUPER owns embedding, layers
-0–16, final norm and the LM head; V100 owns layers 17–39. Each GPU has its own
-Python process, and hidden states travel through CPU memory.
+The current delivery target is complete text-only inference for
+`Qwen-AgentWorld-35B-A3B-NVFP4_fp16` in one process on one 16 GB SM70 V100.
+Layers 1–38 read routed NVFP4 experts on demand from an immutable ExpertPack;
+layers 0/39 routed FP16 experts and all dense/router/shared/global weights stay
+resident. The public path is batch one, one active request, greedy generation,
+and a maximum context of 2048. It does not use the RTX 4070 SUPER, the legacy
+two-worker pipeline, SGLang's old scheduler, radix cache, TP or PP.
 
-The selected-layer `forward_no_cache` compatibility API, original layers 0–3
-integration, and independent 40-layer precision scan remain available. The
-pipeline has a batch-one greedy text CLI and a persistent single-request HTTP
-API; neither is integrated into SGLang's `ModelRunner`, scheduler, radix
-attention or general sstate management.
+The earlier dual-GPU pipeline, selected-layer `forward_no_cache` API, four-layer
+integration and independent 40-layer scan remain as regression oracles. Their
+commands and measurements are historical evidence rather than the deployment
+path for ExpertPack.
+
+## ExpertPack build and single-V100 entry points
+
+Build the byte-preserving pack once:
+
+```bash
+PYTHONPATH=python:. \
+/home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python \
+  -m sglang.srt.layers.qwen3_5.expert_pack.build \
+  --model-dir /home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16 \
+  --output-dir /home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4-expertpack-v1
+```
+
+The builder uses a process lock plus PID/UUID-specific partial files and publishes
+`experts.pack` before atomically publishing `complete=true` `manifest.json`.
+Validate all 9,728 records, padding, whole-pack SHA and source checkpoint bytes:
+
+```bash
+PYTHONPATH=python:. \
+/home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python \
+  -m sglang.srt.layers.qwen3_5.expert_pack.validate \
+  --manifest /home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4-expertpack-v1/manifest.json \
+  --model-dir /home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16
+```
+
+Run the complete 40-layer CLI with only the V100 visible:
+
+```bash
+CUDA_VISIBLE_DEVICES=GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96 \
+PYTHONPATH=python:. \
+/home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python \
+  -m sglang.srt.layers.qwen3_5.single_gpu \
+  --raw-prompt --prompt Hello --max-new-tokens 8 --print-token-ids
+```
+
+The HTTP module is `sglang.srt.layers.qwen3_5.single_gpu_api` and exposes the
+existing `/generate`, `/v1/completions` and `/v1/chat/completions` routes through
+one backend and one uvicorn worker. Live V100 evidence covers HTTP 200 for all
+three routes, a concurrent-request 429, and checksum/short-read/H2D-triggered
+FAILED latches whose first request, `/health`, and later request all return 503.
+
+## Current ExpertPack evidence
+
+The v1 pack is 17,253,269,504 bytes with SHA-256
+`5d53114a227ed9d7a86e656a557b5c6ffbb9d10f46ddb5ca27671397ccdbe1f5`.
+Independent full validation passed every payload SHA, every padding region,
+the whole-pack digest and byte-for-byte comparison with all source tensors.
+
+Root-reviewed V100 evidence is saved in
+[expert_offload_acceptance_v100_7168.json](reports/expert_offload_acceptance_v100_7168.json):
+
+- raw `Hello` produced `[11,271,40,1044,4313,310,958,279]` exactly;
+- A/B/A reset and generation after a capacity error were exact;
+- a 2048-token prefill was finite; the next decode failed explicitly without
+  corrupting the following request;
+- the typed cache used 7,515,015,536 bytes (4,247 experts); peak reserved was
+  14,971,568,128 bytes and the 16 GB card retained 1,956,773,888 bytes;
+- cold `Hello` TTFT/mean ITL were 3372.505/276.320 ms, warm `Hello` values were
+  68.491/66.792 ms. These are one-run characterization values, not an SLA.
+
+Additional root-reviewed V100 evidence is saved in:
+
+- [expert_offload_layer1_v100.json](reports/expert_offload_layer1_v100.json):
+  T=1/32/2048 resident/offload output, router IDs and router weights are exact;
+  a hot acquire adds zero pack reads and zero H2D bytes;
+- [single_gpu_api_smoke_v100.json](reports/single_gpu_api_smoke_v100.json):
+  `/generate`, `/v1/completions` and `/v1/chat/completions` all return 200;
+- [single_gpu_api_concurrency_v100.json](reports/single_gpu_api_concurrency_v100.json):
+  a live contender returns 429 while the active request completes normally;
+- [single_gpu_api_checksum_failure_v100.json](reports/single_gpu_api_checksum_failure_v100.json):
+  checksum failure is latched once as FAILED and the first request, health probe
+  and subsequent request all return 503.
+- [single_gpu_api_short_read_failure_v100.json](reports/single_gpu_api_short_read_failure_v100.json):
+  truncating a startup-valid pack before the first routed read yields a 503,
+  `FAILED` health with one I/O/fatal error, and persistent 503 rejection.
+- [single_gpu_api_h2d_failure_v100.json](reports/single_gpu_api_h2d_failure_v100.json):
+  an injected H2D RuntimeError poisons the request cache, publishes no resident
+  expert, records one CUDA/fatal error, and returns 503 for first/health/later.
+
+Connection cancellation with an in-flight lease, a fresh-process restart after
+fatal failure, long-running stress, and clean-tree release regression remain pending.
 
 ## Model structure
 
@@ -61,7 +142,11 @@ are shared by all experts in each routed layer. Down activation globals are
 expert specific. Route weights are applied after the down output boundary;
 combine uses a fixed Top-8 order.
 
-## Single-request state, text CLI and HTTP API
+## Legacy two-worker state, CLI and HTTP reference
+
+The remainder of this section documents the retained 4070/V100 pipeline. It is
+not the ExpertPack deployment command and is not part of current single-V100
+acceptance.
 
 The cache holds at most 2048 consumed tokens, with one fresh contiguous prompt
 and no subsequent multi-turn append. For a generation limit R, the public
@@ -106,7 +191,7 @@ startup; do not expose both GPUs inside one worker, because Triton 2.3.1 caches
 its compilation target per process. The tokenizer's two-dimensional merges
 are converted in memory for the legacy Transformers environment. Sampling
 masks head rows `[248077,248320)` and stops on EOS IDs `{248046,248044}`.
-The production defaults are `--front-uuid <4070 UUID>`,
+The legacy pipeline defaults are `--front-uuid <4070 UUID>`,
 `--back-uuid <V100 UUID>`, and `--split-layer 17`; these options can also select
 the legacy V100-front 20/20 layout explicitly.
 
@@ -144,7 +229,7 @@ SM70 and SM89 execute the same Qwen3.5 Python/Triton operator sources, compiled
 independently in their worker processes for each architecture; they do not
 share a compiled binary. GPU numeric indices may appear in either order because
 the controller selects physical devices by UUID. Physical roles and the split
-are configurable. The validated production layout gives the smaller 4070 front
+are configurable. The previously validated dual-GPU layout gives the smaller 4070 front
 17 layers and its global weights; a trial with 18 front layers passed short
 decode but OOMed during 2048-token prefill, so 17 is the safe default. The old
 V100-front/4070-back 20/20 layout remains selectable.

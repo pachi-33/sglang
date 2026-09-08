@@ -1,0 +1,32 @@
+{
+  "fault": "pack was exact declared size at startup, then truncated to zero before first routed expert read",
+  "first_request": {
+    "error": {
+      "code": 503,
+      "message": "short ExpertPack read at offset 379543552: 0 != 1769488",
+      "param": null,
+      "type": "backend_failed"
+    },
+    "status": 503
+  },
+  "health": {
+    "fatal_errors": 1,
+    "h2d_bytes": 0,
+    "io_errors": 1,
+    "request_cache_status": "failed",
+    "resident_experts": 0,
+    "status": "failed",
+    "status_code": 503,
+    "store_state": "FAILED"
+  },
+  "second_request": {
+    "error": {
+      "code": 503,
+      "message": "the Qwen3.5 generation backend has failed; restart the process",
+      "param": null,
+      "type": "backend_failed"
+    },
+    "status": 503
+  },
+  "status": "passed"
+}

@@ -278,6 +278,7 @@ def nvfp4_grouped_gemm_kernel(
     out_ptr,
     positions_ptr,
     route_weights_ptr,
+    expert_to_slot_ptr,
     rows: tl.constexpr,
     n: tl.constexpr,
     k: tl.constexpr,
@@ -293,6 +294,7 @@ def nvfp4_grouped_gemm_kernel(
     BN: tl.constexpr,
     BK: tl.constexpr,
     WEIGHTED: tl.constexpr,
+    USE_SLOT_MAP: tl.constexpr,
 ):
     """Raw E2M1/E4M3 grouped GEMM; rows are expert-padded in BM groups."""
     tl.static_assert(BM == 32)
@@ -302,11 +304,25 @@ def nvfp4_grouped_gemm_kernel(
     pid_n = tl.program_id(1)
     offs_m = pid_m * BM + tl.arange(0, BM)
     offs_n = pid_n * BN + tl.arange(0, BN)
-    raw_expert = tl.load(
+    logical_expert = tl.load(
         expert_of_block_ptr + pid_m, mask=pid_m < (rows // BM), other=-1
     )
-    valid_expert = raw_expert >= 0
-    expert = tl.where(valid_expert, raw_expert, 0)
+    valid_logical_expert = logical_expert >= 0
+    if USE_SLOT_MAP:
+        mapped_expert = tl.load(
+            expert_to_slot_ptr + tl.maximum(logical_expert, 0),
+            mask=valid_logical_expert,
+            other=-1,
+        )
+        valid_expert = valid_logical_expert & (mapped_expert >= 0)
+        expert = tl.where(valid_expert, mapped_expert, 0)
+    else:
+        valid_expert = valid_logical_expert
+        expert = tl.where(valid_expert, logical_expert, 0)
+    # Production cache strides are large enough that slot >= 2048 crosses the
+    # signed int32 byte-offset boundary.  Widen before every physical-slot
+    # pointer calculation so Triton emits 64-bit address arithmetic.
+    physical_expert = expert.to(tl.int64)
     if valid_expert:
         acc = tl.zeros((BM, BN), tl.float32)
         for k0 in range(0, k, BK):
@@ -320,7 +336,7 @@ def nvfp4_grouped_gemm_kernel(
             a_lo_code, a_hi_code = a_byte & 15, a_byte >> 4
             w_byte = tl.load(
                 w_ptr
-                + expert * stride_we
+                + physical_expert * stride_we
                 + offs_n[None, :] * stride_wn
                 + packed_k[:, None],
                 mask=(offs_n[None, :] < n) & (offs_k[:, None] < k),
@@ -334,7 +350,7 @@ def nvfp4_grouped_gemm_kernel(
             )
             w_sf = tl.load(
                 w_sf_ptr
-                + expert * stride_ws_e
+                + physical_expert * stride_ws_e
                 + offs_n[None, :] * stride_ws_n
                 + (offs_k[:, None] // 16),
                 mask=(offs_n[None, :] < n) & (offs_k[:, None] < k),
@@ -347,7 +363,11 @@ def nvfp4_grouped_gemm_kernel(
             acc += tl.dot(a_lo, w_lo)
             acc += tl.dot(a_hi, w_hi)
         out = acc * (
-            1.0 / (tl.load(a_global_ptr + expert) * tl.load(w_global_ptr + expert))
+            1.0
+            / (
+                tl.load(a_global_ptr + physical_expert)
+                * tl.load(w_global_ptr + physical_expert)
+            )
         )
     else:
         out = tl.zeros((BM, BN), tl.float32)
@@ -484,6 +504,7 @@ def nvfp4_paired_gemm1_swiglu_a4_kernel(
     capture_z_ptr,
     z_ptr,
     z_sf_ptr,
+    expert_to_slot_ptr,
     rows: tl.constexpr,
     intermediate: tl.constexpr,
     k: tl.constexpr,
@@ -496,6 +517,7 @@ def nvfp4_paired_gemm1_swiglu_a4_kernel(
     NUM_PROGRAMS: tl.constexpr,
     MAX_TILES_PER_PROGRAM: tl.constexpr,
     CAPTURE_Z: tl.constexpr,
+    USE_SLOT_MAP: tl.constexpr,
 ):
     """Paired raw-NVFP4 GEMM1, FP16 SwiGLU boundary, and fused A4 encode.
 
@@ -518,13 +540,26 @@ def nvfp4_paired_gemm1_swiglu_a4_kernel(
         n_tile = tile - block * n_tiles
         offs_m = block * 32 + rows32
         offs_n = n_tile * 32 + cols32
-        raw_expert = tl.load(
+        logical_expert = tl.load(
             expert_of_block_ptr + block,
             mask=valid_tile & (block < rows // 32),
             other=-1,
         )
-        valid_expert = valid_tile & (raw_expert >= 0)
-        expert = tl.where(valid_expert, raw_expert, 0)
+        valid_logical_expert = valid_tile & (logical_expert >= 0)
+        if USE_SLOT_MAP:
+            mapped_expert = tl.load(
+                expert_to_slot_ptr + tl.maximum(logical_expert, 0),
+                mask=valid_logical_expert,
+                other=-1,
+            )
+            valid_expert = valid_logical_expert & (mapped_expert >= 0)
+            expert = tl.where(valid_expert, mapped_expert, 0)
+        else:
+            valid_expert = valid_logical_expert
+            expert = tl.where(valid_expert, logical_expert, 0)
+        # Keep the cache-slot component of every byte offset in int64.  The
+        # model-size gate/up stride overflows signed int32 at slot 2048.
+        physical_expert = expert.to(tl.int64)
         source = tl.load(source_ids_ptr + offs_m, mask=valid_expert, other=-1)
         valid_source = source >= 0
         safe_source = tl.where(valid_source, source, 0)
@@ -553,7 +588,7 @@ def nvfp4_paired_gemm1_swiglu_a4_kernel(
                 a_hi = (_e2m1(a_byte >> 4) * _e4m3fn(a_sf)).to(tl.float16)
                 gate_byte = tl.load(
                     w_ptr
-                    + expert * stride_we
+                    + physical_expert * stride_we
                     + offs_n[None, :] * stride_wn
                     + packed_k[:, None],
                     mask=offs_k[:, None] < k,
@@ -561,7 +596,7 @@ def nvfp4_paired_gemm1_swiglu_a4_kernel(
                 )
                 up_byte = tl.load(
                     w_ptr
-                    + expert * stride_we
+                    + physical_expert * stride_we
                     + (offs_n[None, :] + intermediate) * stride_wn
                     + packed_k[:, None],
                     mask=offs_k[:, None] < k,
@@ -569,7 +604,7 @@ def nvfp4_paired_gemm1_swiglu_a4_kernel(
                 )
                 gate_sf = tl.load(
                     w_sf_ptr
-                    + expert * stride_ws_e
+                    + physical_expert * stride_ws_e
                     + offs_n[None, :] * stride_ws_n
                     + (offs_k[:, None] // 16),
                     mask=offs_k[:, None] < k,
@@ -577,7 +612,7 @@ def nvfp4_paired_gemm1_swiglu_a4_kernel(
                 )
                 up_sf = tl.load(
                     w_sf_ptr
-                    + expert * stride_ws_e
+                    + physical_expert * stride_ws_e
                     + (offs_n[None, :] + intermediate) * stride_ws_n
                     + (offs_k[:, None] // 16),
                     mask=offs_k[:, None] < k,
@@ -590,8 +625,8 @@ def nvfp4_paired_gemm1_swiglu_a4_kernel(
                 gate_acc += tl.dot(a_lo, gate_lo) + tl.dot(a_hi, gate_hi)
                 up_acc += tl.dot(a_lo, up_lo) + tl.dot(a_hi, up_hi)
             inv_global = 1.0 / (
-                tl.load(gate_a_global_ptr + expert).to(tl.float32)
-                * tl.load(gate_w_global_ptr + expert).to(tl.float32)
+                tl.load(gate_a_global_ptr + physical_expert).to(tl.float32)
+                * tl.load(gate_w_global_ptr + physical_expert).to(tl.float32)
             )
             gate = (gate_acc * inv_global).to(tl.float16)
             up = (up_acc * inv_global).to(tl.float16)
@@ -623,7 +658,7 @@ def nvfp4_paired_gemm1_swiglu_a4_kernel(
             z_hi = tl.load(
                 scratch + rows32[:, None] * 32 + local[None, :] + 1, volatile=True
             ).to(tl.float32)
-            down_g = tl.load(down_a_global_ptr + expert).to(tl.float32)
+            down_g = tl.load(down_a_global_ptr + physical_expert).to(tl.float32)
             u_lo = z_lo * down_g
             u_hi = z_hi * down_g
             raw_sf = (

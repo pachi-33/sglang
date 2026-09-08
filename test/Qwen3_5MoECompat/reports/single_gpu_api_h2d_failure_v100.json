@@ -1,0 +1,32 @@
+{
+  "fault": "ExpertPackStore._enqueue_install raised an injected CUDA H2D RuntimeError in a real 40-layer V100 backend",
+  "first_request": {
+    "error": {
+      "code": 503,
+      "message": "CUDA H2D install failed for (1, 214)",
+      "param": null,
+      "type": "backend_failed"
+    },
+    "status": 503
+  },
+  "health": {
+    "cache_poisoned": true,
+    "cuda_errors": 1,
+    "fatal_errors": 1,
+    "request_cache_status": "failed",
+    "resident_experts": 0,
+    "status": "failed",
+    "status_code": 503,
+    "store_state": "FAILED"
+  },
+  "second_request": {
+    "error": {
+      "code": 503,
+      "message": "the Qwen3.5 generation backend has failed; restart the process",
+      "param": null,
+      "type": "backend_failed"
+    },
+    "status": 503
+  },
+  "status": "passed"
+}

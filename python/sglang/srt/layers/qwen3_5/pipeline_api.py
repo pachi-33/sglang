@@ -1,4 +1,4 @@
-"""HTTP API for the configurable two-GPU Qwen3.5 single-request pipeline.
+"""HTTP API for a narrow Qwen3.5 single-request generation backend.
 
 This adapter deliberately preserves the pipeline's narrow execution contract:
 one active request, batch one, greedy decoding, and non-streaming responses.
@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any, Callable, Literal, Sequence
+from typing import Any, Callable, Literal, Protocol, Sequence
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -44,6 +44,20 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 30000
 StrictNumber = StrictInt | StrictFloat
+
+
+class Qwen35GenerationBackend(Protocol):
+    """The common surface implemented by pipeline and single-GPU backends."""
+
+    def generate_ids(
+        self,
+        prompt_ids: Sequence[int],
+        *,
+        max_new_tokens: int,
+        eos_token_ids: Sequence[int],
+    ) -> list[int]: ...
+
+    def close(self) -> None: ...
 
 
 class PipelineBusyError(RuntimeError):
@@ -128,17 +142,20 @@ class PipelineGeneration:
 
 
 class Qwen35PipelineAPIEngine:
-    """Serialize HTTP calls onto the pipeline's one reusable request slot."""
+    """Serialize HTTP calls onto a backend's one reusable request slot."""
 
     def __init__(
         self,
-        pipeline: Qwen35Pipeline,
+        pipeline: Qwen35GenerationBackend,
         tokenizer: Any,
         *,
         model_id: str,
     ) -> None:
         if not model_id:
             raise ValueError("model_id must not be empty")
+        # Keep ``pipeline`` as a compatibility alias for existing callers and
+        # tests while allowing the single-GPU implementation to share the API.
+        self.backend = pipeline
         self.pipeline = pipeline
         self.tokenizer = tokenizer
         self.model_id = model_id
@@ -153,6 +170,18 @@ class Qwen35PipelineAPIEngine:
     def closed(self) -> bool:
         return self._closed
 
+    @property
+    def failed(self) -> bool:
+        value = getattr(self.backend, "failed", False)
+        return bool(value() if callable(value) else value)
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        value = getattr(self.backend, "stats", None)
+        if callable(value):
+            value = value()
+        return {} if value is None else dict(value)
+
     def _generate_locked(
         self,
         prompt_builder: Callable[[], Sequence[int]],
@@ -163,6 +192,10 @@ class Qwen35PipelineAPIEngine:
         try:
             if self._closed:
                 raise RuntimeError("the pipeline API engine is closed")
+            if self.failed:
+                raise RuntimeError(
+                    "the Qwen3.5 generation backend has failed; restart the process"
+                )
             prompt_ids = list(prompt_builder())
             if not prompt_ids:
                 raise APIRequestError("prompt must produce at least one token")
@@ -216,7 +249,7 @@ class Qwen35PipelineAPIEngine:
             if self._closed:
                 return
             self._closed = True
-            self.pipeline.close()
+            self.backend.close()
 
 
 def _validate_model(engine: Qwen35PipelineAPIEngine, requested_model: str) -> None:
@@ -285,7 +318,9 @@ def _token_metadata(result: PipelineGeneration) -> dict[str, list[int]]:
     }
 
 
-def _error_response(exc: BaseException) -> JSONResponse:
+def _error_response(
+    exc: BaseException, *, backend_failed: bool = False
+) -> JSONResponse:
     if isinstance(exc, PipelineBusyError):
         status = HTTPStatus.TOO_MANY_REQUESTS
         error_type = "server_busy"
@@ -307,6 +342,10 @@ def _error_response(exc: BaseException) -> JSONResponse:
         status = HTTPStatus.INTERNAL_SERVER_ERROR
         error_type = "protocol_error"
         logger.exception("Qwen3.5 pipeline protocol failed")
+    elif backend_failed:
+        status = HTTPStatus.SERVICE_UNAVAILABLE
+        error_type = "backend_failed"
+        logger.exception("Qwen3.5 generation backend has failed")
     else:
         status = HTTPStatus.INTERNAL_SERVER_ERROR
         error_type = "server_error"
@@ -342,6 +381,7 @@ def create_app(
 
     app = FastAPI(title="Qwen3.5 MoE Dual-GPU Pipeline", lifespan=lifespan)
     app.state.pipeline_engine = engine
+    app.state.generation_engine = engine
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_error(_: Request, exc: RequestValidationError):
@@ -368,17 +408,38 @@ def create_app(
 
     async def invoke(call: Callable[[], PipelineGeneration]):
         try:
+            if engine.failed:
+                raise RuntimeError(
+                    "the Qwen3.5 generation backend has failed; restart the process"
+                )
             return await run_in_threadpool(call)
         except Exception as exc:
-            return _error_response(exc)
+            return _error_response(exc, backend_failed=engine.failed)
 
     @app.get("/health")
     async def health():
-        return {
-            "status": "closed" if engine.closed else "ok",
+        status = "failed" if engine.failed else "closed" if engine.closed else "ok"
+        content = {
+            "status": status,
             "busy": engine.busy,
             "model": engine.model_id,
         }
+        try:
+            stats = engine.stats
+        except Exception as exc:
+            if not engine.failed:
+                raise
+            # Health must remain a reliable restart signal even if failure
+            # diagnostics themselves can no longer be snapshotted.
+            stats = {}
+            content["stats_error"] = f"{type(exc).__name__}: {exc}"
+        if stats:
+            content["stats"] = stats
+        if engine.failed:
+            return JSONResponse(
+                status_code=HTTPStatus.SERVICE_UNAVAILABLE, content=content
+            )
+        return content
 
     @app.get("/v1/models")
     async def models(raw_request: Request):

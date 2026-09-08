@@ -1,0 +1,32 @@
+{
+  "fault": "all manifest record SHA-256 values replaced by zero in a temporary manifest; pack bytes unchanged",
+  "first_request": {
+    "error": {
+      "code": 503,
+      "message": "ExpertPack payload SHA-256 mismatch at offset 379543552: 75a0f45e6c4c10c69eefccd72c656bf327d55b5a232b2ae49420d6cb9493af6b != 0000000000000000000000000000000000000000000000000000000000000000",
+      "param": null,
+      "type": "backend_failed"
+    },
+    "status": 503
+  },
+  "health": {
+    "checksum_errors": 1,
+    "fatal_errors": 1,
+    "h2d_bytes": 0,
+    "request_cache_status": "failed",
+    "resident_experts": 0,
+    "status": "failed",
+    "status_code": 503,
+    "store_state": "FAILED"
+  },
+  "second_request": {
+    "error": {
+      "code": 503,
+      "message": "the Qwen3.5 generation backend has failed; restart the process",
+      "param": null,
+      "type": "backend_failed"
+    },
+    "status": 503
+  },
+  "status": "passed"
+}

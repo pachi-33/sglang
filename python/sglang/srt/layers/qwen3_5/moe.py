@@ -52,6 +52,11 @@ class MoeWeights:
     shared_gate_up: Any | None = None
     shared_down: Any | None = None
     shared_gate: Any | None = None
+    # Offloaded layers keep routed tensors out of their layer dictionaries.
+    # The store is intentionally duck-typed here so the resident MoE module
+    # does not acquire an import-time dependency on the file runtime.
+    expert_store: Any | None = None
+    layer_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -73,7 +78,12 @@ def _field(weight: Any, name: str) -> torch.Tensor:
 
 
 def _validate_nvfp4_expert_call(
-    x: torch.Tensor, gate_up: Any, down: Any, ids: torch.Tensor, weights: torch.Tensor
+    x: torch.Tensor,
+    gate_up: Any,
+    down: Any,
+    ids: torch.Tensor,
+    weights: torch.Tensor,
+    expert_to_slot: torch.Tensor | None = None,
 ) -> None:
     """Validate the fixed CUDA ABI before any routing or kernel launch."""
     if (
@@ -105,28 +115,26 @@ def _validate_nvfp4_expert_call(
         )
     gate_data, gate_sf = _field(gate_up, "data"), _field(gate_up, "block_scale")
     down_data, down_sf = _field(down, "data"), _field(down, "block_scale")
-    if (
-        gate_data.ndim != 3
-        or down_data.ndim != 3
-        or gate_data.shape[0] != 256
-        or down_data.shape[0] != 256
-    ):
-        raise ValueError("NVFP4 routed weights must have 256 physical experts")
+    if gate_data.ndim != 3 or down_data.ndim != 3:
+        raise ValueError("NVFP4 routed weights must be rank-3 expert tensors")
+    physical_experts = gate_data.shape[0]
+    if physical_experts <= 0 or down_data.shape[0] != physical_experts:
+        raise ValueError("NVFP4 gate/up and down must have the same physical experts")
+    if expert_to_slot is None and physical_experts != 256:
+        raise ValueError("resident NVFP4 routed weights must have 256 physical experts")
     intermediate = gate_data.shape[1] // 2
     if intermediate <= 0 or intermediate % 32:
         raise ValueError(
             "NVFP4 routed intermediate size must be positive and divisible by 32"
         )
     if gate_data.shape != (
-        256,
+        physical_experts,
         intermediate * 2,
         x.shape[1] // 2,
-    ) or down_data.shape != (256, x.shape[1], intermediate // 2):
-        raise ValueError(
-            "NVFP4 routed shapes must be gate/up [256,2I,H], down [256,H,I]"
-        )
-    expected_gate_sf = (256, intermediate * 2, x.shape[1] // 16)
-    expected_down_sf = (256, x.shape[1], intermediate // 16)
+    ) or down_data.shape != (physical_experts, x.shape[1], intermediate // 2):
+        raise ValueError("NVFP4 routed shapes must be gate/up [C,2I,H], down [C,H,I]")
+    expected_gate_sf = (physical_experts, intermediate * 2, x.shape[1] // 16)
+    expected_down_sf = (physical_experts, x.shape[1], intermediate // 16)
     tensors = (
         (gate_data, torch.uint8, "gate/up data"),
         (gate_sf, torch.uint8, "gate/up scales"),
@@ -150,8 +158,32 @@ def _validate_nvfp4_expert_call(
         ):
             raise ValueError(f"{label} must be contiguous {dtype} on x.device")
     for name in ("global_scale", "input_global_scale"):
-        if _field(gate_up, name).numel() != 256 or _field(down, name).numel() != 256:
-            raise ValueError("NVFP4 globals must be physical [256] tensors")
+        if (
+            _field(gate_up, name).numel() != physical_experts
+            or _field(down, name).numel() != physical_experts
+        ):
+            raise ValueError("NVFP4 globals must be physical [C] tensors")
+    if expert_to_slot is not None:
+        if (
+            expert_to_slot.shape != (256,)
+            or expert_to_slot.dtype != torch.int32
+            or not expert_to_slot.is_cuda
+            or expert_to_slot.device != x.device
+            or not expert_to_slot.is_contiguous()
+        ):
+            raise ValueError(
+                "expert_to_slot must be contiguous CUDA int32 [256] on x.device"
+            )
+        if ids.numel():
+            logical_min, logical_max = torch.aminmax(ids)
+            if logical_min.item() < 0 or logical_max.item() >= 256:
+                raise ValueError("route IDs must be logical experts in [0, 255]")
+            used_slots = expert_to_slot[ids.to(torch.int64)]
+            slot_min, slot_max = torch.aminmax(used_slots)
+            if slot_min.item() < 0:
+                raise ValueError("expert_to_slot is missing a routed expert")
+            if slot_max.item() >= physical_experts:
+                raise ValueError("expert_to_slot references a slot outside the cache")
 
 
 def _validate_fp16_expert_call(
@@ -287,6 +319,7 @@ def _grouped_gemm(
     positions: torch.Tensor | None = None,
     route_weights: torch.Tensor | None = None,
     expert_major: bool = False,
+    expert_to_slot: torch.Tensor | None = None,
 ) -> torch.Tensor:
     data = _field(weight, "data")
     scale = _field(weight, "block_scale")
@@ -357,6 +390,7 @@ def _grouped_gemm(
         out,
         positions if weighted else expert_blocks,
         route_weights.reshape(-1) if weighted else expert_blocks,
+        expert_to_slot if expert_to_slot is not None else expert_blocks,
         rows=rows,
         n=n,
         k=k,
@@ -372,6 +406,7 @@ def _grouped_gemm(
         BN=32,
         BK=32,
         WEIGHTED=weighted,
+        USE_SLOT_MAP=expert_to_slot is not None,
         num_warps=4,
         num_stages=1,
     )
@@ -386,6 +421,7 @@ def _paired_gemm1_swiglu_a4(
     down: Any,
     *,
     capture_z: bool = False,
+    expert_to_slot: torch.Tensor | None = None,
 ) -> Any:
     """Fused expert GEMM1 pair, SwiGLU, and per-expert A4 quantization.
 
@@ -460,6 +496,7 @@ def _paired_gemm1_swiglu_a4(
         z_capture,
         z_data,
         z_sf,
+        expert_to_slot if expert_to_slot is not None else expert_blocks,
         rows=rows,
         intermediate=intermediate,
         k=k,
@@ -472,6 +509,7 @@ def _paired_gemm1_swiglu_a4(
         NUM_PROGRAMS=programs,
         MAX_TILES_PER_PROGRAM=max_tiles,
         CAPTURE_Z=capture_z,
+        USE_SLOT_MAP=expert_to_slot is not None,
         num_warps=4,
         num_stages=1,
     )
@@ -488,12 +526,15 @@ def execute_experts(
     ids: torch.Tensor,
     weights: torch.Tensor,
     *,
+    expert_to_slot: torch.Tensor | None = None,
     shared: torch.Tensor | None = None,
     residual: torch.Tensor | None = None,
     capture_routes: bool = False,
 ) -> torch.Tensor:
     """Execute real W4A4 routed experts and deterministically combine top-k."""
-    _validate_nvfp4_expert_call(x, gate_up, down, ids, weights)
+    _validate_nvfp4_expert_call(
+        x, gate_up, down, ids, weights, expert_to_slot=expert_to_slot
+    )
     if shared is not None and (
         shared.shape != x.shape
         or shared.dtype != torch.float16
@@ -524,13 +565,25 @@ def execute_experts(
             if capture_routes
             else out
         )
-    num_experts = _field(gate_up, "data").shape[0]
-    source, positions, expert_blocks = _build_dispatch(ids, num_experts)
+    source, positions, expert_blocks = _build_dispatch(ids, 256)
     if source.numel() == 0:
         return torch.zeros_like(x)
-    qx = quantize_nvfp4(x, gate_ga[0])
+    if expert_to_slot is None:
+        first_gate_scale = gate_ga[0]
+    else:
+        first_logical_expert = ids.reshape(-1)[0].to(torch.int64)
+        first_physical_expert = expert_to_slot[first_logical_expert].to(torch.int64)
+        first_gate_scale = gate_ga[first_physical_expert]
+    qx = quantize_nvfp4(x, first_gate_scale)
     down_ga = _field(down, "input_global_scale").reshape(-1).float()
-    qz = _paired_gemm1_swiglu_a4(qx, source, expert_blocks, gate_up, down)
+    qz = _paired_gemm1_swiglu_a4(
+        qx,
+        source,
+        expert_blocks,
+        gate_up,
+        down,
+        expert_to_slot=expert_to_slot,
+    )
     down_out = _grouped_gemm(
         qz,
         None,
@@ -540,6 +593,7 @@ def execute_experts(
         positions=positions,
         route_weights=weights,
         expert_major=True,
+        expert_to_slot=expert_to_slot,
     )
     inverse = torch.empty((ids.numel(),), device=x.device, dtype=torch.int32)
     dispatch_inverse_kernel[(triton.cdiv(positions.numel(), 256),)](
@@ -812,6 +866,7 @@ def fused_nvfp4_moe(
     residual: torch.Tensor | None = None,
     *,
     capture_router: bool = False,
+    expert_to_slot: torch.Tensor | None = None,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Router + routed W4A4 MoE + optional FP16 shared expert.
 
@@ -821,8 +876,24 @@ def fused_nvfp4_moe(
     The route tensors stay on CUDA; callers that need host-side diagnostics
     explicitly choose when to copy them out.
     """
-    if weights.router is None or weights.gate_up is None or weights.down is None:
-        raise ValueError("router, gate_up, and down weights are required")
+    if weights.router is None:
+        raise ValueError("router weight is required")
+    offloaded = weights.expert_store is not None
+    if offloaded:
+        if weights.gate_up is not None or weights.down is not None:
+            raise ValueError(
+                "offloaded MoE must not retain resident routed expert weights"
+            )
+        if (
+            isinstance(weights.layer_id, bool)
+            or not isinstance(weights.layer_id, int)
+            or not 1 <= weights.layer_id <= 38
+        ):
+            raise ValueError("offloaded MoE requires an original layer_id in 1..38")
+        if expert_to_slot is not None:
+            raise ValueError("offloaded MoE obtains expert_to_slot from its lease")
+    elif weights.gate_up is None or weights.down is None:
+        raise ValueError("resident MoE requires gate_up and down weights")
     if residual is not None and (
         residual.shape != x.shape
         or residual.dtype != torch.float16
@@ -838,12 +909,29 @@ def fused_nvfp4_moe(
             shared = _fp16_sigmoid_multiply(
                 shared, _fp16_linear(x, weights.shared_gate)
             )
-    if getattr(weights.gate_up, "kind", None) == "fp16":
+    if not offloaded and getattr(weights.gate_up, "kind", None) == "fp16":
         out = execute_fp16_experts(x, weights.gate_up, weights.down, ids, probs)
         if shared is not None:
             out = _fp16_add(out, shared)
         if residual is not None:
             out = _fp16_add(out, residual)
+    elif offloaded:
+        # acquire performs the sole route D2H copy, then waits the compute
+        # stream on every H2D-ready event before returning the complete map.
+        # Leaving the context records a last-use event after both GEMMs and
+        # combine have been enqueued, so no selected cache slot can be reused
+        # while this layer is still consuming it.
+        with weights.expert_store.acquire(weights.layer_id, ids) as lease:
+            out = execute_experts(
+                x,
+                lease.gate_up,
+                lease.down,
+                ids,
+                probs,
+                expert_to_slot=lease.expert_to_slot,
+                shared=shared,
+                residual=residual,
+            )
     else:
         out = execute_experts(
             x,
@@ -851,6 +939,7 @@ def fused_nvfp4_moe(
             weights.down,
             ids,
             probs,
+            expert_to_slot=expert_to_slot,
             shared=shared,
             residual=residual,
         )

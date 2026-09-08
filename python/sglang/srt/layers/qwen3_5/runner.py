@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping
@@ -11,6 +12,7 @@ import torch
 from .attention import causal_gqa, causal_gqa_decode
 from .checkpoint import Qwen35Checkpoint
 from .dense import fp16_embedding, linear_fp16
+from .expert_pack.store import ExpertOffloadConfig, ExpertPackStore
 from .gdn import (
     chunk_gdn,
     depthwise_conv4_silu,
@@ -33,6 +35,45 @@ from .moe import MoeWeights, fused_moe
 from .ops import gemma_rms_norm, residual_add_gemma_rms_norm
 from .quantization import linear_fp8, quantize_fp8
 from .weights import Weight
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb", buffering=0) as handle:
+        while chunk := handle.read(8 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_offload_checkpoint_identity(
+    model_dir: Path, store: ExpertPackStore
+) -> None:
+    """Bind the manifest to the checkpoint supplying resident weights."""
+    source = store.manifest.source
+    for filename, field in (
+        ("config.json", "config_sha256"),
+        ("model.safetensors.index.json", "index_sha256"),
+    ):
+        path = model_dir / filename
+        expected = source.get(field)
+        if not isinstance(expected, str) or _sha256_path(path) != expected:
+            raise ValueError(f"ExpertPack source identity does not match {path.name}")
+    raw_shards = source.get("shards")
+    if not isinstance(raw_shards, list):
+        raise ValueError("ExpertPack manifest has no source shard inventory")
+    expected_shards = {
+        str(item["file"]): int(item["size"])
+        for item in raw_shards
+        if isinstance(item, Mapping) and "file" in item and "size" in item
+    }
+    if len(expected_shards) != len(raw_shards):
+        raise ValueError("ExpertPack manifest source shard inventory is malformed")
+    for filename, expected_size in expected_shards.items():
+        path = model_dir / filename
+        if not path.is_file() or path.stat().st_size != expected_size:
+            raise ValueError(
+                f"ExpertPack source shard identity does not match {filename}"
+            )
 
 
 def _require_cuda_matrix(x: torch.Tensor, name: str, columns: int = 2048) -> None:
@@ -100,6 +141,7 @@ class Qwen35StatelessRunner:
         *,
         device: str | torch.device = "cuda",
         load_globals: bool = True,
+        expert_offload: ExpertOffloadConfig | None = None,
     ):
         self.model_dir = Path(model_dir)
         requested_device = torch.device(device)
@@ -118,6 +160,18 @@ class Qwen35StatelessRunner:
                 "Qwen3.5 compatibility runner supports only validated "
                 f"SM70/SM89 devices, got SM{capability[0]}{capability[1]}"
             )
+        if expert_offload is not None:
+            if not isinstance(expert_offload, ExpertOffloadConfig):
+                raise TypeError("expert_offload must be ExpertOffloadConfig or None")
+            if torch.cuda.device_count() != 1:
+                raise RuntimeError(
+                    "Qwen3.5 expert offload requires exactly one visible CUDA device"
+                )
+            if capability != (7, 0):
+                raise RuntimeError(
+                    "Qwen3.5 expert offload is validated only on a single SM70 GPU, "
+                    f"got SM{capability[0]}{capability[1]}"
+                )
         ids = tuple(layer_ids)
         if (
             not ids
@@ -129,13 +183,58 @@ class Qwen35StatelessRunner:
             )
         self.layer_ids = ids
         loader = Qwen35Checkpoint(self.model_dir)
-        self.layers = tuple(
-            StatelessLayer(i, loader.load_layer(i, self.device)) for i in ids
-        )
-        self._layers_by_id = {layer.layer_id: layer for layer in self.layers}
-        self.global_weights = (
-            loader.load_global_tensors(self.device) if load_globals else None
-        )
+        self.expert_offload = expert_offload
+        self.expert_store: ExpertPackStore | None = None
+        self._closed = False
+        store = ExpertPackStore(expert_offload) if expert_offload is not None else None
+        try:
+            if store is not None:
+                _validate_offload_checkpoint_identity(self.model_dir, store)
+            self.layers = tuple(
+                StatelessLayer(
+                    i,
+                    loader.load_layer(
+                        i,
+                        self.device,
+                        include_routed_experts=not (
+                            expert_offload is not None and 1 <= i <= 38
+                        ),
+                    ),
+                )
+                for i in ids
+            )
+            self._layers_by_id = {layer.layer_id: layer for layer in self.layers}
+            self.global_weights = (
+                loader.load_global_tensors(self.device) if load_globals else None
+            )
+            if store is not None:
+                store.initialize_device_cache(self.device)
+                self.expert_store = store
+        except BaseException:
+            if store is not None:
+                store.close()
+            raise
+
+    @property
+    def failed(self) -> bool:
+        """Whether a fatal ExpertPack error has made this runner unusable."""
+        return self.expert_store is not None and self.expert_store.state == "FAILED"
+
+    @property
+    def expert_stats(self) -> dict[str, object] | None:
+        return None if self.expert_store is None else self.expert_store.snapshot()
+
+    def close(self) -> None:
+        """Release ExpertPack resources; safe to call repeatedly."""
+        if self._closed:
+            return
+        self._closed = True
+        if self.expert_store is not None:
+            self.expert_store.close()
+
+    def _fail_offload(self, error: BaseException) -> None:
+        if self.expert_store is not None:
+            self.expert_store.fail(error, category="cuda")
 
     def allocate_request_cache(self, capacity: int = 2048) -> SingleRequestCache:
         """Allocate fixed-capacity, batch-one state for this runner's layers."""
@@ -407,15 +506,18 @@ class Qwen35StatelessRunner:
         router_capture: RouterCapture | None = None,
     ) -> torch.Tensor:
         w = layer.weights
+        offloaded = self.expert_store is not None and 1 <= layer.layer_id <= 38
         result = fused_moe(
             normalized,
             MoeWeights(
                 router=w["mlp.gate"],
-                gate_up=w["mlp.experts.gate_up_proj"],
-                down=w["mlp.experts.down_proj"],
+                gate_up=None if offloaded else w["mlp.experts.gate_up_proj"],
+                down=None if offloaded else w["mlp.experts.down_proj"],
                 shared_gate_up=w["mlp.shared_expert.gate_up_proj"],
                 shared_down=w["mlp.shared_expert.down_proj"],
                 shared_gate=w["mlp.shared_expert_gate"],
+                expert_store=self.expert_store if offloaded else None,
+                layer_id=layer.layer_id if offloaded else None,
             ),
             residual=hidden,
             capture_router=router_capture is not None,
@@ -484,8 +586,9 @@ class Qwen35StatelessRunner:
             # immediately performs a D2H boundary copy anyway, so this does not
             # add another synchronization to its production critical path.
             torch.cuda.synchronize(self.device)
-        except Exception:
+        except Exception as error:
             cache.poisoned = True
+            self._fail_offload(error)
             raise
         cache.consumed_len = tokens
         return hidden
@@ -537,8 +640,9 @@ class Qwen35StatelessRunner:
                     hidden, projected, layer, router_capture=router_capture
                 )
             torch.cuda.synchronize(self.device)
-        except Exception:
+        except Exception as error:
             cache.poisoned = True
+            self._fail_offload(error)
             raise
         cache.consumed_len = prefix_len + 1
         return hidden
@@ -558,16 +662,20 @@ class Qwen35StatelessRunner:
         _validate_metadata(
             hidden.shape[0], positions, cu_seqlens, max_seqlen, hidden.device
         )
-        for layer in self.layers:
-            hidden = self.forward_layer(
-                hidden,
-                layer.layer_id,
-                positions=positions,
-                cu_seqlens=cu_seqlens,
-                max_seqlen=max_seqlen,
-                router_capture=router_capture,
-            )
-        return hidden
+        try:
+            for layer in self.layers:
+                hidden = self.forward_layer(
+                    hidden,
+                    layer.layer_id,
+                    positions=positions,
+                    cu_seqlens=cu_seqlens,
+                    max_seqlen=max_seqlen,
+                    router_capture=router_capture,
+                )
+            return hidden
+        except Exception as error:
+            self._fail_offload(error)
+            raise
 
     def forward_no_cache(
         self,

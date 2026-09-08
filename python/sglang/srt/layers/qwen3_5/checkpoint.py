@@ -316,12 +316,18 @@ class Qwen35Checkpoint:
         return CheckpointAudit(fp8, nvfp4, fp16_experts, len(self.layer_ids))
 
     def _read_layer(
-        self, layer: int, device: Optional[torch.device | str]
+        self,
+        layer: int,
+        device: Optional[torch.device | str],
+        *,
+        include_routed_experts: bool = True,
     ) -> Dict[str, torch.Tensor]:
         if layer not in self._by_layer:
             raise KeyError(f"unknown layer {layer}")
         by_shard: Dict[str, list[str]] = {}
         for relative, shard in self._by_layer[layer].items():
+            if not include_routed_experts and EXPERT_RE.match(relative):
+                continue
             by_shard.setdefault(shard, []).append(relative)
         result: Dict[str, torch.Tensor] = {}
         for shard, relatives in by_shard.items():
@@ -596,7 +602,11 @@ class Qwen35Checkpoint:
         )
 
     def load_layer(
-        self, layer: int, device: Optional[torch.device | str] = None
+        self,
+        layer: int,
+        device: Optional[torch.device | str] = None,
+        *,
+        include_routed_experts: bool = True,
     ) -> Dict[str, torch.Tensor | Weight]:
         """Load one layer, pack on CPU, then make one compact device copy.
 
@@ -622,8 +632,12 @@ class Qwen35Checkpoint:
         # This reads each safetensors header once, never its payload.
         self._populate_headers()
         self._validate_headers(actual_names)
-        raw = self._read_layer(layer, None)
-        output: Dict[str, torch.Tensor | Weight] = self._pack_experts(raw, layer)
+        raw = self._read_layer(
+            layer, None, include_routed_experts=include_routed_experts
+        )
+        output: Dict[str, torch.Tensor | Weight] = {}
+        if include_routed_experts:
+            output.update(self._pack_experts(raw, layer))
         output.update(self._pack_shared(raw))
         output.update(
             self._pack_gdn_projections(raw)

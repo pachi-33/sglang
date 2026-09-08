@@ -1,0 +1,21 @@
+{
+  "busy_seen": true,
+  "contender": {
+    "error": {
+      "code": 429,
+      "message": "the single pipeline request slot is busy",
+      "param": null,
+      "type": "server_busy"
+    },
+    "status": 429
+  },
+  "long_request": {
+    "max_new_tokens": 1,
+    "prompt_tokens": 2047,
+    "status": 200,
+    "token_ids": [
+      1245
+    ]
+  },
+  "status": "passed"
+}

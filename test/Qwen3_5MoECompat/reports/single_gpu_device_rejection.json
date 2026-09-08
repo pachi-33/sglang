@@ -1,0 +1,20 @@
+{
+  "multiple": {
+    "error_seen": true,
+    "expected_error": "exactly one visible",
+    "returncode": 1,
+    "stderr_tail": "    device = _require_single_sm70()\n  File \"/home/yaozhenyang/dev/sglang-v100/python/sglang/srt/layers/qwen3_5/single_gpu.py\", line 43, in _require_single_sm70\n    raise RuntimeError(\nRuntimeError: Qwen3.5 ExpertPack inference requires exactly one visible CUDA device, got 2"
+  },
+  "no_cuda": {
+    "error_seen": true,
+    "expected_error": "requires CUDA",
+    "returncode": 1,
+    "stderr_tail": "    device = _require_single_sm70()\n  File \"/home/yaozhenyang/dev/sglang-v100/python/sglang/srt/layers/qwen3_5/single_gpu.py\", line 40, in _require_single_sm70\n    raise RuntimeError(\"Qwen3.5 ExpertPack inference requires CUDA\")\nRuntimeError: Qwen3.5 ExpertPack inference requires CUDA"
+  },
+  "sm89_only": {
+    "error_seen": true,
+    "expected_error": "SM89",
+    "returncode": 1,
+    "stderr_tail": "    device = _require_single_sm70()\n  File \"/home/yaozhenyang/dev/sglang-v100/python/sglang/srt/layers/qwen3_5/single_gpu.py\", line 50, in _require_single_sm70\n    raise RuntimeError(\nRuntimeError: Qwen3.5 ExpertPack inference requires an SM70 V100, got SM89"
+  }
+}

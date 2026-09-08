@@ -1,0 +1,8 @@
+status=passed
+device=GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96
+capability=7.0
+cache_mib=7168
+capacity_experts=4247
+token_ids=[11,271,40,1044,4313,310,958,279]
+text=",\n\nI am trying to use the"
+exit_code=0

@@ -1,6 +1,7 @@
 """CPU-only HTTP contract tests for the Qwen3.5 dual-GPU pipeline API."""
 
 import unittest
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
@@ -33,11 +34,16 @@ class _FakePipeline:
         self.outputs = list(outputs)
         self.calls = []
         self.closed = False
+        self.failed = False
+        self.fail_fatally = False
+        self.stats = {}
         self.error = None
 
     def generate_ids(self, prompt_ids, **kwargs):
         self.calls.append((list(prompt_ids), dict(kwargs)))
         if self.error is not None:
+            if self.fail_fatally:
+                self.failed = True
             raise self.error
         if not self.outputs:
             raise AssertionError("fake pipeline has no scripted output")
@@ -172,6 +178,7 @@ class TestPipelineAPI(unittest.TestCase):
         with TestClient(app) as client:
             self.assertTrue(engine._request_lock.acquire(blocking=False))
             try:
+                busy_health = client.get("/health")
                 busy = client.post(
                     "/v1/completions",
                     json={"model": "agent-world", "prompt": "x"},
@@ -208,6 +215,7 @@ class TestPipelineAPI(unittest.TestCase):
             )
         self.assertEqual(busy.status_code, 429)
         self.assertEqual(busy.json()["error"]["type"], "server_busy")
+        self.assertTrue(busy_health.json()["busy"])
         self.assertEqual(non_greedy.status_code, 400)
         self.assertIn("greedy", non_greedy.json()["error"]["message"])
         self.assertEqual(streaming.status_code, 400)
@@ -253,6 +261,51 @@ class TestPipelineAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["error"]["type"], "worker_error")
         self.assertEqual(len(fake.calls), 1)
+
+    def test_backend_fatal_returns_503_and_health_remains_failed(self):
+        fake, _, _, app = self._fixture()
+        fake.error = RuntimeError("ExpertPack checksum mismatch")
+        fake.fail_fatally = True
+        fake.stats = {"state": "FAILED", "checksum_failures": 1}
+        with self.assertLogs(pipeline_api.logger.name, level="ERROR"):
+            with TestClient(app) as client:
+                first = client.post(
+                    "/generate", json={"input_ids": [1], "max_new_tokens": 1}
+                )
+                health = client.get("/health")
+                second = client.post(
+                    "/v1/completions",
+                    json={
+                        "model": "not-served",
+                        "prompt": [2],
+                        "max_tokens": 1,
+                        "temperature": 0.5,
+                    },
+                )
+        self.assertEqual(first.status_code, 503)
+        self.assertEqual(first.json()["error"]["type"], "backend_failed")
+        self.assertEqual(health.status_code, 503)
+        self.assertEqual(health.json()["status"], "failed")
+        self.assertEqual(health.json()["stats"]["checksum_failures"], 1)
+        self.assertEqual(second.status_code, 503)
+        self.assertEqual(second.json()["error"]["type"], "backend_failed")
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_failed_health_survives_broken_stats_snapshot(self):
+        fake, _, _, app = self._fixture()
+        fake.failed = True
+        with mock.patch.object(
+            type(fake),
+            "stats",
+            new_callable=mock.PropertyMock,
+            side_effect=RuntimeError("snapshot unavailable"),
+            create=True,
+        ):
+            with TestClient(app) as client:
+                health = client.get("/health")
+        self.assertEqual(health.status_code, 503)
+        self.assertEqual(health.json()["status"], "failed")
+        self.assertIn("snapshot unavailable", health.json()["stats_error"])
 
     def test_server_cli_exposes_front_back_and_split_layout(self):
         defaults = pipeline_api._parse_args([])

@@ -1,4 +1,63 @@
-# Qwen3.5 MoE V100 独立层与四层无状态精度验收（历史）
+# Qwen3.5 MoE 单 V100 ExpertPack 与历史精度验收
+
+## 2026-09-08 ExpertPack 单卡验收
+
+当前目标工作树基于 `feat/moe-offload-infra@26a7b704b6`，尚未形成发布提交。
+运行进程只暴露 Tesla V100-SXM2-16GB
+`GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96`，capability `(7,0)`；4070 未参与
+加载、计算或控制面。
+
+ExpertPack 格式为 `SGLANG-QWEN35-NVFP4-EXPERTPACK-v1`。它覆盖 layers 1–38 的
+`38×256=9728` 个 routed experts，payload 1,769,488 B、4 KiB aligned stride
+1,773,568 B、pack size 17,253,269,504 B。整包 SHA-256 为：
+
+```text
+5d53114a227ed9d7a86e656a557b5c6ffbb9d10f46ddb5ca27671397ccdbe1f5
+```
+
+独立 validator 实际检查并通过全部 9,728 条 payload SHA、9,728 段 zero padding、
+whole-pack SHA，以及全部记录与源 safetensors 的 byte-for-byte 对照。Builder 同时
+校验 gate/up scale 字节相等、同一层 gate/up input global scale 静态一致，并以进程锁、
+唯一 partial、fsync 和 rename 发布。CPU fixture 覆盖格式/身份/顺序、损坏、短读、
+checksum、cache policy、active lease、stale epoch 和并发 publisher。
+
+完整 runner 的 root-reviewed 原始结果在
+[expert_offload_acceptance_v100_7168.json](reports/expert_offload_acceptance_v100_7168.json)。
+该进程 exit 0，JSON `status=passed`：
+
+| 验收项 | 结果 | 判定 |
+|---|---:|---|
+| Raw `Hello` 8 tokens | `[11,271,40,1044,4313,310,958,279]` | 与冻结 oracle 精确一致 |
+| A→B→A | 两次 A 精确一致 | reset 通过 |
+| 2048-token prefill | finite；15,736.029 ms | 通过 |
+| capacity 后 decode | 明确报 `request cache capacity is exhausted` | 通过 |
+| capacity 后再次 `Hello` | 与 oracle 精确一致 | cache 未污染 |
+| Expert cache | 7,515,015,536 B；4,247 experts | 不超过 7168 MiB |
+| Peak reserved | 14,971,568,128 B | 通过 |
+| `total_memory - peak_reserved` | 1,956,773,888 B | 大于 1 GiB 门槛 |
+| Cold `Hello` TTFT / mean ITL | 3372.505 / 276.320 ms | 性能表征 |
+| Warm `Hello` TTFT / mean ITL | 68.491 / 66.792 ms | 性能表征 |
+
+该次运行累计 7,710 misses、9,918 hits、3,463 evictions，读取并 H2D
+13,642,752,480 B；store 结束时为 `READY`，I/O/checksum/CUDA/epoch/fatal error 均为 0。
+这些数字只描述一次 page-cache/GPU-cache 条件下的运行，不构成性能 SLA 或故障恢复证据。
+
+单层 V100 对照见 `reports/expert_offload_layer1_v100.json`：T=1/32/2048 的输出、router
+IDs 和 router weights 均精确一致；热命中新增 pack reads=0、H2D bytes=0。真实 uvicorn
+证据见 `reports/single_gpu_api_smoke_v100.json`、
+`reports/single_gpu_api_concurrency_v100.json` 和
+`reports/single_gpu_api_checksum_failure_v100.json`：三条生成入口均返回 200，并发争用
+返回 429；checksum 注入后首请求、health 和后续请求均返回 503，store FAILED 只锁存一次。
+`reports/single_gpu_api_short_read_failure_v100.json` 还验证了 READY 后截断 pack：首请求
+503，health 为 FAILED 且 `io_errors=1`、`fatal_errors=1`，后续请求继续 503。
+`reports/single_gpu_api_h2d_failure_v100.json` 验证真实 40 层 backend 的 H2D RuntimeError：
+首请求、health、后续请求均为 503；store FAILED、request cache poisoned、resident=0，
+且 `cuda_errors=1`、`fatal_errors=1`。
+
+以下仍为待验证：连接取消与在途 lease；fatal 后新进程重启；长期压力；clean-tree/release
+commit 全回归。相关 mock/CPU 单测已存在，但不能代替这些 E2E。
+
+## 2026-09-07 独立层与四层无状态基线（历史）
 
 本页保留 2026-09-07 的 M0–M5 无状态基线证据及其源码 hash，不能当作当前工作树的
 重新扫描结果。当前分支已增加 SM70/SM89 算子合同、单请求 cache 和可配置双 worker
