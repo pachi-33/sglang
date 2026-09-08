@@ -52,6 +52,33 @@ existing `/generate`, `/v1/completions` and `/v1/chat/completions` routes throug
 one backend and one uvicorn worker. Live V100 evidence covers HTTP 200 for all
 three routes, a concurrent-request 429, and checksum/short-read/H2D-triggered
 FAILED latches whose first request, `/health`, and later request all return 503.
+The OpenAI completion route accepts SGLang's `ignore_eos` extension for fixed-length
+greedy benchmarks. Start the benchmark-compatible server and run the saved profile:
+
+```bash
+CUDA_VISIBLE_DEVICES=GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96 \
+PYTHONPATH=python:. \
+/home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python \
+  -m sglang.srt.layers.qwen3_5.single_gpu_api \
+  --model-dir /home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16 \
+  --served-model-name /home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16 \
+  --expert-pack-manifest /home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4-expertpack-v1/manifest.json \
+  --host 127.0.0.1 --port 8818
+
+PYTHONPATH=python:. \
+/home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python \
+  -m sglang.bench_serving --dataset-name random --backend sglang \
+  --model /home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16 \
+  --dataset-path /home/yaozhenyang/dev/sglang-v100/ShareGPT_V3_unfiltered_cleaned_split.json \
+  --host 127.0.0.1 --port 8818 --max-concurrency 1 \
+  --random-input-len 1024 --random-output-len 128 --num-prompts 8 \
+  --random-range-ratio 1 --request-rate inf --disable-stream
+```
+
+The recorded run completed 8/8 requests in 246.98 s at 4.15 output token/s.
+Because responses are non-streaming, benchmark-reported TTFT/ITL are whole-response
+observations; use backend statistics for token-level timing. See
+[the serving benchmark report](reports/bench_serving_single_gpu_v100_1024_128.txt).
 
 ## Current ExpertPack evidence
 

@@ -104,6 +104,10 @@ class CompletionRequest(_RequestModel):
     seed: StrictInt | None = None
     suffix: str | None = None
     user: str | None = None
+    # SGLang's serving benchmark sets this extension to force a fixed output
+    # length.  The backend remains greedy; an empty EOS set only disables the
+    # early-stop check.
+    ignore_eos: StrictBool = False
 
 
 class ChatCompletionRequest(_RequestModel):
@@ -124,6 +128,7 @@ class ChatCompletionRequest(_RequestModel):
     response_format: TextResponseFormat | None = None
     seed: StrictInt | None = None
     user: str | None = None
+    ignore_eos: StrictBool = False
 
 
 class NativeGenerateRequest(_RequestModel):
@@ -186,6 +191,8 @@ class Qwen35PipelineAPIEngine:
         self,
         prompt_builder: Callable[[], Sequence[int]],
         max_new_tokens: int,
+        *,
+        ignore_eos: bool = False,
     ) -> PipelineGeneration:
         if not self._request_lock.acquire(blocking=False):
             raise PipelineBusyError("the single pipeline request slot is busy")
@@ -199,13 +206,14 @@ class Qwen35PipelineAPIEngine:
             prompt_ids = list(prompt_builder())
             if not prompt_ids:
                 raise APIRequestError("prompt must produce at least one token")
+            eos_token_ids = () if ignore_eos else EOS_TOKEN_IDS
             generated = self.pipeline.generate_ids(
                 prompt_ids,
                 max_new_tokens=max_new_tokens,
-                eos_token_ids=EOS_TOKEN_IDS,
+                eos_token_ids=eos_token_ids,
             )
-            stopped = bool(generated and generated[-1] in EOS_TOKEN_IDS)
-            visible_ids = [token for token in generated if token not in EOS_TOKEN_IDS]
+            stopped = bool(generated and generated[-1] in eos_token_ids)
+            visible_ids = [token for token in generated if token not in eos_token_ids]
             return PipelineGeneration(
                 prompt_token_ids=tuple(prompt_ids),
                 completion_token_ids=tuple(generated),
@@ -216,7 +224,11 @@ class Qwen35PipelineAPIEngine:
             self._request_lock.release()
 
     def complete_raw(
-        self, prompt: str | Sequence[int], max_new_tokens: int
+        self,
+        prompt: str | Sequence[int],
+        max_new_tokens: int,
+        *,
+        ignore_eos: bool = False,
     ) -> PipelineGeneration:
         if isinstance(prompt, str):
             if not prompt:
@@ -225,10 +237,14 @@ class Qwen35PipelineAPIEngine:
         else:
             prompt_ids = list(prompt)
             builder = lambda: prompt_ids
-        return self._generate_locked(builder, max_new_tokens)
+        return self._generate_locked(builder, max_new_tokens, ignore_eos=ignore_eos)
 
     def complete_chat(
-        self, messages: Sequence[dict[str, Any]], max_new_tokens: int
+        self,
+        messages: Sequence[dict[str, Any]],
+        max_new_tokens: int,
+        *,
+        ignore_eos: bool = False,
     ) -> PipelineGeneration:
         wire_messages = [dict(message) for message in messages]
         if not wire_messages:
@@ -240,6 +256,7 @@ class Qwen35PipelineAPIEngine:
                 add_generation_prompt=True,
             ),
             max_new_tokens,
+            ignore_eos=ignore_eos,
         )
 
     def close(self) -> None:
@@ -508,7 +525,11 @@ def create_app(
         def run() -> PipelineGeneration:
             _validate_model(engine, request.model)
             _validate_greedy_request(request)
-            return engine.complete_raw(request.prompt, request.max_tokens)
+            return engine.complete_raw(
+                request.prompt,
+                request.max_tokens,
+                ignore_eos=request.ignore_eos,
+            )
 
         result = await invoke(run)
         if isinstance(result, JSONResponse):
@@ -542,7 +563,11 @@ def create_app(
             messages = [
                 message.model_dump(exclude_none=True) for message in request.messages
             ]
-            return engine.complete_chat(messages, _chat_max_tokens(request))
+            return engine.complete_chat(
+                messages,
+                _chat_max_tokens(request),
+                ignore_eos=request.ignore_eos,
+            )
 
         result = await invoke(run)
         if isinstance(result, JSONResponse):

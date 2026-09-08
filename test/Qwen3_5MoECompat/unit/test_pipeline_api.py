@@ -127,6 +127,37 @@ class TestPipelineAPI(unittest.TestCase):
         self.assertEqual(fake.calls[0][0], [10, 11])
         self.assertEqual(tokenizer.raw_prompts, [("hello", False)])
 
+    def test_completion_ignore_eos_forces_fixed_length_benchmark_semantics(self):
+        eos = EOS_TOKEN_IDS[0]
+        fake, tokenizer, _, app = self._fixture([41, eos])
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/completions",
+                json={
+                    "model": "agent-world",
+                    "prompt": "hello",
+                    "max_tokens": 2,
+                    "temperature": 0,
+                    "best_of": 1,
+                    "stream": False,
+                    "ignore_eos": True,
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["choices"][0]["text"], f"decoded:41,{eos}")
+        self.assertEqual(body["choices"][0]["finish_reason"], "length")
+        self.assertEqual(
+            fake.calls,
+            [
+                (
+                    [10, 11],
+                    {"max_new_tokens": 2, "eos_token_ids": ()},
+                )
+            ],
+        )
+        self.assertEqual(tokenizer.decoded, [([41, eos], False)])
+
     def test_chat_applies_checkpoint_template_and_supports_current_token_field(self):
         fake, tokenizer, _, app = self._fixture([51, 52])
         with TestClient(app) as client:

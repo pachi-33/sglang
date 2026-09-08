@@ -1,0 +1,61 @@
+status=passed
+device=GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96
+endpoint=http://127.0.0.1:8818/v1/completions
+dataset=random-from-ShareGPT
+dataset_path=/home/yaozhenyang/dev/sglang-v100/ShareGPT_V3_unfiltered_cleaned_split.json
+model=/home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16
+num_prompts=8
+declared_input_tokens_per_request=1024
+output_tokens_per_request=128
+random_range_ratio=1.0
+max_concurrency=1
+request_rate=inf
+stream=false
+ignore_eos=true
+
+successful_requests=8
+benchmark_duration_s=246.983491580002
+total_declared_input_tokens=8192
+total_generated_tokens=1024
+total_generated_tokens_retokenized=1024
+request_throughput_req_s=0.03
+input_throughput_tok_s=33.17
+output_throughput_tok_s=4.1460260904454405
+mean_e2e_latency_ms=30872.49972637801
+median_e2e_latency_ms=33897.36393050407
+
+post_health_status=ok
+post_store_state=READY
+post_request_count_including_probe=9
+post_cache_capacity_experts=4247
+post_resident_experts=4247
+post_cache_hits=323746
+post_cache_misses=84964
+post_cache_evictions=80717
+post_pack_read_bytes=150342778432
+post_h2d_bytes=150342778432
+post_io_errors=0
+post_checksum_errors=0
+post_cuda_errors=0
+post_epoch_errors=0
+post_fatal_errors=0
+post_peak_reserved_bytes=14942208000
+post_peak_reserved_margin_bytes=1986134016
+
+last_request_actual_prompt_tokens=988
+last_request_completion_tokens=128
+last_request_ttft_ms=11218.384411
+last_request_mean_itl_ms=169.01211856692908
+last_request_total_ms=32683.099154
+
+The old random dataset generator reports the requested 1024-token length before
+decoding token IDs to text. Retokenizing that text in the server produced 988
+tokens for the final request, so input-token throughput is based on the benchmark's
+declared lengths. Output length was exactly 128 for every request because
+ignore_eos=true.
+
+The public API is non-streaming. bench_serving therefore observes the complete
+response as its first chunk, making its printed TTFT/ITL/TPOT fields unsuitable
+as per-token latency measurements. E2E latency and request/output throughput are
+valid; the last_request_* values above come from the backend's internal token
+timestamps.

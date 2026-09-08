@@ -232,6 +232,22 @@ def get_tokenizer(
         pretrained_model_name_or_path
     ):
         pretrained_model_name_or_path = get_model(pretrained_model_name_or_path)
+    if pretrained_model_name_or_path is not None and os.path.isdir(
+        pretrained_model_name_or_path
+    ):
+        config_path = os.path.join(pretrained_model_name_or_path, "config.json")
+        try:
+            with open(config_path, encoding="utf-8") as file:
+                model_type = json.load(file).get("model_type")
+        except (OSError, json.JSONDecodeError, AttributeError):
+            model_type = None
+        if model_type == "qwen3_5_moe":
+            # This checkpoint stores BPE merges as token pairs.  The
+            # transformers/tokenizers versions pinned by the V100 branch need
+            # the same in-memory compatibility conversion as the model API.
+            from sglang.srt.layers.qwen3_5.pipeline import load_tokenizer_compat
+
+            return load_tokenizer_compat(pretrained_model_name_or_path)
     return AutoTokenizer.from_pretrained(
         pretrained_model_name_or_path, trust_remote_code=True
     )
@@ -243,6 +259,28 @@ ASYNC_REQUEST_FUNCS = {
     "lmdeploy": async_request_openai_completions,
     "trt": async_request_trt_llm,
 }
+
+
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("value must be a positive integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
+async def request_with_concurrency_limit(
+    request_func,
+    request_func_input: RequestFuncInput,
+    pbar: Optional[tqdm],
+    semaphore: Optional[asyncio.Semaphore],
+) -> RequestFuncOutput:
+    if semaphore is None:
+        return await request_func(request_func_input=request_func_input, pbar=pbar)
+    async with semaphore:
+        return await request_func(request_func_input=request_func_input, pbar=pbar)
 
 
 @dataclass
@@ -538,7 +576,15 @@ async def benchmark(
     request_rate: float,
     disable_tqdm: bool,
     enable_multi: bool,
+    max_concurrency: Optional[int] = None,
 ):
+    if max_concurrency is not None and (
+        isinstance(max_concurrency, bool)
+        or not isinstance(max_concurrency, int)
+        or max_concurrency <= 0
+    ):
+        raise ValueError("max_concurrency must be a positive integer or None")
+
     if backend in ASYNC_REQUEST_FUNCS:
         request_func = ASYNC_REQUEST_FUNCS[backend]
     else:
@@ -566,6 +612,9 @@ async def benchmark(
 
     benchmark_start_time = time.perf_counter()
     tasks: List[asyncio.Task] = []
+    semaphore = (
+        asyncio.Semaphore(max_concurrency) if max_concurrency is not None else None
+    )
     async for request in get_request(input_requests, request_rate):
         prompt, prompt_len, output_len = request
         request_func_input = RequestFuncInput(
@@ -577,7 +626,12 @@ async def benchmark(
         )
         tasks.append(
             asyncio.create_task(
-                request_func(request_func_input=request_func_input, pbar=pbar)
+                request_with_concurrency_limit(
+                    request_func,
+                    request_func_input,
+                    pbar,
+                    semaphore,
+                )
             )
         )
     outputs: List[RequestFuncOutput] = await asyncio.gather(*tasks)
@@ -731,8 +785,8 @@ def parse_request_rate_range(request_rate_range):
 
 def check_chat_template(model_path):
     try:
-        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        return "chat_template" in tokenizer.init_kwargs
+        tokenizer = get_tokenizer(model_path)
+        return bool(getattr(tokenizer, "chat_template", None))
     except Exception as e:
         print(f"Fail to load tokenizer config with error={e}")
         return False
@@ -834,6 +888,7 @@ def fire(args: argparse.Namespace):
                     request_rate=rate,
                     disable_tqdm=args.disable_tqdm,
                     enable_multi=args.multi,
+                    max_concurrency=args.max_concurrency,
                 )
             )
     else:
@@ -847,6 +902,7 @@ def fire(args: argparse.Namespace):
                 request_rate=args.request_rate,
                 disable_tqdm=args.disable_tqdm,
                 enable_multi=args.multi,
+                max_concurrency=args.max_concurrency,
             )
         )
 
@@ -945,6 +1001,12 @@ if __name__ == "__main__":
         default=float("inf"),
         help="Number of requests per second. If this is inf, then all the requests are sent at time 0. "
         "Otherwise, we use Poisson process to synthesize the request arrival times. Default is 128.0.",
+    )
+    parser.add_argument(
+        "--max-concurrency",
+        type=positive_int,
+        default=None,
+        help="Maximum number of in-flight requests. By default, concurrency is unlimited.",
     )
     parser.add_argument("--seed", type=int, default=0, help="Default is 0.")
     parser.add_argument(
