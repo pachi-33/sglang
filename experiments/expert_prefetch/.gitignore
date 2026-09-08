@@ -1,0 +1,5 @@
+records/**/logs/*
+!records/**/logs/.gitkeep
+records/**/artifacts/*
+!records/**/artifacts/.gitkeep
+.index.lock

@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import random
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,9 +14,11 @@ from sglang.bench_serving import (
     RequestFuncOutput,
     _iter_sse_data,
     async_request_openai_completions,
+    benchmark,
     get_tokenizer,
     positive_int,
     request_with_concurrency_limit,
+    sample_random_requests,
 )
 
 
@@ -127,6 +130,77 @@ class TestSSEParsing(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output.latency, 10.0)
         self.assertTrue(session.requests[0][1]["stream"])
         self.assertTrue(session.requests[0][1]["ignore_eos"])
+        self.assertNotIn("expert_trace", session.requests[0][1])
+
+    async def test_traced_token_id_request_captures_identity_and_prompt_usage(self):
+        events = (
+            b'data: {"id":"cmpl-trace","choices":[{"text":"a",'
+            b'"finish_reason":null}],"sglang":{"completion_token_ids":[7]}}\n\n'
+            b'data: {"id":"cmpl-trace","choices":[{"text":"",'
+            b'"finish_reason":"length"}],"usage":{"prompt_tokens":4,'
+            b'"completion_tokens":1}}\n\n'
+            b"data: [DONE]\n\n"
+        )
+        response = _FakeResponse((events,))
+        session = _FakeSession(response)
+        request = RequestFuncInput(
+            prompt=[1, 2, 3, 4],
+            api_url="http://127.0.0.1:30000/v1/completions",
+            prompt_len=4,
+            output_len=1,
+            model="model",
+            expert_trace=True,
+        )
+        with mock.patch.object(
+            bench_serving.aiohttp, "ClientSession", return_value=session
+        ), mock.patch.object(
+            bench_serving, "args", SimpleNamespace(disable_stream=False), create=True
+        ), mock.patch.object(
+            bench_serving.time,
+            "perf_counter",
+            side_effect=(100.0, 101.0, 102.0, 103.0),
+        ):
+            output = await async_request_openai_completions(request)
+
+        self.assertTrue(output.success, output.error)
+        self.assertEqual(output.request_id, "cmpl-trace")
+        self.assertEqual(output.reported_prompt_len, 4)
+        self.assertEqual(session.requests[0][1]["prompt"], [1, 2, 3, 4])
+        self.assertIs(session.requests[0][1]["expert_trace"], True)
+
+    async def test_traced_request_rejects_prompt_length_mismatch(self):
+        events = (
+            b'data: {"id":"cmpl-trace","choices":[{"text":"a",'
+            b'"finish_reason":null}],"sglang":{"completion_token_ids":[7]}}\n\n'
+            b'data: {"id":"cmpl-trace","choices":[{"text":"",'
+            b'"finish_reason":"length"}],"usage":{"prompt_tokens":3,'
+            b'"completion_tokens":1}}\n\n'
+            b"data: [DONE]\n\n"
+        )
+        response = _FakeResponse((events,))
+        request = RequestFuncInput(
+            prompt=[1, 2, 3, 4],
+            api_url="http://127.0.0.1:30000/v1/completions",
+            prompt_len=4,
+            output_len=1,
+            model="model",
+            expert_trace=True,
+        )
+        with mock.patch.object(
+            bench_serving.aiohttp,
+            "ClientSession",
+            return_value=_FakeSession(response),
+        ), mock.patch.object(
+            bench_serving, "args", SimpleNamespace(disable_stream=False), create=True
+        ), mock.patch.object(
+            bench_serving.time,
+            "perf_counter",
+            side_effect=(100.0, 101.0, 102.0, 103.0),
+        ):
+            output = await async_request_openai_completions(request)
+
+        self.assertFalse(output.success)
+        self.assertIn("3 != 4", output.error)
 
     async def test_non_streaming_raw_json_remains_supported(self):
         body = (
@@ -285,6 +359,84 @@ class TestBenchServingConcurrency(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(started, 4)
 
+    async def test_benchmark_traces_main_requests_but_not_initial_probe(self):
+        calls = []
+
+        async def request_func(request_func_input, pbar=None):
+            calls.append(request_func_input)
+            if pbar is not None:
+                pbar.update(1)
+            return RequestFuncOutput(
+                generated_text="ab",
+                success=True,
+                latency=1.0,
+                ttft=0.25,
+                itl=[0.75],
+                prompt_len=request_func_input.prompt_len,
+                output_len=request_func_input.output_len,
+                request_id=(
+                    f"cmpl-{request_func_input.request_index}"
+                    if request_func_input.expert_trace
+                    else ""
+                ),
+                reported_prompt_len=(
+                    request_func_input.prompt_len
+                    if request_func_input.expert_trace
+                    else None
+                ),
+            )
+
+        class Tokenizer:
+            def __call__(self, text, add_special_tokens=False):
+                return SimpleNamespace(input_ids=[1, 2])
+
+        requests = [([1, 2], 2, 2), ([3, 4], 2, 2)]
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
+            bench_serving.ASYNC_REQUEST_FUNCS, {"sglang": request_func}, clear=True
+        ), mock.patch.object(
+            bench_serving,
+            "args",
+            SimpleNamespace(
+                backend="sglang",
+                dataset_name="random",
+                request_rate=float("inf"),
+                sharegpt_output_len=None,
+                random_input_len=2,
+                random_output_len=2,
+                random_range_ratio=1.0,
+                num_prompts=2,
+                output_file=str(Path(directory) / "bench.jsonl"),
+            ),
+            create=True,
+        ):
+            await benchmark(
+                backend="sglang",
+                api_url="http://127.0.0.1:30000/v1/completions",
+                model_id="model",
+                tokenizer=Tokenizer(),
+                input_requests=requests,
+                request_rate=float("inf"),
+                disable_tqdm=True,
+                enable_multi=False,
+                max_concurrency=1,
+                expert_trace=True,
+            )
+            record = json.loads(
+                (Path(directory) / "bench.jsonl").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual([call.expert_trace for call in calls], [False, True, True])
+        self.assertEqual(
+            [item["trace_id"] for item in record["trace_requests"]],
+            ["cmpl-0", "cmpl-1"],
+        )
+        self.assertTrue(
+            all(
+                item["prompt_kind"] == "token_ids_int32_le"
+                for item in record["trace_requests"]
+            )
+        )
+
 
 class TestPositiveInt(unittest.TestCase):
     def test_accepts_positive_integer(self):
@@ -311,6 +463,49 @@ class TestTokenizerCompatibility(unittest.TestCase):
             ) as loader:
                 self.assertIs(get_tokenizer(str(model_dir)), tokenizer)
         loader.assert_called_once_with(str(model_dir))
+
+
+class TestRandomTokenIdRequests(unittest.TestCase):
+    def test_return_token_ids_preserves_exact_requested_lengths(self):
+        class Tokenizer:
+            def __call__(self, text):
+                return SimpleNamespace(input_ids=[len(text), 2, 3])
+
+            def decode(self, token_ids):
+                return "decoded"
+
+        dataset = [
+            {
+                "conversations": [
+                    {"value": "first"},
+                    {"value": "answer"},
+                ]
+            },
+            {
+                "conversations": [
+                    {"value": "second"},
+                    {"value": "answer"},
+                ]
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "dataset.json"
+            path.write_text(json.dumps(dataset), encoding="utf-8")
+            random.seed(0)
+            bench_serving.np.random.seed(0)
+            requests = sample_random_requests(
+                input_len=5,
+                output_len=4,
+                num_prompts=2,
+                range_ratio=1.0,
+                tokenizer=Tokenizer(),
+                dataset_path=str(path),
+                return_token_ids=True,
+            )
+
+        self.assertEqual([len(prompt) for prompt, _, _ in requests], [5, 5])
+        self.assertEqual([prompt_len for _, prompt_len, _ in requests], [5, 5])
+        self.assertTrue(all(isinstance(prompt, list) for prompt, _, _ in requests))
 
 
 if __name__ == "__main__":

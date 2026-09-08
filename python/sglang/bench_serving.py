@@ -12,6 +12,7 @@ python3 -m sglang.bench_serving --backend sglang --dataset-name random --request
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import random
@@ -41,11 +42,13 @@ AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=6 * 60 * 60)
 
 @dataclass
 class RequestFuncInput:
-    prompt: str
+    prompt: Union[str, List[int]]
     api_url: str
     prompt_len: int
     output_len: int
     model: str
+    expert_trace: bool = False
+    request_index: Optional[int] = None
 
 
 @dataclass
@@ -58,6 +61,8 @@ class RequestFuncOutput:
     prompt_len: int = 0
     error: str = ""
     output_len: int = 0
+    request_id: str = ""
+    reported_prompt_len: Optional[int] = None
 
 
 def remove_prefix(text: str, prefix: str) -> str:
@@ -204,6 +209,8 @@ async def async_request_openai_completions(
             "stream": not args.disable_stream,
             "ignore_eos": True,
         }
+        if request_func_input.expert_trace:
+            payload["expert_trace"] = True
         headers = {"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"}
 
         output = RequestFuncOutput()
@@ -212,6 +219,7 @@ async def async_request_openai_completions(
         generated_text = ""
         first_token_seen = False
         reported_completion_tokens = None
+        reported_prompt_tokens = None
         st = time.perf_counter()
         most_recent_timestamp = st
         last_event_timestamp = st
@@ -219,11 +227,23 @@ async def async_request_openai_completions(
         def record_data(data, timestamp, *, streaming):
             nonlocal first_token_seen, generated_text
             nonlocal most_recent_timestamp, reported_completion_tokens
+            nonlocal reported_prompt_tokens
             if "error" in data:
                 raise RuntimeError(
                     "completion API error: "
                     + json.dumps(data["error"], ensure_ascii=False)
                 )
+
+            event_request_id = data.get("id")
+            if event_request_id is not None:
+                if not isinstance(event_request_id, str) or not event_request_id:
+                    raise RuntimeError("completion API returned an invalid response ID")
+                if output.request_id and output.request_id != event_request_id:
+                    raise RuntimeError(
+                        "completion API changed response ID within one request: "
+                        f"{output.request_id} != {event_request_id}"
+                    )
+                output.request_id = event_request_id
 
             usage = data.get("usage")
             if isinstance(usage, dict) and usage.get("completion_tokens") is not None:
@@ -237,6 +257,17 @@ async def async_request_openai_completions(
                         "completion API returned invalid usage.completion_tokens"
                     )
                 reported_completion_tokens = completion_tokens
+            if isinstance(usage, dict) and usage.get("prompt_tokens") is not None:
+                prompt_tokens = usage["prompt_tokens"]
+                if (
+                    isinstance(prompt_tokens, bool)
+                    or not isinstance(prompt_tokens, int)
+                    or prompt_tokens < 0
+                ):
+                    raise RuntimeError(
+                        "completion API returned invalid usage.prompt_tokens"
+                    )
+                reported_prompt_tokens = prompt_tokens
 
             # A final usage-only frame can legally omit choices.  This server's
             # token frames carry one incremental token ID even when decoding that
@@ -311,9 +342,25 @@ async def async_request_openai_completions(
                             f"{reported_completion_tokens} != "
                             f"{request_func_input.output_len}"
                         )
+                    if request_func_input.expert_trace:
+                        if not output.request_id:
+                            raise RuntimeError(
+                                "traced completion response did not contain an ID"
+                            )
+                        if reported_prompt_tokens is None:
+                            raise RuntimeError(
+                                "traced completion response did not report prompt_tokens"
+                            )
+                        if reported_prompt_tokens != request_func_input.prompt_len:
+                            raise RuntimeError(
+                                "prompt token count differs from the fixed request: "
+                                f"{reported_prompt_tokens} != "
+                                f"{request_func_input.prompt_len}"
+                            )
 
                     output.generated_text = generated_text
                     output.success = True
+                    output.reported_prompt_len = reported_prompt_tokens
                     output.latency = last_event_timestamp - st
                     output.output_len = (
                         request_func_input.output_len
@@ -527,7 +574,8 @@ def sample_random_requests(
     range_ratio: float,
     tokenizer: PreTrainedTokenizerBase,
     dataset_path: str,
-) -> List[Tuple[str, int, int]]:
+    return_token_ids: bool = False,
+) -> List[Tuple[Union[str, List[int]], int, int]]:
 
     input_lens = np.random.randint(
         max(int(input_len * range_ratio), 1),
@@ -569,7 +617,7 @@ def sample_random_requests(
         random.shuffle(dataset)
 
         # Filter out sequences that are too long or too short
-        input_requests: List[Tuple[str, int, int]] = []
+        input_requests: List[Tuple[Union[str, List[int]], int, int]] = []
         for i in range(num_prompts):
             # Tokenize the prompts and completions.
             prompt = dataset[i][0]
@@ -581,8 +629,12 @@ def sample_random_requests(
             else:
                 ratio = (input_lens[i] + prompt_len - 1) // prompt_len
                 input_ids = (prompt_token_ids * ratio)[: input_lens[i]]
-            prompt = tokenizer.decode(input_ids)
-            input_requests.append((prompt, int(input_lens[i]), int(output_lens[i])))
+            request_prompt = (
+                input_ids if return_token_ids else tokenizer.decode(input_ids)
+            )
+            input_requests.append(
+                (request_prompt, int(input_lens[i]), int(output_lens[i]))
+            )
     else:
         # Sample token ids from random integers. This can cause some NaN issues.
         offsets = np.random.randint(0, tokenizer.vocab_size, size=num_prompts)
@@ -602,9 +654,9 @@ def sample_random_requests(
 
 
 async def get_request(
-    input_requests: List[Tuple[str, int, int]],
+    input_requests: List[Tuple[Union[str, List[int]], int, int]],
     request_rate: float,
-) -> AsyncGenerator[Tuple[str, int, int], None]:
+) -> AsyncGenerator[Tuple[Union[str, List[int]], int, int], None]:
     input_requests = iter(input_requests)
     for request in input_requests:
         yield request
@@ -620,7 +672,7 @@ async def get_request(
 
 
 def calculate_metrics(
-    input_requests: List[Tuple[str, int, int]],
+    input_requests: List[Tuple[Union[str, List[int]], int, int]],
     outputs: List[RequestFuncOutput],
     dur_s: float,
     tokenizer: PreTrainedTokenizerBase,
@@ -695,11 +747,12 @@ async def benchmark(
     api_url: str,
     model_id: str,
     tokenizer: PreTrainedTokenizerBase,
-    input_requests: List[Tuple[str, int, int]],
+    input_requests: List[Tuple[Union[str, List[int]], int, int]],
     request_rate: float,
     disable_tqdm: bool,
     enable_multi: bool,
     max_concurrency: Optional[int] = None,
+    expert_trace: bool = False,
 ):
     if max_concurrency is not None and (
         isinstance(max_concurrency, bool)
@@ -721,6 +774,7 @@ async def benchmark(
         api_url=api_url,
         prompt_len=test_prompt_len,
         output_len=test_output_len,
+        expert_trace=False,
     )
     test_output = await request_func(request_func_input=test_input)
     if not test_output.success:
@@ -738,6 +792,7 @@ async def benchmark(
     semaphore = (
         asyncio.Semaphore(max_concurrency) if max_concurrency is not None else None
     )
+    request_index = 0
     async for request in get_request(input_requests, request_rate):
         prompt, prompt_len, output_len = request
         request_func_input = RequestFuncInput(
@@ -746,7 +801,10 @@ async def benchmark(
             api_url=api_url,
             prompt_len=prompt_len,
             output_len=output_len,
+            expert_trace=expert_trace,
+            request_index=request_index,
         )
+        request_index += 1
         tasks.append(
             asyncio.create_task(
                 request_with_concurrency_limit(
@@ -833,6 +891,7 @@ async def benchmark(
             "backend": args.backend,
             "dataset_name": args.dataset_name,
             "request_rate": request_rate,
+            "completed": metrics.completed,
             "total_input": metrics.total_input,
             "total_output": metrics.total_output,
             "total_output_retokenized": metrics.total_output_retokenized,
@@ -847,6 +906,34 @@ async def benchmark(
             "random_range_ratio": args.random_range_ratio,
             "benchmark_duration": benchmark_duration,
         }
+        if expert_trace:
+            trace_requests = []
+            for index, ((prompt, prompt_len, output_len), output) in enumerate(
+                zip(input_requests, outputs)
+            ):
+                if isinstance(prompt, str):
+                    prompt_kind = "text"
+                    prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+                else:
+                    prompt_kind = "token_ids_int32_le"
+                    prompt_sha256 = hashlib.sha256(
+                        np.asarray(prompt, dtype="<i4").tobytes()
+                    ).hexdigest()
+                trace_requests.append(
+                    {
+                        "request_index": index,
+                        "trace_id": output.request_id or None,
+                        "success": output.success,
+                        "prompt_kind": prompt_kind,
+                        "prompt_sha256": prompt_sha256,
+                        "prompt_tokens": prompt_len,
+                        "reported_prompt_tokens": output.reported_prompt_len,
+                        "completion_tokens": output_len,
+                        "error": output.error,
+                    }
+                )
+            result["expert_trace"] = True
+            result["trace_requests"] = trace_requests
     else:
         print(f"Error running benchmark for request rate: {request_rate}")
         print("-" * 30)
@@ -918,6 +1005,11 @@ def check_chat_template(model_path):
 def fire(args: argparse.Namespace):
     random.seed(args.seed)
     np.random.seed(args.seed)
+
+    if args.expert_trace and args.backend != "sglang":
+        raise ValueError("--expert-trace is only supported by the sglang backend")
+    if args.random_input_token_ids and args.dataset_name != "random":
+        raise ValueError("--random-input-token-ids requires --dataset-name random")
 
     if args.port is None:
         args.port = {
@@ -993,6 +1085,7 @@ def fire(args: argparse.Namespace):
             range_ratio=args.random_range_ratio,
             tokenizer=tokenizer,
             dataset_path=args.dataset_path,
+            return_token_ids=args.random_input_token_ids,
         )
     else:
         raise ValueError(f"Unknown dataset: {args.dataset_name}")
@@ -1012,6 +1105,7 @@ def fire(args: argparse.Namespace):
                     disable_tqdm=args.disable_tqdm,
                     enable_multi=args.multi,
                     max_concurrency=args.max_concurrency,
+                    expert_trace=args.expert_trace,
                 )
             )
     else:
@@ -1026,6 +1120,7 @@ def fire(args: argparse.Namespace):
                 disable_tqdm=args.disable_tqdm,
                 enable_multi=args.multi,
                 max_concurrency=args.max_concurrency,
+                expert_trace=args.expert_trace,
             )
         )
 
@@ -1153,6 +1248,22 @@ if __name__ == "__main__":
         "--disable-stream",
         action="store_true",
         help="Disable streaming mode.",
+    )
+    parser.add_argument(
+        "--expert-trace",
+        action="store_true",
+        help=(
+            "Request server-side expert traces for benchmark requests. The "
+            "initial validation request remains untraced."
+        ),
+    )
+    parser.add_argument(
+        "--random-input-token-ids",
+        action="store_true",
+        help=(
+            "For the random dataset, send the sampled token IDs directly "
+            "instead of decoding them back to text."
+        ),
     )
 
     set_ulimit()
