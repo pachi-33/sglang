@@ -23,7 +23,7 @@ import warnings
 from argparse import ArgumentParser as FlexibleArgumentParser
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import AsyncGenerator, List, Optional, Tuple, Union
+from typing import AsyncGenerator, AsyncIterable, List, Optional, Tuple, Union
 
 import aiohttp
 import numpy as np
@@ -62,6 +62,59 @@ class RequestFuncOutput:
 
 def remove_prefix(text: str, prefix: str) -> str:
     return text[len(prefix) :] if text.startswith(prefix) else text
+
+
+async def _iter_sse_data(chunks: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
+    """Yield complete SSE data payloads independently of transport chunking.
+
+    HTTP clients may split one SSE record across chunks or coalesce multiple
+    records into one chunk.  SSE frames are delimited by a blank line, and
+    multiple ``data:`` lines in one frame are joined with a newline.
+    """
+    buffer = bytearray()
+    data_lines: list[bytes] = []
+
+    def consume_line(raw_line: bytes) -> str | None:
+        if raw_line.endswith(b"\r"):
+            raw_line = raw_line[:-1]
+        if not raw_line:
+            if not data_lines:
+                return None
+            payload = b"\n".join(data_lines).decode("utf-8")
+            data_lines.clear()
+            return payload
+        if raw_line.startswith(b":"):
+            return None
+        field, separator, value = raw_line.partition(b":")
+        if field != b"data":
+            return None
+        if not separator:
+            value = b""
+        elif value.startswith(b" "):
+            value = value[1:]
+        data_lines.append(value)
+        return None
+
+    async for chunk in chunks:
+        if not isinstance(chunk, (bytes, bytearray, memoryview)):
+            raise TypeError("SSE transport chunks must be bytes-like")
+        buffer.extend(chunk)
+        while True:
+            newline = buffer.find(b"\n")
+            if newline < 0:
+                break
+            raw_line = bytes(buffer[:newline])
+            del buffer[: newline + 1]
+            payload = consume_line(raw_line)
+            if payload is not None:
+                yield payload
+
+    if buffer:
+        payload = consume_line(bytes(buffer))
+        if payload is not None:
+            yield payload
+    if data_lines:
+        yield b"\n".join(data_lines).decode("utf-8")
 
 
 # trt llm not support ignore_eos
@@ -157,46 +210,116 @@ async def async_request_openai_completions(
         output.prompt_len = request_func_input.prompt_len
 
         generated_text = ""
-        ttft = 0.0
+        first_token_seen = False
+        reported_completion_tokens = None
         st = time.perf_counter()
         most_recent_timestamp = st
+        last_event_timestamp = st
+
+        def record_data(data, timestamp, *, streaming):
+            nonlocal first_token_seen, generated_text
+            nonlocal most_recent_timestamp, reported_completion_tokens
+            if "error" in data:
+                raise RuntimeError(
+                    "completion API error: "
+                    + json.dumps(data["error"], ensure_ascii=False)
+                )
+
+            usage = data.get("usage")
+            if isinstance(usage, dict) and usage.get("completion_tokens") is not None:
+                completion_tokens = usage["completion_tokens"]
+                if (
+                    isinstance(completion_tokens, bool)
+                    or not isinstance(completion_tokens, int)
+                    or completion_tokens < 0
+                ):
+                    raise RuntimeError(
+                        "completion API returned invalid usage.completion_tokens"
+                    )
+                reported_completion_tokens = completion_tokens
+
+            # A final usage-only frame can legally omit choices.  This server's
+            # token frames carry one incremental token ID even when decoding that
+            # token produces an empty text delta.  Other OpenAI-compatible
+            # servers fall back to nonempty text as the arrival signal.
+            choices = data.get("choices") or []
+            choice = choices[0] if choices else {}
+            text = choice.get("text", "") or ""
+            is_terminal = streaming and choice.get("finish_reason") is not None
+            sglang_metadata = data.get("sglang")
+            if (
+                not is_terminal
+                and isinstance(sglang_metadata, dict)
+                and "completion_token_ids" in sglang_metadata
+            ):
+                token_arrived = bool(sglang_metadata["completion_token_ids"])
+            else:
+                token_arrived = bool(text) and not is_terminal
+            generated_text += text
+            if not token_arrived:
+                return
+
+            if not first_token_seen:
+                output.ttft = timestamp - st
+                first_token_seen = True
+            else:
+                output.itl.append(timestamp - most_recent_timestamp)
+            most_recent_timestamp = timestamp
+
         try:
             async with session.post(
                 url=api_url, json=payload, headers=headers
             ) as response:
                 if response.status == 200:
-                    async for chunk_bytes in response.content:
-                        chunk_bytes = chunk_bytes.strip()
-                        if not chunk_bytes:
-                            continue
+                    if payload["stream"]:
+                        done_seen = False
+                        async for event_data in _iter_sse_data(response.content):
+                            timestamp = time.perf_counter()
+                            last_event_timestamp = timestamp
+                            if event_data == "[DONE]":
+                                done_seen = True
+                                break
+                            record_data(
+                                json.loads(event_data), timestamp, streaming=True
+                            )
+                        if not done_seen:
+                            raise RuntimeError(
+                                "streaming response ended before data: [DONE]"
+                            )
+                    else:
+                        body = bytearray()
+                        async for chunk in response.content:
+                            if not isinstance(chunk, (bytes, bytearray, memoryview)):
+                                raise TypeError(
+                                    "HTTP response chunks must be bytes-like"
+                                )
+                            body.extend(chunk)
+                        timestamp = time.perf_counter()
+                        last_event_timestamp = timestamp
+                        record_data(json.loads(bytes(body)), timestamp, streaming=False)
 
-                        chunk = remove_prefix(chunk_bytes.decode("utf-8"), "data: ")
-                        latency = time.perf_counter() - st
-                        if chunk == "[DONE]":
-                            pass
-                        else:
-                            data = json.loads(chunk)
-
-                            # NOTE: Some completion API might have a last
-                            # usage summary response without a token so we
-                            # want to check a token was generated
-                            if data["choices"][0]["text"]:
-                                timestamp = time.perf_counter()
-                                # First token
-                                if ttft == 0.0:
-                                    ttft = time.perf_counter() - st
-                                    output.ttft = ttft
-
-                                # Decoding phase
-                                output.itl.append(timestamp - most_recent_timestamp)
-
-                                most_recent_timestamp = timestamp
-                                generated_text += data["choices"][0]["text"]
+                    if not first_token_seen:
+                        raise RuntimeError(
+                            "successful completion response contained no output token"
+                        )
+                    if (
+                        reported_completion_tokens is not None
+                        and reported_completion_tokens != request_func_input.output_len
+                    ):
+                        raise RuntimeError(
+                            "completion token count differs from the fixed request: "
+                            f"{reported_completion_tokens} != "
+                            f"{request_func_input.output_len}"
+                        )
 
                     output.generated_text = generated_text
                     output.success = True
-                    output.latency = latency
-                    output.output_len = request_func_input.output_len
+                    output.latency = last_event_timestamp - st
+                    output.output_len = (
+                        request_func_input.output_len
+                        if reported_completion_tokens is None
+                        else reported_completion_tokens
+                    )
                 else:
                     output.error = response.reason or ""
                     output.success = False

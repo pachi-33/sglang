@@ -1,18 +1,22 @@
 """HTTP API for a narrow Qwen3.5 single-request generation backend.
 
 This adapter deliberately preserves the pipeline's narrow execution contract:
-one active request, batch one, greedy decoding, and non-streaming responses.
-It exposes a small native ``/generate`` endpoint plus non-streaming OpenAI-style
-completion and chat-completion endpoints.  It does not route through SGLang's
-normal scheduler, radix cache, or general server state.
+one active request, batch one, and greedy decoding.  It exposes a small native
+``/generate`` endpoint plus OpenAI-style completion and chat-completion
+endpoints.  Backends that implement ``generate_ids_stream`` can stream sampled
+tokens; the older pipeline backend remains non-streaming.  This adapter does
+not route through SGLang's normal scheduler, radix cache, or general server
+state.
 """
 
 from __future__ import annotations
 
 import argparse
 import hmac
+import json
 import logging
 import os
+import queue
 import threading
 import time
 import uuid
@@ -20,11 +24,11 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any, Callable, Literal, Protocol, Sequence
+from typing import Any, Callable, Iterator, Literal, Protocol, Sequence
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt
 from starlette.concurrency import run_in_threadpool
 
@@ -58,6 +62,19 @@ class Qwen35GenerationBackend(Protocol):
     ) -> list[int]: ...
 
     def close(self) -> None: ...
+
+
+class Qwen35StreamingGenerationBackend(Qwen35GenerationBackend, Protocol):
+    """Optional extension implemented by the single-GPU backend."""
+
+    def generate_ids_stream(
+        self,
+        prompt_ids: Sequence[int],
+        *,
+        max_new_tokens: int,
+        eos_token_ids: Sequence[int],
+        token_callback: Callable[[int], None],
+    ) -> list[int]: ...
 
 
 class PipelineBusyError(RuntimeError):
@@ -146,6 +163,170 @@ class PipelineGeneration:
     finish_reason: Literal["stop", "length"]
 
 
+@dataclass(frozen=True)
+class _StreamToken:
+    token_id: int
+    text: str
+
+
+@dataclass(frozen=True)
+class _StreamTerminal:
+    result: PipelineGeneration | None = None
+    error: BaseException | None = None
+    text: str = ""
+
+
+class _PipelineGenerationStream:
+    """Own a backend generation thread and its already-acquired request slot.
+
+    The worker, rather than the response iterator, releases the engine lock.
+    Consequently an HTTP disconnect cannot make the transactional request cache
+    reusable while generation or backend cleanup is still in progress.
+    """
+
+    def __init__(
+        self,
+        engine: "Qwen35PipelineAPIEngine",
+        generate: Callable[..., list[int]],
+        prompt_ids: Sequence[int],
+        max_new_tokens: int,
+        eos_token_ids: Sequence[int],
+    ) -> None:
+        self.engine = engine
+        self.prompt_ids = tuple(prompt_ids)
+        self.max_new_tokens = max_new_tokens
+        self.eos_token_ids = tuple(eos_token_ids)
+        self._generate = generate
+        self._events: queue.Queue[_StreamToken | _StreamTerminal] = queue.Queue()
+        self._prefetched: _StreamToken | _StreamTerminal | None = None
+        self._cancelled = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="qwen35-api-generation",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def prefetch(self) -> _StreamToken | _StreamTerminal:
+        if self._prefetched is not None:
+            raise RuntimeError("stream already prefetched")
+        self._prefetched = self._events.get()
+        return self._prefetched
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    def __iter__(self) -> Iterator[_StreamToken | _StreamTerminal]:
+        if self._prefetched is not None:
+            event = self._prefetched
+            self._prefetched = None
+            yield event
+            if isinstance(event, _StreamTerminal):
+                return
+        while True:
+            event = self._events.get()
+            yield event
+            if isinstance(event, _StreamTerminal):
+                return
+
+    def _run(self) -> None:
+        callback_ids: list[int] = []
+        visible_ids: list[int] = []
+        committed_text = ""
+        eos = frozenset(self.eos_token_ids)
+        terminal: _StreamTerminal
+
+        def token_callback(token_id: int) -> None:
+            nonlocal committed_text
+            if self._cancelled.is_set():
+                raise RuntimeError("streaming client disconnected")
+            if isinstance(token_id, bool) or not isinstance(token_id, int):
+                raise PipelineProtocolError(
+                    "generate_ids_stream token callback must receive Python ints"
+                )
+            callback_ids.append(token_id)
+            if token_id in eos:
+                return
+            visible_ids.append(token_id)
+            current_text = self.engine.tokenizer.decode(
+                visible_ids, skip_special_tokens=False
+            )
+            if not current_text.startswith(committed_text):
+                raise PipelineProtocolError(
+                    "incremental detokenization rewrote already-streamed text"
+                )
+            delta = current_text[len(committed_text) :]
+            is_final_length_token = len(callback_ids) >= self.max_new_tokens
+            if not is_final_length_token and delta.endswith("\ufffd"):
+                # Byte-level tokenizers can expose a temporary replacement
+                # character until later tokens complete the UTF-8 sequence.
+                # Keep the token event (and its timing metadata), but hold the
+                # unstable text so clients never receive text that must later
+                # be rewritten.
+                delta = ""
+            else:
+                committed_text = current_text
+            self._events.put(_StreamToken(token_id=token_id, text=delta))
+
+        try:
+            generated = list(
+                self._generate(
+                    self.prompt_ids,
+                    max_new_tokens=self.max_new_tokens,
+                    eos_token_ids=self.eos_token_ids,
+                    token_callback=token_callback,
+                )
+            )
+            if generated != callback_ids:
+                raise PipelineProtocolError(
+                    "generate_ids_stream returned tokens that differ from its callbacks"
+                )
+            stopped = bool(generated and generated[-1] in eos)
+            result = PipelineGeneration(
+                prompt_token_ids=self.prompt_ids,
+                completion_token_ids=tuple(generated),
+                text=self.engine.tokenizer.decode(
+                    [token for token in generated if token not in eos],
+                    skip_special_tokens=False,
+                ),
+                finish_reason="stop" if stopped else "length",
+            )
+            if not result.text.startswith(committed_text):
+                raise PipelineProtocolError(
+                    "final detokenization rewrote already-streamed text"
+                )
+            terminal = _StreamTerminal(
+                result=result,
+                text=result.text[len(committed_text) :],
+            )
+        except BaseException as exc:
+            terminal = _StreamTerminal(error=exc)
+        finally:
+            # ``generate_ids_stream`` returns or raises only after its own
+            # request-cache reset.  Publish the terminal event after releasing
+            # the slot so DONE/error means cleanup has completed.
+            self.engine._request_lock.release()
+        self._events.put(terminal)
+
+
+class _PipelineStreamingResponse(StreamingResponse):
+    """Signal disconnects without releasing the backend request slot."""
+
+    def __init__(self, stream: _PipelineGenerationStream, content: Any, **kwargs):
+        self._generation_stream = stream
+        super().__init__(content, **kwargs)
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # The worker observes this at a token boundary, lets the backend
+            # perform its transactional reset, and only then releases the lock.
+            self._generation_stream.cancel()
+
+
 class Qwen35PipelineAPIEngine:
     """Serialize HTTP calls onto a backend's one reusable request slot."""
 
@@ -223,6 +404,46 @@ class Qwen35PipelineAPIEngine:
         finally:
             self._request_lock.release()
 
+    def _begin_stream_locked(
+        self,
+        prompt_builder: Callable[[], Sequence[int]],
+        max_new_tokens: int,
+        *,
+        ignore_eos: bool = False,
+    ) -> _PipelineGenerationStream:
+        generate = getattr(self.backend, "generate_ids_stream", None)
+        if not callable(generate):
+            raise APIRequestError(
+                "streaming is not supported by this generation backend"
+            )
+        if not self._request_lock.acquire(blocking=False):
+            raise PipelineBusyError("the single pipeline request slot is busy")
+        ownership_transferred = False
+        try:
+            if self._closed:
+                raise RuntimeError("the pipeline API engine is closed")
+            if self.failed:
+                raise RuntimeError(
+                    "the Qwen3.5 generation backend has failed; restart the process"
+                )
+            prompt_ids = list(prompt_builder())
+            if not prompt_ids:
+                raise APIRequestError("prompt must produce at least one token")
+            eos_token_ids = () if ignore_eos else EOS_TOKEN_IDS
+            stream = _PipelineGenerationStream(
+                self,
+                generate,
+                prompt_ids,
+                max_new_tokens,
+                eos_token_ids,
+            )
+            stream.start()
+            ownership_transferred = True
+            return stream
+        finally:
+            if not ownership_transferred:
+                self._request_lock.release()
+
     def complete_raw(
         self,
         prompt: str | Sequence[int],
@@ -239,6 +460,22 @@ class Qwen35PipelineAPIEngine:
             builder = lambda: prompt_ids
         return self._generate_locked(builder, max_new_tokens, ignore_eos=ignore_eos)
 
+    def stream_raw(
+        self,
+        prompt: str | Sequence[int],
+        max_new_tokens: int,
+        *,
+        ignore_eos: bool = False,
+    ) -> _PipelineGenerationStream:
+        if isinstance(prompt, str):
+            if not prompt:
+                raise APIRequestError("prompt must not be empty")
+            builder = lambda: self.tokenizer.encode(prompt, add_special_tokens=False)
+        else:
+            prompt_ids = list(prompt)
+            builder = lambda: prompt_ids
+        return self._begin_stream_locked(builder, max_new_tokens, ignore_eos=ignore_eos)
+
     def complete_chat(
         self,
         messages: Sequence[dict[str, Any]],
@@ -250,6 +487,26 @@ class Qwen35PipelineAPIEngine:
         if not wire_messages:
             raise APIRequestError("messages must not be empty")
         return self._generate_locked(
+            lambda: self.tokenizer.apply_chat_template(
+                wire_messages,
+                tokenize=True,
+                add_generation_prompt=True,
+            ),
+            max_new_tokens,
+            ignore_eos=ignore_eos,
+        )
+
+    def stream_chat(
+        self,
+        messages: Sequence[dict[str, Any]],
+        max_new_tokens: int,
+        *,
+        ignore_eos: bool = False,
+    ) -> _PipelineGenerationStream:
+        wire_messages = [dict(message) for message in messages]
+        if not wire_messages:
+            raise APIRequestError("messages must not be empty")
+        return self._begin_stream_locked(
             lambda: self.tokenizer.apply_chat_template(
                 wire_messages,
                 tokenize=True,
@@ -280,8 +537,6 @@ def _validate_model(engine: Qwen35PipelineAPIEngine, requested_model: str) -> No
 def _validate_greedy_request(
     request: CompletionRequest | ChatCompletionRequest,
 ) -> None:
-    if request.stream:
-        raise APIRequestError("streaming is not supported by this pipeline")
     if request.n != 1:
         raise APIRequestError("only n=1 is supported")
     if request.temperature not in (None, 0, 0.0):
@@ -380,6 +635,145 @@ def _error_response(
     )
 
 
+def _sse_json(content: dict[str, Any]) -> str:
+    return f"data: {json.dumps(content, ensure_ascii=False, separators=(',', ':'))}\n\n"
+
+
+def _stream_error_json(exc: BaseException, *, backend_failed: bool) -> dict[str, Any]:
+    response = _error_response(exc, backend_failed=backend_failed)
+    return json.loads(response.body)
+
+
+def _completion_sse(
+    stream: _PipelineGenerationStream,
+    *,
+    request_id: str,
+    created: int,
+    model: str,
+) -> Iterator[str]:
+    for event in stream:
+        if isinstance(event, _StreamToken):
+            yield _sse_json(
+                {
+                    "id": request_id,
+                    "object": "text_completion",
+                    "created": created,
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "text": event.text,
+                            "logprobs": None,
+                            "finish_reason": None,
+                        }
+                    ],
+                    "usage": None,
+                    "sglang": {"completion_token_ids": [event.token_id]},
+                }
+            )
+            continue
+
+        if event.error is not None:
+            yield _sse_json(
+                _stream_error_json(event.error, backend_failed=stream.engine.failed)
+            )
+        else:
+            assert event.result is not None
+            yield _sse_json(
+                {
+                    "id": request_id,
+                    "object": "text_completion",
+                    "created": created,
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "text": event.text,
+                            "logprobs": None,
+                            "finish_reason": event.result.finish_reason,
+                        }
+                    ],
+                    "usage": _openai_usage(event.result),
+                    "sglang": _token_metadata(event.result),
+                }
+            )
+        yield "data: [DONE]\n\n"
+
+
+def _chat_completion_sse(
+    stream: _PipelineGenerationStream,
+    *,
+    request_id: str,
+    created: int,
+    model: str,
+) -> Iterator[str]:
+    # Match the OpenAI chat protocol's initial assistant-role delta.
+    yield _sse_json(
+        {
+            "id": request_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": ""},
+                    "logprobs": None,
+                    "finish_reason": None,
+                }
+            ],
+            "usage": None,
+        }
+    )
+    for event in stream:
+        if isinstance(event, _StreamToken):
+            yield _sse_json(
+                {
+                    "id": request_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": event.text},
+                            "logprobs": None,
+                            "finish_reason": None,
+                        }
+                    ],
+                    "usage": None,
+                    "sglang": {"completion_token_ids": [event.token_id]},
+                }
+            )
+            continue
+
+        if event.error is not None:
+            yield _sse_json(
+                _stream_error_json(event.error, backend_failed=stream.engine.failed)
+            )
+        else:
+            assert event.result is not None
+            yield _sse_json(
+                {
+                    "id": request_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": ({"content": event.text} if event.text else {}),
+                            "logprobs": None,
+                            "finish_reason": event.result.finish_reason,
+                        }
+                    ],
+                    "usage": _openai_usage(event.result),
+                    "sglang": _token_metadata(event.result),
+                }
+            )
+        yield "data: [DONE]\n\n"
+
+
 def create_app(
     engine: Qwen35PipelineAPIEngine,
     *,
@@ -423,7 +817,7 @@ def create_app(
             },
         )
 
-    async def invoke(call: Callable[[], PipelineGeneration]):
+    async def invoke(call: Callable[[], Any]):
         try:
             if engine.failed:
                 raise RuntimeError(
@@ -432,6 +826,14 @@ def create_app(
             return await run_in_threadpool(call)
         except Exception as exc:
             return _error_response(exc, backend_failed=engine.failed)
+
+    async def stream_handshake(
+        stream: _PipelineGenerationStream,
+    ) -> JSONResponse | None:
+        first_event = await run_in_threadpool(stream.prefetch)
+        if isinstance(first_event, _StreamTerminal) and first_event.error is not None:
+            return _error_response(first_event.error, backend_failed=engine.failed)
+        return None
 
     @app.get("/health")
     async def health():
@@ -522,9 +924,15 @@ def create_app(
         if unauthorized is not None:
             return unauthorized
 
-        def run() -> PipelineGeneration:
+        def run() -> PipelineGeneration | _PipelineGenerationStream:
             _validate_model(engine, request.model)
             _validate_greedy_request(request)
+            if request.stream:
+                return engine.stream_raw(
+                    request.prompt,
+                    request.max_tokens,
+                    ignore_eos=request.ignore_eos,
+                )
             return engine.complete_raw(
                 request.prompt,
                 request.max_tokens,
@@ -534,6 +942,23 @@ def create_app(
         result = await invoke(run)
         if isinstance(result, JSONResponse):
             return result
+        if isinstance(result, _PipelineGenerationStream):
+            handshake_error = await stream_handshake(result)
+            if handshake_error is not None:
+                return handshake_error
+            request_id = "cmpl-" + uuid.uuid4().hex
+            created = int(time.time())
+            return _PipelineStreamingResponse(
+                result,
+                _completion_sse(
+                    result,
+                    request_id=request_id,
+                    created=created,
+                    model=engine.model_id,
+                ),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
         return {
             "id": "cmpl-" + uuid.uuid4().hex,
             "object": "text_completion",
@@ -557,12 +982,18 @@ def create_app(
         if unauthorized is not None:
             return unauthorized
 
-        def run() -> PipelineGeneration:
+        def run() -> PipelineGeneration | _PipelineGenerationStream:
             _validate_model(engine, request.model)
             _validate_greedy_request(request)
             messages = [
                 message.model_dump(exclude_none=True) for message in request.messages
             ]
+            if request.stream:
+                return engine.stream_chat(
+                    messages,
+                    _chat_max_tokens(request),
+                    ignore_eos=request.ignore_eos,
+                )
             return engine.complete_chat(
                 messages,
                 _chat_max_tokens(request),
@@ -572,6 +1003,23 @@ def create_app(
         result = await invoke(run)
         if isinstance(result, JSONResponse):
             return result
+        if isinstance(result, _PipelineGenerationStream):
+            handshake_error = await stream_handshake(result)
+            if handshake_error is not None:
+                return handshake_error
+            request_id = "chatcmpl-" + uuid.uuid4().hex
+            created = int(time.time())
+            return _PipelineStreamingResponse(
+                result,
+                _chat_completion_sse(
+                    result,
+                    request_id=request_id,
+                    created=created,
+                    model=engine.model_id,
+                ),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
         return {
             "id": "chatcmpl-" + uuid.uuid4().hex,
             "object": "chat.completion",

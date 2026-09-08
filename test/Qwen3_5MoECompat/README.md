@@ -52,8 +52,12 @@ existing `/generate`, `/v1/completions` and `/v1/chat/completions` routes throug
 one backend and one uvicorn worker. Live V100 evidence covers HTTP 200 for all
 three routes, a concurrent-request 429, and checksum/short-read/H2D-triggered
 FAILED latches whose first request, `/health`, and later request all return 503.
-The OpenAI completion route accepts SGLang's `ignore_eos` extension for fixed-length
-greedy benchmarks. Start the benchmark-compatible server and run the saved profile:
+The OpenAI completion and chat routes support `stream=true`; token frames carry
+the exact sampled token ID, a terminal frame carries usage and finish reason,
+and `[DONE]` is published only after request-cache reset. Incomplete byte-level
+text is buffered until its UTF-8 sequence is stable. The completion route also
+accepts SGLang's `ignore_eos` extension for fixed-length greedy benchmarks.
+Start the benchmark-compatible server and run the saved streaming profile:
 
 ```bash
 CUDA_VISIBLE_DEVICES=GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96 \
@@ -72,13 +76,15 @@ PYTHONPATH=python:. \
   --dataset-path /home/yaozhenyang/dev/sglang-v100/ShareGPT_V3_unfiltered_cleaned_split.json \
   --host 127.0.0.1 --port 8818 --max-concurrency 1 \
   --random-input-len 1024 --random-output-len 128 --num-prompts 8 \
-  --random-range-ratio 1 --request-rate inf --disable-stream
+  --random-range-ratio 1 --request-rate inf
 ```
 
-The recorded run completed 8/8 requests in 246.98 s at 4.15 output token/s.
-Because responses are non-streaming, benchmark-reported TTFT/ITL are whole-response
-observations; use backend statistics for token-level timing. See
-[the serving benchmark report](reports/bench_serving_single_gpu_v100_1024_128.txt).
+The recorded streaming run completed 8/8 requests in 220.50 s at 4.64 output
+token/s. Mean/median TTFT were 7020.97/7442.25 ms; mean/median ITL were
+161.73/157.26 ms over 1,016 decode intervals. Every terminal usage value was
+128 and the concatenated stream text retokenized to all 1,024 generated tokens.
+See [the streaming serving report](reports/bench_serving_single_gpu_v100_stream_1024_128.txt)
+and [the timed eight-token smoke](reports/single_gpu_api_stream_smoke_v100.txt).
 
 ## Current ExpertPack evidence
 
@@ -106,6 +112,12 @@ Additional root-reviewed V100 evidence is saved in:
   a hot acquire adds zero pack reads and zero H2D bytes;
 - [single_gpu_api_smoke_v100.json](reports/single_gpu_api_smoke_v100.json):
   `/generate`, `/v1/completions` and `/v1/chat/completions` all return 200;
+- [single_gpu_api_stream_smoke_v100.txt](reports/single_gpu_api_stream_smoke_v100.txt):
+  eight `Hello` tokens arrive as separate timed SSE frames, followed by usage,
+  finish reason and `[DONE]`;
+- [bench_serving_single_gpu_v100_stream_1024_128.txt](reports/bench_serving_single_gpu_v100_stream_1024_128.txt):
+  the fixed 1024-to-128 profile passes 8/8 with real TTFT/ITL measurements,
+  exact terminal token counts and a post-run READY store;
 - [single_gpu_api_concurrency_v100.json](reports/single_gpu_api_concurrency_v100.json):
   a live contender returns 429 while the active request completes normally;
 - [single_gpu_api_checksum_failure_v100.json](reports/single_gpu_api_checksum_failure_v100.json):
@@ -118,8 +130,10 @@ Additional root-reviewed V100 evidence is saved in:
   an injected H2D RuntimeError poisons the request cache, publishes no resident
   expert, records one CUDA/fatal error, and returns 503 for first/health/later.
 
-Connection cancellation with an in-flight lease, a fresh-process restart after
-fatal failure, long-running stress, and clean-tree release regression remain pending.
+CPU API contracts cover disconnect-triggered cancellation, reset-before-unlock,
+and shutdown waiting for the generation worker. A real V100 disconnect with an
+in-flight lease, a fresh-process restart after fatal failure, long-running stress,
+and clean-tree release regression remain pending.
 
 ## Model structure
 
@@ -246,11 +260,12 @@ curl http://127.0.0.1:30000/v1/chat/completions \
   -d '{"model":"agent-world","messages":[{"role":"user","content":"解释 KV cache。"}],"max_completion_tokens":8,"temperature":0}'
 ```
 
-The API is deliberately non-streaming, greedy (`temperature=0`, `top_p=1`),
-and `n=1`. A concurrent request receives HTTP 429 instead of being batch
-scheduled. Responses include OpenAI-style text/usage plus exact prompt and
-completion token IDs under `sglang`; native `/generate` returns the same data
-under `meta_info`. Every response or error still ends with the two-worker reset.
+This legacy two-worker backend remains non-streaming, greedy (`temperature=0`,
+`top_p=1`), and `n=1`. A concurrent request receives HTTP 429 instead of being
+batch scheduled. Responses include OpenAI-style text/usage plus exact prompt
+and completion token IDs under `sglang`; native `/generate` returns the same
+data under `meta_info`. Every response or error still ends with the two-worker
+reset.
 
 SM70 and SM89 execute the same Qwen3.5 Python/Triton operator sources, compiled
 independently in their worker processes for each architecture; they do not

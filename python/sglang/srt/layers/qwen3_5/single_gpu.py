@@ -13,7 +13,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import torch
 
@@ -171,6 +171,39 @@ class Qwen35SingleGPU:
         eos_token_ids: Sequence[int] = EOS_TOKEN_IDS,
     ) -> list[int]:
         """Generate greedily and reset the sole cache after every active request."""
+        return self._generate_ids(
+            prompt_ids,
+            max_new_tokens=max_new_tokens,
+            eos_token_ids=eos_token_ids,
+            token_callback=None,
+        )
+
+    def generate_ids_stream(
+        self,
+        prompt_ids: Sequence[int],
+        *,
+        max_new_tokens: int,
+        token_callback: Callable[[int], None],
+        eos_token_ids: Sequence[int] = EOS_TOKEN_IDS,
+    ) -> list[int]:
+        """Generate greedily and synchronously report every sampled token."""
+        if not callable(token_callback):
+            raise TypeError("token_callback must be callable")
+        return self._generate_ids(
+            prompt_ids,
+            max_new_tokens=max_new_tokens,
+            eos_token_ids=eos_token_ids,
+            token_callback=token_callback,
+        )
+
+    def _generate_ids(
+        self,
+        prompt_ids: Sequence[int],
+        *,
+        max_new_tokens: int,
+        eos_token_ids: Sequence[int],
+        token_callback: Callable[[int], None] | None,
+    ) -> list[int]:
         if self._closed:
             raise RuntimeError("single-GPU backend is closed")
         if self.failed:
@@ -219,6 +252,8 @@ class Qwen35SingleGPU:
                 generated = [self._sample(hidden)]
                 first_token_ns = time.perf_counter_ns()
                 previous_token_ns = first_token_ns
+                if token_callback is not None:
+                    token_callback(generated[-1])
 
                 while len(generated) < max_new_tokens and generated[-1] not in eos:
                     prefix_len = len(ids) + len(generated) - 1
@@ -236,6 +271,8 @@ class Qwen35SingleGPU:
                     assert previous_token_ns is not None
                     itl_ms.append((token_ns - previous_token_ns) / 1e6)
                     previous_token_ns = token_ns
+                    if token_callback is not None:
+                        token_callback(generated[-1])
             return generated
         except BaseException as exc:
             primary_error = exc

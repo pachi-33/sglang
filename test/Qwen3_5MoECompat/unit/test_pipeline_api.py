@@ -1,5 +1,7 @@
-"""CPU-only HTTP contract tests for the Qwen3.5 dual-GPU pipeline API."""
+"""CPU-only HTTP contract tests for the Qwen3.5 generation API."""
 
+import json
+import threading
 import unittest
 from unittest import mock
 
@@ -29,6 +31,17 @@ class _FakeTokenizer:
         return "decoded:" + ",".join(str(token) for token in values)
 
 
+class _BufferedByteTokenizer(_FakeTokenizer):
+    def decode(self, token_ids, *, skip_special_tokens):
+        values = list(token_ids)
+        self.decoded.append((values, skip_special_tokens))
+        if values == [101]:
+            return "\ufffd"
+        if values == [101, 102]:
+            return "\u00e9"
+        return super().decode(values, skip_special_tokens=skip_special_tokens)
+
+
 class _FakePipeline:
     def __init__(self, outputs=()):
         self.outputs = list(outputs)
@@ -38,6 +51,12 @@ class _FakePipeline:
         self.fail_fatally = False
         self.stats = {}
         self.error = None
+        self.error_after_tokens = False
+        self.stream_calls = []
+        self.stream_started = threading.Event()
+        self.stream_gate = None
+        self.after_first_token_gate = None
+        self.stream_finished = threading.Event()
 
     def generate_ids(self, prompt_ids, **kwargs):
         self.calls.append((list(prompt_ids), dict(kwargs)))
@@ -48,6 +67,31 @@ class _FakePipeline:
         if not self.outputs:
             raise AssertionError("fake pipeline has no scripted output")
         return list(self.outputs.pop(0))
+
+    def generate_ids_stream(self, prompt_ids, *, token_callback, **kwargs):
+        self.stream_calls.append((list(prompt_ids), dict(kwargs)))
+        self.stream_started.set()
+        if self.stream_gate is not None:
+            self.stream_gate.wait(timeout=5)
+        try:
+            if self.error is not None and not self.error_after_tokens:
+                if self.fail_fatally:
+                    self.failed = True
+                raise self.error
+            if not self.outputs:
+                raise AssertionError("fake pipeline has no scripted output")
+            generated = list(self.outputs.pop(0))
+            for index, token_id in enumerate(generated):
+                token_callback(token_id)
+                if index == 0 and self.after_first_token_gate is not None:
+                    self.after_first_token_gate.wait(timeout=5)
+            if self.error is not None:
+                if self.fail_fatally:
+                    self.failed = True
+                raise self.error
+            return generated
+        finally:
+            self.stream_finished.set()
 
     def close(self):
         self.closed = True
@@ -65,6 +109,16 @@ class TestPipelineAPI(unittest.TestCase):
         )
         app = pipeline_api.create_app(engine, api_key=api_key)
         return fake_pipeline, tokenizer, engine, app
+
+    @staticmethod
+    def _sse_payloads(response):
+        values = []
+        for line in response.text.splitlines():
+            if not line.startswith("data: "):
+                continue
+            data = line.removeprefix("data: ")
+            values.append(data if data == "[DONE]" else json.loads(data))
+        return values
 
     def test_native_generate_returns_text_tokens_usage_and_closes(self):
         fake, tokenizer, _, app = self._fixture([31, 32])
@@ -158,6 +212,78 @@ class TestPipelineAPI(unittest.TestCase):
         )
         self.assertEqual(tokenizer.decoded, [([41, eos], False)])
 
+    def test_completion_stream_emits_tokens_finish_usage_and_done(self):
+        eos = EOS_TOKEN_IDS[0]
+        fake, _, _, app = self._fixture([41, 42, eos])
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/completions",
+                json={
+                    "model": "agent-world",
+                    "prompt": "hello",
+                    "max_tokens": 3,
+                    "stream": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            response.headers["content-type"].startswith("text/event-stream")
+        )
+        chunks = self._sse_payloads(response)
+        self.assertEqual(len(chunks), 4)
+        self.assertEqual(chunks[0]["object"], "text_completion")
+        self.assertEqual(chunks[0]["choices"][0]["text"], "decoded:41")
+        self.assertIsNone(chunks[0]["choices"][0]["finish_reason"])
+        self.assertEqual(chunks[1]["choices"][0]["text"], ",42")
+        self.assertEqual(chunks[2]["choices"][0]["text"], "")
+        self.assertEqual(chunks[2]["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(
+            chunks[2]["usage"],
+            {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+        )
+        self.assertEqual(chunks[2]["sglang"]["completion_token_ids"], [41, 42, eos])
+        self.assertEqual(chunks[3], "[DONE]")
+        self.assertEqual(
+            fake.stream_calls,
+            [([10, 11], {"max_new_tokens": 3, "eos_token_ids": EOS_TOKEN_IDS})],
+        )
+
+    def test_completion_stream_buffers_incomplete_utf8_without_losing_token_event(self):
+        fake = _FakePipeline(([101, 102],))
+        tokenizer = _BufferedByteTokenizer()
+        engine = pipeline_api.Qwen35PipelineAPIEngine(
+            fake,
+            tokenizer,
+            model_id="agent-world",
+        )
+        app = pipeline_api.create_app(engine)
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/completions",
+                json={
+                    "model": "agent-world",
+                    "prompt": [1],
+                    "max_tokens": 2,
+                    "stream": True,
+                },
+            )
+
+        chunks = self._sse_payloads(response)
+        token_chunks = chunks[:2]
+        self.assertEqual(
+            [chunk["sglang"]["completion_token_ids"] for chunk in token_chunks],
+            [[101], [102]],
+        )
+        self.assertEqual(
+            "".join(chunk["choices"][0]["text"] for chunk in chunks[:-1]),
+            "\u00e9",
+        )
+        self.assertEqual(chunks[0]["choices"][0]["text"], "")
+        self.assertEqual(chunks[1]["choices"][0]["text"], "\u00e9")
+        self.assertEqual(chunks[2]["choices"][0]["finish_reason"], "length")
+        self.assertEqual(chunks[3], "[DONE]")
+
     def test_chat_applies_checkpoint_template_and_supports_current_token_field(self):
         fake, tokenizer, _, app = self._fixture([51, 52])
         with TestClient(app) as client:
@@ -185,6 +311,34 @@ class TestPipelineAPI(unittest.TestCase):
         )
         self.assertEqual(fake.calls[0][0], [20, 21, 22])
 
+    def test_chat_stream_starts_with_role_and_ends_with_finish_and_done(self):
+        fake, _, _, app = self._fixture([51, 52])
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "agent-world",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "max_completion_tokens": 2,
+                    "stream": True,
+                },
+            )
+
+        chunks = self._sse_payloads(response)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(chunks[0]["object"], "chat.completion.chunk")
+        self.assertEqual(
+            chunks[0]["choices"][0]["delta"],
+            {"role": "assistant", "content": ""},
+        )
+        self.assertEqual(chunks[1]["choices"][0]["delta"]["content"], "decoded:51")
+        self.assertEqual(chunks[2]["choices"][0]["delta"]["content"], ",52")
+        self.assertEqual(chunks[3]["choices"][0]["delta"], {})
+        self.assertEqual(chunks[3]["choices"][0]["finish_reason"], "length")
+        self.assertEqual(chunks[3]["usage"]["completion_tokens"], 2)
+        self.assertEqual(chunks[4], "[DONE]")
+        self.assertEqual(len({chunk["id"] for chunk in chunks[:-1]}), 1)
+
     def test_api_key_guards_model_and_generation_routes(self):
         _, _, _, app = self._fixture([61], api_key="secret")
         with TestClient(app) as client:
@@ -204,8 +358,9 @@ class TestPipelineAPI(unittest.TestCase):
         self.assertEqual(models.json()["data"][0]["id"], "agent-world")
         self.assertEqual(completion.status_code, 200)
 
-    def test_rejects_concurrency_non_greedy_streaming_and_wrong_model(self):
+    def test_rejects_concurrency_non_greedy_legacy_streaming_and_wrong_model(self):
         fake, _, engine, app = self._fixture([71])
+        fake.generate_ids_stream = None
         with TestClient(app) as client:
             self.assertTrue(engine._request_lock.acquire(blocking=False))
             try:
@@ -292,6 +447,104 @@ class TestPipelineAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["error"]["type"], "worker_error")
         self.assertEqual(len(fake.calls), 1)
+
+    def test_stream_holds_slot_until_backend_cleanup_and_rejects_concurrency(self):
+        fake, _, engine, app = self._fixture([81])
+        fake.stream_gate = threading.Event()
+        stream = engine.stream_raw([1], 1)
+        self.assertTrue(fake.stream_started.wait(timeout=1))
+        self.assertTrue(engine.busy)
+
+        with TestClient(app) as client:
+            busy = client.post(
+                "/v1/completions",
+                json={"model": "agent-world", "prompt": [2], "max_tokens": 1},
+            )
+            self.assertEqual(busy.status_code, 429)
+            self.assertEqual(busy.json()["error"]["type"], "server_busy")
+            fake.stream_gate.set()
+            terminal = list(stream)[-1]
+
+        self.assertIsInstance(terminal, pipeline_api._StreamTerminal)
+        self.assertIsNone(terminal.error)
+        self.assertTrue(fake.stream_finished.is_set())
+        self.assertFalse(engine.busy)
+
+    def test_stream_error_emits_error_then_done_and_close_waits_for_worker(self):
+        fake, _, engine, app = self._fixture([101])
+        fake.error = RuntimeError("generation exploded")
+        fake.error_after_tokens = True
+        with self.assertLogs(pipeline_api.logger.name, level="ERROR"):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/completions",
+                    json={
+                        "model": "agent-world",
+                        "prompt": [1],
+                        "max_tokens": 1,
+                        "stream": True,
+                    },
+                )
+        chunks = self._sse_payloads(response)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(chunks[0]["choices"][0]["text"], "decoded:101")
+        self.assertEqual(chunks[1]["error"]["type"], "server_error")
+        self.assertIn("generation exploded", chunks[1]["error"]["message"])
+        self.assertEqual(chunks[2], "[DONE]")
+        self.assertTrue(fake.stream_finished.is_set())
+        self.assertTrue(fake.closed)
+        self.assertFalse(engine.busy)
+
+        immediate, _, _, immediate_app = self._fixture()
+        immediate.error = PipelineWorkerError("prefill failed")
+        with self.assertLogs(pipeline_api.logger.name, level="ERROR"):
+            with TestClient(immediate_app) as client:
+                immediate_response = client.post(
+                    "/v1/completions",
+                    json={
+                        "model": "agent-world",
+                        "prompt": [1],
+                        "max_tokens": 1,
+                        "stream": True,
+                    },
+                )
+        self.assertEqual(immediate_response.status_code, 503)
+        self.assertEqual(immediate_response.json()["error"]["type"], "worker_error")
+
+        disconnected, _, disconnected_engine, _ = self._fixture([111, 112])
+        disconnected.after_first_token_gate = threading.Event()
+        disconnected_stream = disconnected_engine.stream_raw([1], 2)
+        first_event = disconnected_stream.prefetch()
+        self.assertIsInstance(first_event, pipeline_api._StreamToken)
+        disconnected_stream.cancel()
+        disconnected.after_first_token_gate.set()
+        disconnect_terminal = list(disconnected_stream)[-1]
+        self.assertIn("disconnected", str(disconnect_terminal.error))
+        self.assertTrue(disconnected.stream_finished.is_set())
+        self.assertFalse(disconnected_engine.busy)
+        disconnected_engine.close()
+
+        blocking, _, blocking_engine, _ = self._fixture([91])
+        blocking.stream_gate = threading.Event()
+        blocking_engine.stream_raw([1], 1)
+        self.assertTrue(blocking.stream_started.wait(timeout=1))
+        close_started = threading.Event()
+
+        def close_engine():
+            close_started.set()
+            blocking_engine.close()
+
+        close_thread = threading.Thread(target=close_engine)
+        close_thread.start()
+        self.assertTrue(close_started.wait(timeout=1))
+        close_thread.join(timeout=0.05)
+        self.assertTrue(close_thread.is_alive())
+        self.assertFalse(blocking.closed)
+        blocking.stream_gate.set()
+        close_thread.join(timeout=1)
+        self.assertFalse(close_thread.is_alive())
+        self.assertTrue(blocking.stream_finished.is_set())
+        self.assertTrue(blocking.closed)
 
     def test_backend_fatal_returns_503_and_health_remains_failed(self):
         fake, _, _, app = self._fixture()

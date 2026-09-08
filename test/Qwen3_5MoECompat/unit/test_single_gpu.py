@@ -185,6 +185,97 @@ class TestSingleGPU(unittest.TestCase):
             60,
         )
 
+    def test_callback_synchronously_receives_every_sampled_token(self):
+        eos = single_gpu.EOS_TOKEN_IDS[0]
+        runner = _FakeRunner((31, 32, eos, 99))
+        backend, _ = self._backend(runner, capacity=8)
+        callbacks = []
+
+        def token_callback(token):
+            callbacks.append((token, backend.cache.consumed_len))
+
+        try:
+            generated = backend.generate_ids_stream(
+                [1, 2],
+                max_new_tokens=4,
+                eos_token_ids=(eos,),
+                token_callback=token_callback,
+            )
+        finally:
+            backend.close()
+
+        self.assertEqual(generated, [31, 32, eos])
+        self.assertEqual(callbacks, [(31, 2), (32, 3), (eos, 4)])
+        self.assertEqual(runner.reset_calls, 1)
+        self.assertEqual(runner.cache.consumed_len, 0)
+        self.assertEqual(backend.stats["last_generation"]["status"], "ok")
+        self.assertEqual(backend.stats["last_generation"]["completion_tokens"], 3)
+
+    def test_callback_failure_resets_and_preserves_nonfatal_reuse(self):
+        runner = _FakeRunner((31, 32))
+        backend, _ = self._backend(runner, capacity=4)
+        callbacks = []
+
+        def token_callback(token):
+            callbacks.append(token)
+            raise RuntimeError("callback failed")
+
+        try:
+            with self.assertRaisesRegex(RuntimeError, "callback failed"):
+                backend.generate_ids_stream(
+                    [1], max_new_tokens=2, token_callback=token_callback
+                )
+            self.assertEqual(callbacks, [31])
+            self.assertEqual(runner.reset_calls, 1)
+            self.assertEqual(runner.cache.consumed_len, 0)
+            self.assertFalse(runner.cache.poisoned)
+            self.assertFalse(backend.failed)
+            failed_stats = backend.stats["last_generation"]
+            self.assertEqual(failed_stats["status"], "failed")
+            self.assertEqual(failed_stats["completion_tokens"], 1)
+            self.assertIn("callback failed", failed_stats["error"])
+
+            self.assertEqual(backend.generate_ids([2], max_new_tokens=1), [32])
+            self.assertEqual(runner.reset_calls, 2)
+            self.assertEqual(backend.stats["request_count"], 2)
+            self.assertEqual(backend.stats["last_generation"]["status"], "ok")
+        finally:
+            backend.close()
+
+    def test_callback_is_validated_before_request_mutation(self):
+        runner = _FakeRunner((31,))
+        backend, _ = self._backend(runner, capacity=4)
+        try:
+            with self.assertRaisesRegex(TypeError, "token_callback must be callable"):
+                backend.generate_ids_stream([1], max_new_tokens=1, token_callback=None)
+        finally:
+            backend.close()
+        self.assertEqual(runner.embedded, [])
+        self.assertEqual(runner.reset_calls, 0)
+        self.assertEqual(backend.stats["request_count"], 0)
+
+    def test_callback_and_reset_failure_poisons_backend(self):
+        runner = _FakeRunner((31,))
+        runner.reset_error = RuntimeError("cannot reset")
+        backend, _ = self._backend(runner, capacity=4)
+
+        def token_callback(token):
+            raise RuntimeError("callback failed")
+
+        try:
+            with self.assertRaisesRegex(RuntimeError, "callback failed"):
+                backend.generate_ids_stream(
+                    [1], max_new_tokens=1, token_callback=token_callback
+                )
+            self.assertEqual(runner.reset_calls, 1)
+            self.assertTrue(backend.failed)
+            self.assertTrue(runner.cache.poisoned)
+            self.assertEqual(backend.stats["last_generation"]["status"], "failed")
+            with self.assertRaisesRegex(RuntimeError, "restart"):
+                backend.generate_ids([2], max_new_tokens=1)
+        finally:
+            backend.close()
+
     def test_eos_stops_without_inserting_terminal_token_and_resets(self):
         eos = single_gpu.EOS_TOKEN_IDS[0]
         runner = _FakeRunner((eos, 99))

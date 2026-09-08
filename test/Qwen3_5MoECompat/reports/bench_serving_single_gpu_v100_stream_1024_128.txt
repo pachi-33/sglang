@@ -1,0 +1,87 @@
+status=passed
+device=GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96
+endpoint=http://127.0.0.1:8818/v1/completions
+dataset=random-from-ShareGPT
+dataset_path=/home/yaozhenyang/dev/sglang-v100/ShareGPT_V3_unfiltered_cleaned_split.json
+model=/home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16
+num_prompts=8
+declared_input_tokens_per_request=1024
+output_tokens_per_request=128
+random_range_ratio=1.0
+max_concurrency=1
+request_rate=inf
+stream=true
+ignore_eos=true
+seed=0
+
+command:
+PYTHONPATH=python:. /home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python \
+  -m sglang.bench_serving --dataset-name random --backend sglang \
+  --model /home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16 \
+  --dataset-path /home/yaozhenyang/dev/sglang-v100/ShareGPT_V3_unfiltered_cleaned_split.json \
+  --host 127.0.0.1 --port 8818 --max-concurrency 1 \
+  --random-input-len 1024 --random-output-len 128 --num-prompts 8 \
+  --random-range-ratio 1 --request-rate inf \
+  --output-file test/Qwen3_5MoECompat/reports/bench_serving_single_gpu_v100_stream_1024_128.jsonl
+
+successful_requests=8
+benchmark_duration_s=220.49959466198925
+total_declared_input_tokens=8192
+total_generated_tokens=1024
+total_generated_tokens_retokenized=1024
+request_throughput_req_s=0.036281
+input_throughput_tok_s=37.15
+output_throughput_tok_s=4.643999466619074
+mean_e2e_latency_ms=27562.070203362964
+median_e2e_latency_ms=30232.508662971668
+mean_ttft_ms=7020.97
+median_ttft_ms=7442.249364452437
+p99_ttft_ms=9165.97
+mean_tpot_ms=161.74
+median_tpot_ms=173.56
+p99_tpot_ms=227.27
+mean_itl_ms=161.73
+median_itl_ms=157.25782499066554
+p99_itl_ms=334.90
+itl_samples=1016
+terminal_usage_verified_per_request=true
+stream_text_retokenization_exact=true
+
+post_health_status=ok
+post_health_busy=false
+post_store_state=READY
+post_request_count_including_smoke_and_probe=10
+post_cache_capacity_experts=4247
+post_resident_experts=4247
+post_cache_hits=325612
+post_cache_misses=85517
+post_cache_evictions=81270
+post_pack_read_bytes=151321305296
+post_h2d_bytes=151321305296
+post_io_errors=0
+post_checksum_errors=0
+post_cuda_errors=0
+post_epoch_errors=0
+post_fatal_errors=0
+post_peak_reserved_bytes=14954790912
+post_peak_reserved_margin_bytes=1973551104
+
+last_request_actual_prompt_tokens=988
+last_request_completion_tokens=128
+last_request_ttft_ms=7961.098964
+last_request_mean_itl_ms=168.23928572440946
+last_request_total_ms=29328.409211
+
+The random dataset generator records the requested 1024-token length before it
+decodes sampled token IDs to text. The service retokenized the final prompt to
+988 tokens, so input throughput uses the benchmark's declared 8192-token total.
+Every response terminal reported usage.completion_tokens=128, and the benchmark
+now rejects a mismatch or an SSE stream that ends before data: [DONE].
+
+Token frames carry sglang.completion_token_ids, so every sampled token contributes
+to TTFT/ITL even when an incomplete byte sequence temporarily has an empty text
+delta. The incremental detokenizer buffers such unstable UTF-8 suffixes; the
+concatenated stream text retokenized to all 1024 generated tokens. There are 127
+ITL samples per request, 1016 total. E2E ends at [DONE] after request-cache reset;
+ITL ends at the last sampled token and excludes reset. These measurements are
+performance characterization, not an SLA.

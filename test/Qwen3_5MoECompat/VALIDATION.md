@@ -2,7 +2,8 @@
 
 ## 2026-09-08 ExpertPack 单卡验收
 
-当前目标工作树基于 `feat/moe-offload-infra@26a7b704b6`，尚未形成发布提交。
+当前交付位于 `feat/moe-offload-infra`，从 `26a7b704b6` 基线演进；本节证据匹配
+该分支当前提交链中的 ExpertPack、单卡 API、流式输出和 benchmark 实现。
 运行进程只暴露 Tesla V100-SXM2-16GB
 `GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96`，capability `(7,0)`；4070 未参与
 加载、计算或控制面。
@@ -53,6 +54,18 @@ IDs 和 router weights 均精确一致；热命中新增 pack reads=0、H2D byte
 `reports/single_gpu_api_h2d_failure_v100.json` 验证真实 40 层 backend 的 H2D RuntimeError：
 首请求、health、后续请求均为 503；store FAILED、request cache poisoned、resident=0，
 且 `cuda_errors=1`、`fatal_errors=1`。
+
+流式 completion/chat 使用逐 token SSE；每帧附带精确 token ID，finish/usage 终帧在
+request-cache reset 完成后发布，最后为 `[DONE]`。首 token 前错误保留原 HTTP 4xx/503，
+首 token 后错误使用 error SSE；断连只触发 worker 取消，锁仍由 backend cleanup 后释放。
+byte-level tokenizer 的不完整 UTF-8 后缀会延迟文本提交，但 token 到达事件不会丢失。
+
+真实 V100 的固定长度 serving benchmark 见
+`reports/bench_serving_single_gpu_v100_stream_1024_128.txt`：random input 1024、output 128、
+8 requests、concurrency 1、request rate `inf`，8/8 成功，耗时 220.50 s，输出吞吐
+4.64 token/s。mean TTFT 为 7020.97 ms，mean ITL 为 161.73 ms；8 个 terminal 均报告
+128 tokens，1,016 个 ITL 区间完整，拼接后的流文本重新分词为 1,024 tokens。跑后 store
+为 READY，I/O/checksum/CUDA/epoch/fatal error 均为 0，且只有指定 V100 存在模型进程。
 
 以下仍为待验证：连接取消与在途 lease；fatal 后新进程重启；长期压力；clean-tree/release
 commit 全回归。相关 mock/CPU 单测已存在，但不能代替这些 E2E。
