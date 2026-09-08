@@ -167,9 +167,10 @@ class Qwen35StatelessRunner:
                 raise RuntimeError(
                     "Qwen3.5 expert offload requires exactly one visible CUDA device"
                 )
-            if capability != (7, 0):
+            if capability not in ((7, 0), (8, 9)):
                 raise RuntimeError(
-                    "Qwen3.5 expert offload is validated only on a single SM70 GPU, "
+                    "Qwen3.5 expert offload is validated only on a single "
+                    "SM70/SM89 GPU, "
                     f"got SM{capability[0]}{capability[1]}"
                 )
         ids = tuple(layer_ids)

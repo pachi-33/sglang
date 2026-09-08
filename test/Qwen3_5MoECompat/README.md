@@ -1,19 +1,22 @@
-# Qwen3.5 MoE ExpertPack on one V100
+# Qwen3.5 MoE ExpertPack on one GPU
 
-The current delivery target is complete text-only inference for
-`Qwen-AgentWorld-35B-A3B-NVFP4_fp16` in one process on one 16 GB SM70 V100.
+The current delivery is complete text-only inference for
+`Qwen-AgentWorld-35B-A3B-NVFP4_fp16` in one process on one GPU. Validated
+profiles are a 16 GB SM70 V100 with a 7168 MiB expert cache and a 12 GB SM89
+RTX 4070 SUPER with a 3584 MiB cache.
 Layers 1–38 read routed NVFP4 experts on demand from an immutable ExpertPack;
 layers 0/39 routed FP16 experts and all dense/router/shared/global weights stay
 resident. The public path is batch one, one active request, greedy generation,
-and a maximum context of 2048. It does not use the RTX 4070 SUPER, the legacy
-two-worker pipeline, SGLang's old scheduler, radix cache, TP or PP.
+and a maximum context of 2048. Each process exposes exactly one GPU and does not
+use the other card, the legacy two-worker pipeline, SGLang's old scheduler,
+radix cache, TP or PP.
 
 The earlier dual-GPU pipeline, selected-layer `forward_no_cache` API, four-layer
 integration and independent 40-layer scan remain as regression oracles. Their
 commands and measurements are historical evidence rather than the deployment
 path for ExpertPack.
 
-## ExpertPack build and single-V100 entry points
+## ExpertPack build and single-GPU entry points
 
 Build the byte-preserving pack once:
 
@@ -86,6 +89,34 @@ token/s. Mean/median TTFT were 7020.97/7442.25 ms; mean/median ITL were
 See [the streaming serving report](reports/bench_serving_single_gpu_v100_stream_1024_128.txt)
 and [the timed eight-token smoke](reports/single_gpu_api_stream_smoke_v100.txt).
 
+The 4070 SUPER must override the V100-oriented 7168 MiB default. Start it with
+only SM89 visible and `--expert-cache-mib 3584`; the benchmark command above can
+then be reused unchanged:
+
+```bash
+CUDA_VISIBLE_DEVICES=GPU-75341d61-b0b3-969b-8ef8-4b750d11ade4 \
+PYTHONPATH=python:. \
+/home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python \
+  -m sglang.srt.layers.qwen3_5.single_gpu_api \
+  --model-dir /home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16 \
+  --served-model-name /home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16 \
+  --expert-pack-manifest /home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4-expertpack-v1/manifest.json \
+  --expert-cache-mib 3584 --expert-stage-slots 16 --expert-io-workers 2 \
+  --capacity 2048 --host 127.0.0.1 --port 8818
+```
+
+The SM89 run produced the same eight `Hello` token IDs as V100 and completed
+the streaming benchmark 8/8 in 357.86 s at 2.86 output token/s. Mean TTFT was
+9180.21 ms and mean ITL was 279.93 ms. For the final request, whose prompt
+retokenized to 988 tokens, `total_memory-peak_reserved` was 1,265,762,304 bytes;
+this is not a 2048-token memory result. The store remained READY with zero
+errors. This machine negotiates only PCIe width x1 for the 4070, while the
+3584 MiB cache holds half as many experts as the V100 profile; the run recorded
+2.03 times the V100 pack reads/H2D. These are material performance confounders,
+so the numbers do not represent a normal Gen4 x16 4070 SUPER. See
+[the SM89 report](reports/bench_serving_single_gpu_sm89_3584_stream_1024_128.txt)
+and [SM89 smoke](reports/single_gpu_api_stream_sm89_3584_smoke.txt).
+
 ## Current ExpertPack evidence
 
 The v1 pack is 17,253,269,504 bytes with SHA-256
@@ -105,7 +136,7 @@ Root-reviewed V100 evidence is saved in
 - cold `Hello` TTFT/mean ITL were 3372.505/276.320 ms, warm `Hello` values were
   68.491/66.792 ms. These are one-run characterization values, not an SLA.
 
-Additional root-reviewed V100 evidence is saved in:
+Additional single-GPU evidence is saved in:
 
 - [expert_offload_layer1_v100.json](reports/expert_offload_layer1_v100.json):
   T=1/32/2048 resident/offload output, router IDs and router weights are exact;
@@ -161,7 +192,8 @@ operator/source/test mapping.
 FP8 and FP4 weights stay encoded in device memory. Triton decodes only the tile
 being computed and executes FP16 Tensor Core operations with FP32 accumulation.
 The same software-decode path runs on validated SM70 and SM89; SM70 has no
-native FP8/FP4 MMA. Existing performance reports remain V100-only measurements.
+native FP8/FP4 MMA. Existing kernel-level performance reports remain V100-only;
+the streaming serving reports cover both SM70 and SM89.
 
 W8A8 computes each K=128 partial in FP32, multiplies that partial by its
 activation scale, then by its weight scale, and accumulates K blocks in FP32.
@@ -186,7 +218,7 @@ combine uses a fixed Top-8 order.
 ## Legacy two-worker state, CLI and HTTP reference
 
 The remainder of this section documents the retained 4070/V100 pipeline. It is
-not the ExpertPack deployment command and is not part of current single-V100
+not the ExpertPack deployment command and is not part of current single-GPU
 acceptance.
 
 The cache holds at most 2048 consumed tokens, with one fresh contiguous prompt

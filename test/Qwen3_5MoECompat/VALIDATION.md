@@ -1,4 +1,4 @@
-# Qwen3.5 MoE 单 V100 ExpertPack 与历史精度验收
+# Qwen3.5 MoE 单 GPU ExpertPack 与历史精度验收
 
 ## 2026-09-08 ExpertPack 单卡验收
 
@@ -69,6 +69,33 @@ byte-level tokenizer 的不完整 UTF-8 后缀会延迟文本提交，但 token 
 
 以下仍为待验证：连接取消与在途 lease；fatal 后新进程重启；长期压力；clean-tree/release
 commit 全回归。相关 mock/CPU 单测已存在，但不能代替这些 E2E。
+
+## 2026-09-08 RTX 4070 SUPER / SM89 ExpertPack 单卡验证
+
+单卡入口与 runner 的 ExpertPack gate 现同时接受已验证的 SM70 `(7,0)` 和 SM89 `(8,9)`，
+仍要求进程恰好只看到一张 CUDA 设备。本次只暴露 4070 UUID
+`GPU-75341d61-b0b3-969b-8ef8-4b750d11ade4`；V100 无模型进程。4070 的 CUDA 可用总显存
+为 12,462,456,832 B，不能使用默认 7168 MiB cache，因此明确采用 3584 MiB：实际
+3,756,623,024 B、2,123 slots、16 staging slots、2 I/O workers。
+
+完整 40 层冷 `Hello` 流式推理返回 HTTP 200，8 个 token 精确为
+`[11,271,40,1044,4313,310,958,279]`，与 V100 oracle 相同；usage、finish frame 和
+`[DONE]` 完整。随后 random 1024→128、8 requests、concurrency 1、request rate `inf`
+的 benchmark 8/8 成功：耗时 357.86 s、输出吞吐 2.86 token/s、mean TTFT 9180.21 ms、
+mean ITL 279.93 ms。terminal 与流文本均核对为 1,024 output tokens，共 1,016 个 ITL。
+
+跑后 store 为 READY，resident=2,123，hits/misses/evictions 为
+237,421/173,624/171,501，pack read 与 H2D 均为 307,225,584,512 B，所有 I/O、checksum、
+CUDA、epoch、fatal error 为 0。最后一条请求实际为 988 prompt tokens→128 output tokens；
+该请求的峰值 reserved 为 11,196,694,528 B，相对 CUDA total 的差值为
+1,265,762,304 B（1.18 GiB）。这不是 SM89 的 2048-token 显存验收结果。完整结果见
+`reports/bench_serving_single_gpu_sm89_3584_stream_1024_128.txt`，health、device、JSONL
+及逐 token smoke 使用同名前缀保存。
+
+本机 4070 的 PCIe negotiated width 为 x1，设备最大为 x16；3584 MiB cache 的容量也
+只有 V100 7168 MiB profile 的一半，本次 pack reads/H2D 为 V100 的 2.03 倍。这些因素
+都会显著干扰性能对比，因此该结果只描述当前 x1 拓扑，不代表标准 Gen4 x16 4070
+SUPER，也不构成 SLA。
 
 ## 2026-09-07 独立层与四层无状态基线（历史）
 

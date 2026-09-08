@@ -1,4 +1,4 @@
-"""Serve the single-V100 Qwen3.5 ExpertPack backend over HTTP."""
+"""Serve the single-GPU Qwen3.5 ExpertPack backend over HTTP."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         import uvicorn
 
         # The backend owns one CUDA context and one request cache.  Forking an
-        # additional server worker would duplicate both and exceed V100 memory.
+        # additional server worker would duplicate both and exceed GPU memory.
         uvicorn.run(
             app,
             host=args.host,

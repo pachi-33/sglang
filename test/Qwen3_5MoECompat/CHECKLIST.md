@@ -1,22 +1,23 @@
-# Qwen3.5 ExpertPack 单 V100 与历史兼容路径核对清单
+# Qwen3.5 ExpertPack 单 GPU 与历史兼容路径核对清单
 
 本清单用于代码审阅、复现和验收。当前交付路径是文本模型、TP=1、单进程、单张
-V100/SM70：一个完整 40 层 runner 维护一个请求，整段 fresh prefill 后逐 token decode，
-上限 2048；layers 1–38 的 NVFP4 routed experts 按需换入。4070/SM89 双 worker 分层
+V100/SM70 或 4070/SM89：一个完整 40 层 runner 维护一个请求，整段 fresh prefill 后逐
+token decode，上限 2048；layers 1–38 的 NVFP4 routed experts 按需换入。双 worker 分层
 流水线和 packed-sequence 无状态接口仅保留为历史 oracle，不参与 ExpertPack 运行。
 不包含视觉、MTP、radix/sstate 管理、分页 KV、NCCL/P2P、批调度或 ModelRunner 服务。
 所有 Python 命令使用 `sglang-v100` 环境；单卡测试暴露一个指定 UUID，流水线由
-controller 在启动前给两个 worker 分别设置 UUID。ExpertPack CLI/API 必须只暴露 V100。
+controller 在启动前给两个 worker 分别设置 UUID。ExpertPack CLI/API 必须只暴露一张
+受支持 GPU；V100 使用 7168 MiB cache，12 GB 4070 必须显式使用 3584 MiB profile。
 
 ## ExpertPack 当前实现与验收状态
 
 | 核对项 | 生产源码 | 验证源码/证据 | 当前判定 |
 |---|---|---|---|
 | v1 文件与身份 | `expert_pack/format.py`、`build.py`、`validate.py` | `unit/test_expert_pack.py`；完整 validator | 已验证：layers 1–38 共 9,728 records；整包/payload/padding/source bytes 全通过 |
-| typed cache 与读取 | `expert_pack/store.py` | `unit/test_expert_pack_store.py`；单卡 acceptance | 正常路径已验证：7168 MiB、4247 slots、16 staging、2 workers、LFU/LRU、SHA、event/lease |
+| typed cache 与读取 | `expert_pack/store.py` | `unit/test_expert_pack_store.py`；单卡 acceptance | 正常路径已验证：V100 7168 MiB/4247 slots、SM89 3584 MiB/2123 slots、16 staging、2 workers、LFU/LRU、SHA、event/lease |
 | 选择性 checkpoint | `checkpoint.py`、`runner.py` | `unit/test_single_gpu.py`；单卡 acceptance | 已验证：中间层不保留 routed tensors；layers 0/39 与其余权重常驻 |
-| logical→slot kernel | `moe.py`、`kernels/moe.py` | `unit/test_moe.py`；`reports/expert_offload_layer1_v100.json` | 已验证：原 global IDs 保持不变；nonidentity mapping 和 slot 2048；T=1/32/2048 输出与 router IDs/weights 精确一致，热命中零读取/H2D |
-| 40 层 CLI/backend | `single_gpu.py` | `integration/expert_offload_acceptance.py`；`reports/expert_offload_acceptance_v100_7168.json` | 已验证：黄金 token、A/B/A、2048、capacity 恢复和显存余量 |
+| logical→slot kernel | `moe.py`、`kernels/moe.py` | `unit/test_moe.py`；`reports/expert_offload_layer1_v100.json` | 已验证：原 global IDs 保持不变；SM70/SM89 nonidentity mapping 和 slot 2048；V100 T=1/32/2048 输出与 router IDs/weights 精确一致，热命中零读取/H2D |
+| 40 层 CLI/backend | `single_gpu.py` | V100 acceptance；V100/SM89 HTTP smoke 与 serving reports | 已验证：两种架构黄金 token；V100 A/B/A、2048、capacity 恢复并保留大于 1 GiB 余量；SM89 最后一条 988→128 请求的 `total_memory-peak_reserved` 为 1.18 GiB，尚未做 2048 验收 |
 | 单卡 HTTP | `single_gpu_api.py`、`pipeline_api.py` | CPU 单测；`reports/single_gpu_api_{smoke,concurrency,checksum_failure}_v100.json` | 已验证：三入口 200、活跃请求期间 429、FAILED health/后续请求 503 |
 | fatal 故障传播 | store/runner/backend/API FAILED latch | CPU contracts；`reports/single_gpu_api_{checksum,short_read,h2d}_failure_v100.json` | 已验证：checksum、短读及 H2D/CUDA error 均 poison cache、锁存 FAILED，首/health/后续均 503 |
 | 长稳压 | 全路径 | 计划中的 stress | 待验证 |
@@ -110,12 +111,12 @@ controller 在启动前给两个 worker 分别设置 UUID。ExpertPack CLI/API �
 ## 执行前后核对
 
 1. ExpertPack 运行前确认 manifest `complete=true`、pack size/identity 和源 checkpoint 的 config/index/shard inventory；完整离线校验与运行时逐记录 SHA 是不同证据。
-2. 单卡入口只暴露 V100 UUID，并确认 `device_count=1`、capability `(7,0)`；不得让 4070 进入该进程。
-3. 验收 JSON 必须分别检查黄金 token、A/B/A、2048 finite、capacity 后恢复、cache 实际字节和 `total_memory-peak_reserved>=1 GiB`。
-4. 实时 HTTP 200/429 与 checksum/短读/H2D→FAILED/503 以对应 V100 JSON 为证；连接取消、fatal 后新进程重启与长稳压仍保持待验证，不能用 mock backend 单测提升状态。
+2. 单卡入口只暴露一个受支持 UUID，并确认 `device_count=1` 与 capability `(7,0)`/`(8,9)` 配对；4070 命令必须覆盖默认 cache 为 3584 MiB。
+3. 验收证据必须分别检查黄金 token、cache 实际字节、Store error 和 `total_memory-peak_reserved>=1 GiB`；A/B/A、2048 full-capacity 与故障恢复仍以 V100 完整 acceptance 为准。
+4. 实时 HTTP 200/429 与 checksum/短读/H2D→FAILED/503 以对应 V100 JSON 为证；SM89 当前覆盖正常 offload、流式 API 与 benchmark。连接取消、fatal 后新进程重启与长稳压仍保持待验证，不能用 mock backend 单测提升状态。
 5. 历史路径运行前确认 required interpreter、`PYTHONPATH=python:.` 和单卡测试的 UUID/capability 配对；双 worker 分别启动，不能在同一进程切换 Triton target。
 6. GPU unittest 自己持有对应 `/tmp/qwen35-gpu-<UUID>-sm<capability>.lock`；不要再套 shell `flock`。
 7. standalone layer scan 和 benchmark 自己持锁；同样不要外层加锁。
 8. 检查 M3 JSON 的 `math_contract`、`source_sha256`、每个 `_math`/`_semantic` projection gate、强制 256-expert route 和 nonfinite 字段。
 9. 检查 projection/MoE/backend benchmark 的 token 覆盖、actual GPU、kernel histogram 与 peak allocation；不要把不同 source hash 或不同 UUID 的报告混用。
-10. M3/M5 历史证据见 [VALIDATION.md](VALIDATION.md)，双卡 cache 分支记录见 [VALIDATION_SM70_SM89_PIPELINE.md](VALIDATION_SM70_SM89_PIPELINE.md)。既有四层或双卡数字不能充当 ExpertPack 单 V100 验收。
+10. M3/M5 历史证据见 [VALIDATION.md](VALIDATION.md)，双卡 cache 分支记录见 [VALIDATION_SM70_SM89_PIPELINE.md](VALIDATION_SM70_SM89_PIPELINE.md)。既有四层或双卡数字不能充当 ExpertPack 单 GPU 验收。

@@ -3,13 +3,14 @@
 Current branch: `feat/moe-offload-infra`, implementation base
 `26a7b704b631c29f9812cfdc7b478e77ee3940d4`. M0–M5 below preserve the earlier
 stateless operator evidence; P0–P3 preserve the dual-GPU pipeline evidence.
-E0–E5 track the current single-V100 ExpertPack delivery.
+E0–E5 track the current single-GPU ExpertPack delivery.
 
 The implementation preserves the checkpoint's 130 FP8 W8A8 attention matrices
 and 29,184 NVFP4 W4A4 routed-expert matrices. All layer numbers are zero based.
-ExpertPack production compute uses Triton on SM70 only. The retained configurable
-SM70/SM89 pipeline keeps one request's Conv tail, FP32 GDN state and continuous Full
-Attention KV across prefill/decode calls. The selected-layer stateless API
+ExpertPack production compute uses the same Triton software-decode path on the
+validated SM70 and SM89 profiles. The retained configurable SM70/SM89 pipeline
+keeps one request's Conv tail, FP32 GDN state and continuous Full Attention KV
+across prefill/decode calls. The selected-layer stateless API
 remains call-local. M0–M5 measurements below retain their original SM70 scope;
 new pipeline evidence is recorded separately rather than assigned their hashes.
 
@@ -18,8 +19,10 @@ new pipeline evidence is recorded separately rather than assigned their hashes.
 - Python: `/home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python`.
 - Initial packages: Python 3.10, torch 2.3.1+cu121, Triton 2.3.1,
   transformers 4.43.2, safetensors 0.8.0, numpy 1.26.4.
-- ExpertPack target device: Tesla V100-SXM2-16GB, SM70,
-  `GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96`, complete layers 0–39 and globals.
+- ExpertPack target devices: Tesla V100-SXM2-16GB, SM70,
+  `GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96`, with a 7168 MiB cache; RTX 4070
+  SUPER, SM89, `GPU-75341d61-b0b3-969b-8ef8-4b750d11ade4`, with a 3584 MiB
+  cache. Each profile runs complete layers 0–39 and globals on one visible GPU.
 - Legacy pipeline front device: RTX 4070 SUPER, SM89,
   `GPU-75341d61-b0b3-969b-8ef8-4b750d11ade4`, layers 0–16 plus globals.
 - Legacy pipeline back device: Tesla V100-SXM2-16GB, SM70,
@@ -71,12 +74,12 @@ chronological evidence, including limitations subsequently resolved.
 | P1 | Single-request Conv/GDN/KV cache and decode | Implemented; kernel and real-layer continuity/lifecycle tests available |
 | P2 | Configurable dual-worker greedy CLI | Implemented; default SM89-front 17/23 split passed 2048 prefill; cached/stateless greedy, reset/chat determinism and memory measurements recorded in pipeline validation |
 | P3 | Persistent single-request HTTP API | Implemented; configurable front/back/split, native and non-streaming OpenAI completion/chat routes, auth, strict greedy contract and 429 concurrency guard |
-| E0 | Freeze Qwen-AgentWorld/V100/ExpertPack ABI | Verified: exact config/index identity and fixed layers 1–38 NVFP4 layout |
+| E0 | Freeze Qwen-AgentWorld/ExpertPack ABI | Verified: exact config/index identity and fixed layers 1–38 NVFP4 layout |
 | E1 | Build and validate immutable ExpertPack | Verified: 9,728 payloads/padding/source bytes and whole pack SHA; concurrent publisher lock regression passed |
 | E2 | Typed cache/lease and slot-aware NVFP4 | Verified for CPU contracts, normal execution and H2D fatal propagation; controlled delayed slot-reuse interleaving remains open |
-| E3 | Complete 40-layer single-V100 generation | Verified: raw Hello oracle and A/B/A reset exact |
-| E4 | 2048/context/memory profile | Verified: finite 2048 prefill, capacity recovery, 7168 MiB cache and >1 GiB peak-reserved margin |
-| E5 | HTTP/fatal/stress/release closure | In progress: live HTTP 200/429 and checksum/short-read/H2D→FAILED/503 passed; cancellation, restart, long stress and release commit remain open |
+| E3 | Complete 40-layer single-GPU generation | Verified: raw Hello oracle exact on SM70/SM89; V100 A/B/A reset exact |
+| E4 | Context and memory profiles | V100 verified for finite 2048 prefill/capacity recovery with 7168 MiB cache and >1 GiB margin; SM89 streaming serving passed with 3584 MiB cache and the final 988→128 request retained 1.18 GiB `total_memory-peak_reserved`; SM89 2048 remains untested |
+| E5 | HTTP/fatal/stress/release closure | In progress: SM70/SM89 live streaming HTTP passed; V100 200/429 and checksum/short-read/H2D→FAILED/503 passed; cancellation, restart, long stress and release commit remain open |
 
 The P0–P3 evidence, exact command lines, failure investigation and remaining
 measurement distinctions are in

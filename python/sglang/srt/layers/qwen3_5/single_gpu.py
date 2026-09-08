@@ -1,9 +1,9 @@
-"""Single-process Qwen3.5 ExpertPack inference on one SM70 GPU.
+"""Single-process Qwen3.5 ExpertPack inference on one supported GPU.
 
-This is the narrow production entry point for the V100 compatibility path.  It
-owns one complete 40-layer runner and one reusable request cache.  Generation
-is batch one, greedy, text only, and deliberately bypasses SGLang's scheduler
-and radix cache.
+This is the narrow production entry point for the validated SM70/SM89
+compatibility path.  It owns one complete 40-layer runner and one reusable
+request cache.  Generation is batch one, greedy, text only, and deliberately
+bypasses SGLang's scheduler and radix cache.
 """
 
 from __future__ import annotations
@@ -32,9 +32,10 @@ EXPERT_PACK_MANIFEST_DEFAULT = (
     "Qwen-AgentWorld-35B-A3B-NVFP4-expertpack-v1/manifest.json"
 )
 NUM_HIDDEN_LAYERS = 40
+SUPPORTED_COMPUTE_CAPABILITIES = frozenset({(7, 0), (8, 9)})
 
 
-def _require_single_sm70() -> torch.device:
+def _require_single_supported_gpu() -> torch.device:
     """Return the sole CUDA device after enforcing the deployment contract."""
     if not torch.cuda.is_available():
         raise RuntimeError("Qwen3.5 ExpertPack inference requires CUDA")
@@ -46,9 +47,13 @@ def _require_single_sm70() -> torch.device:
         )
     device = torch.device("cuda:0")
     capability = torch.cuda.get_device_capability(device)
-    if capability != (7, 0):
+    if capability not in SUPPORTED_COMPUTE_CAPABILITIES:
+        supported = ", ".join(
+            f"SM{major}{minor}"
+            for major, minor in sorted(SUPPORTED_COMPUTE_CAPABILITIES)
+        )
         raise RuntimeError(
-            "Qwen3.5 ExpertPack inference requires an SM70 V100, got "
+            f"Qwen3.5 ExpertPack inference requires one of {supported}, got "
             f"SM{capability[0]}{capability[1]}"
         )
     return device
@@ -59,7 +64,7 @@ def _reset_peak_memory_stats(device: torch.device) -> None:
 
 
 def _cuda_memory_stats(device: torch.device) -> dict[str, int]:
-    """Capture the memory evidence used by the 16 GiB acceptance gate."""
+    """Capture memory evidence for the active single-GPU profile."""
     free_bytes, total_bytes = torch.cuda.mem_get_info(device)
     peak_reserved = int(torch.cuda.max_memory_reserved(device))
     return {
@@ -92,7 +97,7 @@ class Qwen35SingleGPU:
         if not 1 <= capacity <= 2048:
             raise ValueError("capacity must be in [1,2048]")
 
-        device = _require_single_sm70()
+        device = _require_single_supported_gpu()
         config = ExpertOffloadConfig(
             manifest_path=expert_pack_manifest,
             cache_mib=expert_cache_mib,

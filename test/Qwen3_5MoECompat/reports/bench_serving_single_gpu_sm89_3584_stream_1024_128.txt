@@ -1,0 +1,112 @@
+status=passed
+device=GPU-75341d61-b0b3-969b-8ef8-4b750d11ade4
+device_name=NVIDIA GeForce RTX 4070 SUPER
+compute_capability=8.9
+endpoint=http://127.0.0.1:8818/v1/completions
+dataset=random-from-ShareGPT
+dataset_path=/home/yaozhenyang/dev/sglang-v100/ShareGPT_V3_unfiltered_cleaned_split.json
+model=/home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16
+expert_cache_mib=3584
+expert_cache_capacity=2123
+expert_cache_bytes=3756623024
+stage_slots=16
+io_workers=2
+request_capacity=2048
+num_prompts=8
+declared_input_tokens_per_request=1024
+output_tokens_per_request=128
+random_range_ratio=1.0
+max_concurrency=1
+request_rate=inf
+stream=true
+ignore_eos=true
+seed=0
+
+command:
+CUDA_VISIBLE_DEVICES=GPU-75341d61-b0b3-969b-8ef8-4b750d11ade4 \
+PYTHONPATH=python:. /home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python \
+  -m sglang.srt.layers.qwen3_5.single_gpu_api \
+  --model-dir /home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16 \
+  --served-model-name /home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16 \
+  --expert-pack-manifest /home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4-expertpack-v1/manifest.json \
+  --expert-cache-mib 3584 --expert-stage-slots 16 --expert-io-workers 2 \
+  --capacity 2048 --host 127.0.0.1 --port 8818
+
+PYTHONPATH=python:. /home/yaozhenyang/downloads/yes/envs/sglang-v100/bin/python \
+  -m sglang.bench_serving --dataset-name random --backend sglang \
+  --model /home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4_fp16 \
+  --dataset-path /home/yaozhenyang/dev/sglang-v100/ShareGPT_V3_unfiltered_cleaned_split.json \
+  --host 127.0.0.1 --port 8818 --max-concurrency 1 \
+  --random-input-len 1024 --random-output-len 128 --num-prompts 8 \
+  --random-range-ratio 1 --request-rate inf \
+  --output-file test/Qwen3_5MoECompat/reports/bench_serving_single_gpu_sm89_3584_stream_1024_128.jsonl
+
+smoke_token_ids=[11,271,40,1044,4313,310,958,279]
+smoke_matches_v100_oracle=true
+successful_requests=8
+benchmark_duration_s=357.86280257999897
+total_declared_input_tokens=8192
+total_generated_tokens=1024
+total_generated_tokens_retokenized=1024
+request_throughput_req_s=0.02235493586459472
+input_throughput_tok_s=22.891454325344995
+output_throughput_tok_s=2.8614317906681244
+mean_e2e_latency_ms=44732.465520755795
+median_e2e_latency_ms=48263.674820016604
+mean_ttft_ms=9180.21
+median_ttft_ms=9535.30798398424
+p99_ttft_ms=11638.10
+mean_tpot_ms=279.94
+median_tpot_ms=295.26
+p99_tpot_ms=385.53
+mean_itl_ms=279.93
+median_itl_ms=286.7933899979107
+p99_itl_ms=467.24
+itl_samples=1016
+terminal_usage_verified_per_request=true
+stream_text_retokenization_exact=true
+
+post_health_status=ok
+post_health_busy=false
+post_store_state=READY
+post_request_count_including_smoke_and_probe=10
+post_cache_capacity_experts=2123
+post_resident_experts=2123
+post_cache_hits=237421
+post_cache_misses=173624
+post_cache_evictions=171501
+post_pack_read_bytes=307225584512
+post_h2d_bytes=307225584512
+post_stage_wait_ns=37990889786
+post_io_errors=0
+post_checksum_errors=0
+post_cuda_errors=0
+post_epoch_errors=0
+post_fatal_errors=0
+last_request_actual_prompt_tokens=988
+last_request_completion_tokens=128
+last_request_ttft_ms=10367.284784
+last_request_mean_itl_ms=281.6380595905513
+last_request_total_ms=46136.221243
+last_request_peak_reserved_bytes=11196694528
+last_request_total_memory_bytes=12462456832
+last_request_peak_reserved_margin_bytes=1265762304
+last_request_free_after_bytes=1015021568
+
+The random dataset generator records the requested 1024-token length before it
+decodes sampled token IDs to text. The final prompt retokenized in the service to
+988 tokens, so input throughput uses the benchmark's declared 8192-token total.
+Every terminal reported usage.completion_tokens=128; all 1016 ITL intervals were
+observed, and the concatenated stream text retokenized to all 1024 output tokens.
+
+The memory fields belong to the last request because the backend resets PyTorch
+peak counters for each generation. That prompt retokenized to 988 tokens, so its
+1.18 GiB total-memory minus peak-reserved margin is not a 2048-token acceptance
+result. Free memory after reset was 1,015,021,568 bytes.
+
+This host exposes the RTX 4070 SUPER through PCIe width x1 even though the device
+supports x16. The idle link generation sampled after the run was Gen1 and its
+maximum is Gen4; the width remained x1. The 3584 MiB cache also holds half as many
+experts as the V100 7168 MiB profile, and the run recorded 2.03 times the V100
+pack reads/H2D. These factors materially confound the comparison; it must not be
+treated as representative 4070 SUPER Gen4 x16 performance or as an SLA.

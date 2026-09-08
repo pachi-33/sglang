@@ -1,4 +1,4 @@
-"""V100-safe raw-NVFP4 routed MoE execution for Qwen3.5."""
+"""SM70/SM89-compatible raw-NVFP4 routed MoE execution for Qwen3.5."""
 
 from __future__ import annotations
 
@@ -252,7 +252,7 @@ def route_topk(
         or logits.shape[1] != 256
         or top_k != 8
     ):
-        raise ValueError("V100 routed Top-8 requires contiguous CUDA logits [T,256]")
+        raise ValueError("Qwen3.5 routed Top-8 requires contiguous CUDA logits [T,256]")
     tokens = logits.shape[0]
     ids = torch.empty((tokens, 8), dtype=torch.int32, device=logits.device)
     weights = torch.empty((tokens, 8), dtype=torch.float32, device=logits.device)
@@ -273,7 +273,7 @@ def _build_dispatch(
     if not ids.is_cuda or not ids.is_contiguous() or ids.dtype != torch.int32:
         raise ValueError("dispatch requires contiguous CUDA int32 route IDs")
     if num_experts != 256 or ids.shape[1] != 8:
-        raise ValueError("V100 dispatch has a fixed 256-expert Top-8 contract")
+        raise ValueError("Qwen3.5 dispatch has a fixed 256-expert Top-8 contract")
     tokens, top_k = ids.shape
     device = ids.device
     routes = tokens * top_k
@@ -334,15 +334,15 @@ def _grouped_gemm(
     if rows == 0:
         return torch.empty((0, n), dtype=torch.float16, device=data.device)
     if rows % 32 or n % 32 or k % 32:
-        raise ValueError("V100 NVFP4 kernel requires rows%32=N%32=K%32=0")
+        raise ValueError("Qwen3.5 NVFP4 kernel requires rows%32=N%32=K%32=0")
     ag = activation_global.reshape(-1).float()
     if ag.numel() != num_experts:
         raise ValueError(
-            "V100 grouped GEMM requires physical per-expert activation globals"
+            "Qwen3.5 grouped GEMM requires physical per-expert activation globals"
         )
     if weight_global.numel() != num_experts:
         raise ValueError(
-            "V100 grouped GEMM requires physical per-expert weight globals"
+            "Qwen3.5 grouped GEMM requires physical per-expert weight globals"
         )
     weighted = positions is not None or route_weights is not None
     if weighted != (positions is not None and route_weights is not None):
@@ -436,7 +436,7 @@ def _paired_gemm1_swiglu_a4(
     intermediate = outputs // 2
     if outputs != intermediate * 2 or intermediate % 32 or k % 32 or rows % 32:
         raise ValueError(
-            "paired V100 GEMM1 requires [E,2I,K] with I/K/rows divisible by 32"
+            "paired Qwen3.5 GEMM1 requires [E,2I,K] with I/K/rows divisible by 32"
         )
     gate_a_global = _field(gate_up, "input_global_scale").reshape(-1).float()
     gate_w_global = _field(gate_up, "global_scale").reshape(-1).float()

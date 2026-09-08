@@ -1,4 +1,4 @@
-"""Raw-layout FP8/NVFP4 helpers for the V100 Qwen3.5 compatibility path.
+"""Raw-layout FP8/NVFP4 helpers for the SM70/SM89 compatibility path.
 
 Checkpoint FP8 and FP4 bytes are intentionally retained.  These utilities only
 create per-call activation payloads; they never materialize a dequantized copy
@@ -161,9 +161,11 @@ def quantize_fp8(x: torch.Tensor, group_size: int = 128) -> QuantActivation:
     m, k = x.shape
     if x.is_cuda:
         if group_size != 128:
-            raise ValueError("the V100 Triton FP8 quantizer has fixed group_size=128")
+            raise ValueError(
+                "the Qwen3.5 Triton FP8 quantizer has fixed group_size=128"
+            )
         if not x.is_contiguous():
-            raise ValueError("the V100 FP8 quantizer requires contiguous x")
+            raise ValueError("the Qwen3.5 FP8 quantizer requires contiguous x")
         q = torch.empty((m, k), dtype=torch.uint8, device=x.device)
         scale = torch.empty((m, k // 128), dtype=torch.float32, device=x.device)
         if m == 0:
@@ -201,9 +203,11 @@ def quantize_nvfp4(
         raise ValueError("global_scale must be scalar or have one value per row")
     if x.is_cuda:
         if group_size != 16:
-            raise ValueError("the V100 Triton NVFP4 quantizer has fixed group_size=16")
+            raise ValueError(
+                "the Qwen3.5 Triton NVFP4 quantizer has fixed group_size=16"
+            )
         if not x.is_contiguous():
-            raise ValueError("the V100 NVFP4 quantizer requires contiguous x")
+            raise ValueError("the Qwen3.5 NVFP4 quantizer requires contiguous x")
         g_kernel = g.contiguous().reshape(-1)
         q = torch.empty((m, k // 2), dtype=torch.uint8, device=x.device)
         sf = torch.empty((m, k // 16), dtype=torch.uint8, device=x.device)
@@ -256,7 +260,7 @@ def linear_fp8(
     *,
     output_dtype: torch.dtype = torch.float16,
 ) -> torch.Tensor:
-    """Raw `[N,K]` checkpoint W8A8 linear using a V100-safe Triton GEMM."""
+    """Raw `[N,K]` checkpoint W8A8 linear using a compatible Triton GEMM."""
     qa = x if isinstance(x, QuantActivation) else quantize_fp8(x)
     if qa.kind != "fp8":
         raise ValueError("linear_fp8 requires an FP8 QuantActivation")
@@ -269,7 +273,7 @@ def linear_fp8(
     m, k = qa.logical_shape
     n = w_data.shape[0]
     if w_data.shape[1] != k or k % 128 or n % 32:
-        raise ValueError("V100 FP8 kernel requires K%128==0 and N%32==0")
+        raise ValueError("Qwen3.5 FP8 kernel requires K%128==0 and N%32==0")
     if (
         not qa.data.is_cuda
         or qa.data.device != w_data.device

@@ -1,4 +1,4 @@
-"""CPU-only lifecycle tests for the Qwen3.5 single-V100 entry point."""
+"""CPU-only lifecycle tests for the Qwen3.5 single-GPU entry point."""
 
 import io
 import unittest
@@ -359,11 +359,27 @@ class TestSingleGPU(unittest.TestCase):
         backend.close()
         self.assertTrue(runner.closed)
 
-    def test_device_contract_rejects_absent_multiple_or_sm89_cuda(self):
+    def test_device_contract_accepts_supported_sm70_and_sm89_cuda(self):
+        for capability in ((7, 0), (8, 9)):
+            with self.subTest(capability=capability), mock.patch.object(
+                single_gpu.torch.cuda, "is_available", return_value=True
+            ), mock.patch.object(
+                single_gpu.torch.cuda, "device_count", return_value=1
+            ), mock.patch.object(
+                single_gpu.torch.cuda,
+                "get_device_capability",
+                return_value=capability,
+            ):
+                self.assertEqual(
+                    single_gpu._require_single_supported_gpu(),
+                    torch.device("cuda:0"),
+                )
+
+    def test_device_contract_rejects_absent_multiple_or_unsupported_cuda(self):
         cases = (
             ({"available": False, "count": 0, "capability": (7, 0)}, "CUDA"),
             ({"available": True, "count": 2, "capability": (7, 0)}, "exactly one"),
-            ({"available": True, "count": 1, "capability": (8, 9)}, "SM70"),
+            ({"available": True, "count": 1, "capability": (8, 0)}, "SM70, SM89"),
         )
         for case, message in cases:
             with self.subTest(case=case), mock.patch.object(
@@ -377,7 +393,7 @@ class TestSingleGPU(unittest.TestCase):
             ), self.assertRaisesRegex(
                 RuntimeError, message
             ):
-                single_gpu._require_single_sm70()
+                single_gpu._require_single_supported_gpu()
 
     def test_cli_defaults_and_requested_offload_profile(self):
         defaults = single_gpu._parse_args([])
