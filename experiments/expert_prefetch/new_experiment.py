@@ -198,7 +198,9 @@ def create_experiment(
         }
         write_header = not index_path.exists()
         with index_path.open("a", newline="", encoding="utf-8") as file:
-            writer = csv.DictWriter(file, fieldnames=INDEX_FIELDS)
+            writer = csv.DictWriter(
+                file, fieldnames=INDEX_FIELDS, lineterminator="\n"
+            )
             if write_header:
                 writer.writeheader()
             writer.writerow(new_row)

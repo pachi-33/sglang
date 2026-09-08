@@ -1,0 +1,29 @@
+{
+  "format": "SGLANG-QWEN35-COLD-WARM-CHARACTERIZATION-v1",
+  "gpu_uuid": "GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96",
+  "measurements": [
+    {
+      "completion_tokens": 256,
+      "e2e_latency_ms": 36307.16926197056,
+      "mean_itl_ms": 92.31691492936008,
+      "median_itl_ms": 72.63836497440934,
+      "profile": "cold",
+      "prompt_sha256": "4e7bf8d35d419417f9274499ef041fe6cc5de9210c9e1ffc6f05bc8f9af823e8",
+      "prompt_tokens": 1024,
+      "ttft_ms": 12764.881608018186
+    },
+    {
+      "completion_tokens": 256,
+      "e2e_latency_ms": 22180.333479016554,
+      "mean_itl_ms": 68.88687729004624,
+      "median_itl_ms": 67.77125399094075,
+      "profile": "warm",
+      "prompt_sha256": "4e7bf8d35d419417f9274499ef041fe6cc5de9210c9e1ffc6f05bc8f9af823e8",
+      "prompt_tokens": 1024,
+      "ttft_ms": 4612.647399015259
+    }
+  ],
+  "request_count": 2,
+  "seed": 0,
+  "trace_dataset_member": false
+}
