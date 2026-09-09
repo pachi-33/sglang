@@ -1859,7 +1859,12 @@ class Scheduler(
     @DynamicGradMode()
     def event_loop_normal(self):
         """A normal scheduler loop."""
+        import mindspore
+        from mindspore.profiler import ProfilerLevel, ProfilerActivity, AicoreMetrics, HostSystem
+
         while True:
+            # 初始化打点
+
             if self.gracefully_exit:
                 break
 
@@ -1879,8 +1884,12 @@ class Scheduler(
 
             # Launch the current batch
             if batch:
+                # 开始打点
+
                 result = self.run_batch(batch)
                 self.process_batch_result(batch, result)
+
+                # 打点结束
             else:
                 # When the server is idle, do self-check and re-init some states.
                 self._sched_idled = True
