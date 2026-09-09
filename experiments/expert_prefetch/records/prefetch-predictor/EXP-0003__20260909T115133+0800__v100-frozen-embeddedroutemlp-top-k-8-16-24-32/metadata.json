@@ -1,0 +1,41 @@
+{
+  "format": "SGLANG-EXPERT-PREFETCH-EXPERIMENT-v1",
+  "experiment_id": "EXP-0003",
+  "type": "prefetch-predictor",
+  "title": "V100 frozen EmbeddedRouteMLP top-k 8 16 24 32",
+  "status": "completed",
+  "started_at": "2026-09-09T11:51:33+08:00",
+  "ended_at": "2026-09-09T11:57:15+08:00",
+  "timezone": "Asia/Singapore",
+  "device": "Tesla V100-SXM2-16GB GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96",
+  "hostname": "debian",
+  "git_branch": "lab/expert-prefetch",
+  "git_commit": "4059b1c33db499e7c9f349b0b3a9a1ea27c40cb0",
+  "git_dirty": false,
+  "algorithm": "embedded-route-mlp",
+  "algorithm_version": "v0001",
+  "source_experiment": "EXP-0002",
+  "candidate_counts": [
+    8,
+    16,
+    24,
+    32
+  ],
+  "result": {
+    "recall_definition": "|actual_top8 intersection predicted_topk| / 8",
+    "validation_recall": {
+      "8": 0.31366191789215686,
+      "16": 0.4676386335784314,
+      "24": 0.5648169424019608,
+      "32": 0.6358570772058824
+    },
+    "test_recall": {
+      "8": 0.3434168198529412,
+      "16": 0.5020833333333333,
+      "24": 0.5993589154411765,
+      "32": 0.6685401348039216
+    },
+    "checkpoint_sha256": "d84c4f7c0aceb368d2254dd1aaee1a713f1bd76974cd151b40af83ddaac8c524",
+    "top32_predictions_sha256": "ba344540414bf89a9a4b7515055b0657e2eaaadadd4d527881eaa9a865178718"
+  }
+}

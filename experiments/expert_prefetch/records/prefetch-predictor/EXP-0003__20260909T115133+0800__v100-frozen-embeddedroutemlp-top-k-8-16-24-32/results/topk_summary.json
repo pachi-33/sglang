@@ -1,0 +1,582 @@
+{
+  "artifacts": {
+    "detailed_metrics": {
+      "path": "results/topk_metrics.json",
+      "sha256": "31ce6f10977b8b6de1192148a682df3d934099c9cfc0d34a17d919ab5e6a4ac1",
+      "size": 1311861
+    },
+    "top32_predictions": {
+      "path": "artifacts/top32_predictions.npz",
+      "sha256": "ba344540414bf89a9a4b7515055b0657e2eaaadadd4d527881eaa9a865178718",
+      "size": 10408182
+    }
+  },
+  "candidate_counts": [
+    8,
+    16,
+    24,
+    32
+  ],
+  "checkpoint": {
+    "path": "/home/yaozhenyang/dev/sglang-v100/experiments/expert_prefetch/records/prefetch-predictor/EXP-0002__20260909T103244+0800__v100-embeddedroutemlp-v0001-default-t8-k4-seed0/artifacts/best_model.pt",
+    "sha256": "d84c4f7c0aceb368d2254dd1aaee1a713f1bd76974cd151b40af83ddaac8c524",
+    "source_epoch": 6
+  },
+  "device": {
+    "amp": true,
+    "compute_capability": "7.0",
+    "cuda": "12.1",
+    "name": "Tesla V100-SXM2-16GB",
+    "torch": "2.3.1+cu121",
+    "type": "cuda"
+  },
+  "experiment_id": "EXP-0003",
+  "format": "SGLANG-EMBEDDED-ROUTE-MLP-TOPK-SUMMARY-v1",
+  "recall_definition": "|actual_top8 intersection predicted_topk| / 8",
+  "splits": {
+    "test": {
+      "baseline_recall": {
+        "current_token_previous_layer_plus_frequency": {
+          "16": {
+            "offload_recall": 0.1558234971620227,
+            "recall": 0.15480392156862746
+          },
+          "24": {
+            "offload_recall": 0.23986471233230133,
+            "recall": 0.23828890931372548
+          },
+          "32": {
+            "offload_recall": 0.3115341202270382,
+            "recall": 0.3090640318627451
+          },
+          "8": {
+            "offload_recall": 0.03166199045407637,
+            "recall": 0.032838541666666665
+          }
+        },
+        "per_layer_frequency": {
+          "16": {
+            "offload_recall": 0.2106859520123839,
+            "recall": 0.20825750612745098
+          },
+          "24": {
+            "offload_recall": 0.2822763480392157,
+            "recall": 0.2793734681372549
+          },
+          "32": {
+            "offload_recall": 0.3451464138286894,
+            "recall": 0.34174019607843137
+          },
+          "8": {
+            "offload_recall": 0.12515882997936018,
+            "recall": 0.12351332720588236
+          }
+        },
+        "same_layer_previous_token_plus_frequency": {
+          "16": {
+            "offload_recall": 0.346421891124871,
+            "recall": 0.33915058210784316
+          },
+          "24": {
+            "offload_recall": 0.41049487229102166,
+            "recall": 0.40302083333333333
+          },
+          "32": {
+            "offload_recall": 0.4655798503611971,
+            "recall": 0.45812729779411765
+          },
+          "8": {
+            "offload_recall": 0.25774961300309596,
+            "recall": 0.25074754901960783
+          }
+        }
+      },
+      "predictor": {
+        "16": {
+          "candidate_count": 16,
+          "cold_start": {
+            "candidate_count": 16,
+            "fully_covered_rate": 0.0640625,
+            "incorrect_candidates": 53512,
+            "mean_incorrect_candidates": 11.944642857142856,
+            "mean_missed_actual_experts": 3.944642857142857,
+            "mean_useful_candidates": 4.055357142857143,
+            "missed_actual_experts": 17672,
+            "precision": 0.25345982142857143,
+            "recall": 0.5069196428571429,
+            "samples": 4480,
+            "useful_candidates": 18168
+          },
+          "fully_covered_rate": 0.05137867647058823,
+          "incorrect_candidates": 1955680,
+          "mean_incorrect_candidates": 11.983333333333334,
+          "mean_missed_actual_experts": 3.9833333333333334,
+          "mean_useful_candidates": 4.016666666666667,
+          "missed_actual_experts": 650080,
+          "offload_layers_1_38": {
+            "candidate_count": 16,
+            "fully_covered_rate": 0.05210268317853457,
+            "incorrect_candidates": 1854203,
+            "mean_incorrect_candidates": 11.959513673890608,
+            "mean_missed_actual_experts": 3.9595136738906085,
+            "mean_useful_candidates": 4.0404863261093915,
+            "missed_actual_experts": 613883,
+            "precision": 0.25253039538183697,
+            "recall": 0.5050607907636739,
+            "samples": 155040,
+            "useful_candidates": 626437
+          },
+          "precision": 0.25104166666666666,
+          "recall": 0.5020833333333333,
+          "recall_gain_from_previous_budget": 0.15866651348039212,
+          "samples": 163200,
+          "steady_state": {
+            "candidate_count": 16,
+            "fully_covered_rate": 0.05102066532258064,
+            "incorrect_candidates": 1902168,
+            "mean_incorrect_candidates": 11.984425403225806,
+            "mean_missed_actual_experts": 3.9844254032258064,
+            "mean_useful_candidates": 4.015574596774194,
+            "missed_actual_experts": 632408,
+            "precision": 0.2509734122983871,
+            "recall": 0.5019468245967742,
+            "samples": 158720,
+            "useful_candidates": 637352
+          },
+          "useful_candidates": 655520
+        },
+        "24": {
+          "candidate_count": 24,
+          "cold_start": {
+            "candidate_count": 24,
+            "fully_covered_rate": 0.11808035714285714,
+            "incorrect_candidates": 85871,
+            "mean_incorrect_candidates": 19.16763392857143,
+            "mean_missed_actual_experts": 3.167633928571429,
+            "mean_useful_candidates": 4.832366071428571,
+            "missed_actual_experts": 14191,
+            "precision": 0.20134858630952382,
+            "recall": 0.6040457589285714,
+            "samples": 4480,
+            "useful_candidates": 21649
+          },
+          "fully_covered_rate": 0.09952205882352941,
+          "incorrect_candidates": 3134277,
+          "mean_incorrect_candidates": 19.205128676470586,
+          "mean_missed_actual_experts": 3.205128676470588,
+          "mean_useful_candidates": 4.794871323529412,
+          "missed_actual_experts": 523077,
+          "offload_layers_1_38": {
+            "candidate_count": 24,
+            "fully_covered_rate": 0.10087074303405573,
+            "incorrect_candidates": 2973561,
+            "mean_incorrect_candidates": 19.179315015479876,
+            "mean_missed_actual_experts": 3.179315015479876,
+            "mean_useful_candidates": 4.820684984520124,
+            "missed_actual_experts": 492921,
+            "precision": 0.20086187435500516,
+            "recall": 0.6025856230650155,
+            "samples": 155040,
+            "useful_candidates": 747399
+          },
+          "precision": 0.19978630514705883,
+          "recall": 0.5993589154411765,
+          "recall_gain_from_previous_budget": 0.09727558210784315,
+          "samples": 163200,
+          "steady_state": {
+            "candidate_count": 24,
+            "fully_covered_rate": 0.09899823588709677,
+            "incorrect_candidates": 3048406,
+            "mean_incorrect_candidates": 19.20618699596774,
+            "mean_missed_actual_experts": 3.206186995967742,
+            "mean_useful_candidates": 4.793813004032258,
+            "missed_actual_experts": 508886,
+            "precision": 0.19974220850134408,
+            "recall": 0.5992266255040323,
+            "samples": 158720,
+            "useful_candidates": 760874
+          },
+          "useful_candidates": 782523
+        },
+        "32": {
+          "candidate_count": 32,
+          "cold_start": {
+            "candidate_count": 32,
+            "fully_covered_rate": 0.16428571428571428,
+            "incorrect_candidates": 119267,
+            "mean_incorrect_candidates": 26.622098214285714,
+            "mean_missed_actual_experts": 2.622098214285714,
+            "mean_useful_candidates": 5.377901785714286,
+            "missed_actual_experts": 11747,
+            "precision": 0.16805943080357144,
+            "recall": 0.6722377232142858,
+            "samples": 4480,
+            "useful_candidates": 24093
+          },
+          "fully_covered_rate": 0.14920343137254902,
+          "incorrect_candidates": 4349554,
+          "mean_incorrect_candidates": 26.651678921568628,
+          "mean_missed_actual_experts": 2.651678921568627,
+          "mean_useful_candidates": 5.348321078431373,
+          "missed_actual_experts": 432754,
+          "offload_layers_1_38": {
+            "candidate_count": 32,
+            "fully_covered_rate": 0.1508578431372549,
+            "incorrect_candidates": 4128124,
+            "mean_incorrect_candidates": 26.626186790505677,
+            "mean_missed_actual_experts": 2.6261867905056757,
+            "mean_useful_candidates": 5.373813209494324,
+            "missed_actual_experts": 407164,
+            "precision": 0.16793166279669763,
+            "recall": 0.6717266511867905,
+            "samples": 155040,
+            "useful_candidates": 833156
+          },
+          "precision": 0.1671350337009804,
+          "recall": 0.6685401348039216,
+          "recall_gain_from_previous_budget": 0.06918121936274513,
+          "samples": 163200,
+          "steady_state": {
+            "candidate_count": 32,
+            "fully_covered_rate": 0.14877772177419354,
+            "incorrect_candidates": 4230287,
+            "mean_incorrect_candidates": 26.652513860887098,
+            "mean_missed_actual_experts": 2.6525138608870966,
+            "mean_useful_candidates": 5.347486139112903,
+            "missed_actual_experts": 421007,
+            "precision": 0.16710894184727823,
+            "recall": 0.6684357673891129,
+            "samples": 158720,
+            "useful_candidates": 848753
+          },
+          "useful_candidates": 872846
+        },
+        "8": {
+          "candidate_count": 8,
+          "cold_start": {
+            "candidate_count": 8,
+            "fully_covered_rate": 0.0040178571428571425,
+            "incorrect_candidates": 23374,
+            "mean_incorrect_candidates": 5.217410714285714,
+            "mean_missed_actual_experts": 5.217410714285714,
+            "mean_useful_candidates": 2.7825892857142858,
+            "missed_actual_experts": 23374,
+            "precision": 0.3478236607142857,
+            "recall": 0.3478236607142857,
+            "samples": 4480,
+            "useful_candidates": 12466
+          },
+          "fully_covered_rate": 0.002916666666666667,
+          "incorrect_candidates": 857235,
+          "mean_incorrect_candidates": 5.25266544117647,
+          "mean_missed_actual_experts": 5.25266544117647,
+          "mean_useful_candidates": 2.7473345588235296,
+          "missed_actual_experts": 857235,
+          "offload_layers_1_38": {
+            "candidate_count": 8,
+            "fully_covered_rate": 0.0029411764705882353,
+            "incorrect_candidates": 811316,
+            "mean_incorrect_candidates": 5.2329463364293085,
+            "mean_missed_actual_experts": 5.2329463364293085,
+            "mean_useful_candidates": 2.7670536635706915,
+            "missed_actual_experts": 811316,
+            "precision": 0.34588170794633644,
+            "recall": 0.34588170794633644,
+            "samples": 155040,
+            "useful_candidates": 429004
+          },
+          "precision": 0.3434168198529412,
+          "recall": 0.3434168198529412,
+          "recall_gain_from_previous_budget": null,
+          "samples": 163200,
+          "steady_state": {
+            "candidate_count": 8,
+            "fully_covered_rate": 0.002885584677419355,
+            "incorrect_candidates": 833861,
+            "mean_incorrect_candidates": 5.253660534274193,
+            "mean_missed_actual_experts": 5.253660534274193,
+            "mean_useful_candidates": 2.7463394657258067,
+            "missed_actual_experts": 833861,
+            "precision": 0.34329243321572583,
+            "recall": 0.34329243321572583,
+            "samples": 158720,
+            "useful_candidates": 435899
+          },
+          "useful_candidates": 448365
+        }
+      }
+    },
+    "validation": {
+      "baseline_recall": {
+        "current_token_previous_layer_plus_frequency": {
+          "16": {
+            "offload_recall": 0.16599748452012383,
+            "recall": 0.16491191789215687
+          },
+          "24": {
+            "offload_recall": 0.25198658410732716,
+            "recall": 0.25021905637254904
+          },
+          "32": {
+            "offload_recall": 0.32852409055727555,
+            "recall": 0.3260899203431373
+          },
+          "8": {
+            "offload_recall": 0.03222716718266254,
+            "recall": 0.03356311274509804
+          }
+        },
+        "per_layer_frequency": {
+          "16": {
+            "offload_recall": 0.2226062628998968,
+            "recall": 0.2201202512254902
+          },
+          "24": {
+            "offload_recall": 0.29939128611971105,
+            "recall": 0.29626455269607843
+          },
+          "32": {
+            "offload_recall": 0.36583220459236326,
+            "recall": 0.36232460171568626
+          },
+          "8": {
+            "offload_recall": 0.13441531217750258,
+            "recall": 0.13271675857843138
+          }
+        },
+        "same_layer_previous_token_plus_frequency": {
+          "16": {
+            "offload_recall": 0.33623258513931886,
+            "recall": 0.33021829044117645
+          },
+          "24": {
+            "offload_recall": 0.40290731424148607,
+            "recall": 0.3964828431372549
+          },
+          "32": {
+            "offload_recall": 0.4617397123323013,
+            "recall": 0.4553347120098039
+          },
+          "8": {
+            "offload_recall": 0.24090234778121775,
+            "recall": 0.23537683823529412
+          }
+        }
+      },
+      "predictor": {
+        "16": {
+          "candidate_count": 16,
+          "cold_start": {
+            "candidate_count": 16,
+            "fully_covered_rate": 0.037276785714285714,
+            "incorrect_candidates": 55617,
+            "mean_incorrect_candidates": 12.41450892857143,
+            "mean_missed_actual_experts": 4.414508928571429,
+            "mean_useful_candidates": 3.5854910714285713,
+            "missed_actual_experts": 19777,
+            "precision": 0.2240931919642857,
+            "recall": 0.4481863839285714,
+            "samples": 4480,
+            "useful_candidates": 16063
+          },
+          "fully_covered_rate": 0.04435049019607843,
+          "incorrect_candidates": 2000651,
+          "mean_incorrect_candidates": 12.258890931372548,
+          "mean_missed_actual_experts": 4.258890931372549,
+          "mean_useful_candidates": 3.741109068627451,
+          "missed_actual_experts": 695051,
+          "offload_layers_1_38": {
+            "candidate_count": 16,
+            "fully_covered_rate": 0.045104489164086686,
+            "incorrect_candidates": 1897142,
+            "mean_incorrect_candidates": 12.236468008255933,
+            "mean_missed_actual_experts": 4.236468008255934,
+            "mean_useful_candidates": 3.763531991744066,
+            "missed_actual_experts": 656822,
+            "precision": 0.23522074948400412,
+            "recall": 0.47044149896800824,
+            "samples": 155040,
+            "useful_candidates": 583498
+          },
+          "precision": 0.2338193167892157,
+          "recall": 0.4676386335784314,
+          "recall_gain_from_previous_budget": 0.15397671568627452,
+          "samples": 163200,
+          "steady_state": {
+            "candidate_count": 16,
+            "fully_covered_rate": 0.04455015120967742,
+            "incorrect_candidates": 1945034,
+            "mean_incorrect_candidates": 12.254498487903225,
+            "mean_missed_actual_experts": 4.254498487903225,
+            "mean_useful_candidates": 3.7455015120967743,
+            "missed_actual_experts": 675274,
+            "precision": 0.2340938445060484,
+            "recall": 0.4681876890120968,
+            "samples": 158720,
+            "useful_candidates": 594486
+          },
+          "useful_candidates": 610549
+        },
+        "24": {
+          "candidate_count": 24,
+          "cold_start": {
+            "candidate_count": 24,
+            "fully_covered_rate": 0.07522321428571428,
+            "incorrect_candidates": 87998,
+            "mean_incorrect_candidates": 19.642410714285713,
+            "mean_missed_actual_experts": 3.642410714285714,
+            "mean_useful_candidates": 4.357589285714286,
+            "missed_actual_experts": 16318,
+            "precision": 0.18156622023809524,
+            "recall": 0.5446986607142857,
+            "samples": 4480,
+            "useful_candidates": 19522
+          },
+          "fully_covered_rate": 0.08614583333333334,
+          "incorrect_candidates": 3179375,
+          "mean_incorrect_candidates": 19.481464460784313,
+          "mean_missed_actual_experts": 3.4814644607843137,
+          "mean_useful_candidates": 4.518535539215686,
+          "missed_actual_experts": 568175,
+          "offload_layers_1_38": {
+            "candidate_count": 24,
+            "fully_covered_rate": 0.08744195046439629,
+            "incorrect_candidates": 3016704,
+            "mean_incorrect_candidates": 19.457585139318887,
+            "mean_missed_actual_experts": 3.4575851393188852,
+            "mean_useful_candidates": 4.542414860681115,
+            "missed_actual_experts": 536064,
+            "precision": 0.1892672858617131,
+            "recall": 0.5678018575851393,
+            "samples": 155040,
+            "useful_candidates": 704256
+          },
+          "precision": 0.18827231413398693,
+          "recall": 0.5648169424019608,
+          "recall_gain_from_previous_budget": 0.0971783088235294,
+          "samples": 163200,
+          "steady_state": {
+            "candidate_count": 24,
+            "fully_covered_rate": 0.08645413306451613,
+            "incorrect_candidates": 3091377,
+            "mean_incorrect_candidates": 19.47692162298387,
+            "mean_missed_actual_experts": 3.4769216229838706,
+            "mean_useful_candidates": 4.523078377016129,
+            "missed_actual_experts": 551857,
+            "precision": 0.18846159904233872,
+            "recall": 0.5653847971270162,
+            "samples": 158720,
+            "useful_candidates": 717903
+          },
+          "useful_candidates": 737425
+        },
+        "32": {
+          "candidate_count": 32,
+          "cold_start": {
+            "candidate_count": 32,
+            "fully_covered_rate": 0.11741071428571428,
+            "incorrect_candidates": 121239,
+            "mean_incorrect_candidates": 27.062276785714285,
+            "mean_missed_actual_experts": 3.0622767857142854,
+            "mean_useful_candidates": 4.937723214285715,
+            "missed_actual_experts": 13719,
+            "precision": 0.15430385044642858,
+            "recall": 0.6172154017857143,
+            "samples": 4480,
+            "useful_candidates": 22121
+          },
+          "fully_covered_rate": 0.12800857843137256,
+          "incorrect_candidates": 4392225,
+          "mean_incorrect_candidates": 26.913143382352942,
+          "mean_missed_actual_experts": 2.913143382352941,
+          "mean_useful_candidates": 5.086856617647059,
+          "missed_actual_experts": 475425,
+          "offload_layers_1_38": {
+            "candidate_count": 32,
+            "fully_covered_rate": 0.12997291021671828,
+            "incorrect_candidates": 4168766,
+            "mean_incorrect_candidates": 26.88832559339525,
+            "mean_missed_actual_experts": 2.888325593395253,
+            "mean_useful_candidates": 5.111674406604747,
+            "missed_actual_experts": 447806,
+            "precision": 0.15973982520639834,
+            "recall": 0.6389593008255934,
+            "samples": 155040,
+            "useful_candidates": 792514
+          },
+          "precision": 0.1589642693014706,
+          "recall": 0.6358570772058824,
+          "recall_gain_from_previous_budget": 0.07104013480392157,
+          "samples": 163200,
+          "steady_state": {
+            "candidate_count": 32,
+            "fully_covered_rate": 0.12830771169354838,
+            "incorrect_candidates": 4270986,
+            "mean_incorrect_candidates": 26.908933971774193,
+            "mean_missed_actual_experts": 2.9089339717741938,
+            "mean_useful_candidates": 5.091066028225806,
+            "missed_actual_experts": 461706,
+            "precision": 0.15909581338205644,
+            "recall": 0.6363832535282258,
+            "samples": 158720,
+            "useful_candidates": 808054
+          },
+          "useful_candidates": 830175
+        },
+        "8": {
+          "candidate_count": 8,
+          "cold_start": {
+            "candidate_count": 8,
+            "fully_covered_rate": 0.0020089285714285712,
+            "incorrect_candidates": 25148,
+            "mean_incorrect_candidates": 5.613392857142857,
+            "mean_missed_actual_experts": 5.613392857142857,
+            "mean_useful_candidates": 2.3866071428571427,
+            "missed_actual_experts": 25148,
+            "precision": 0.29832589285714284,
+            "recall": 0.29832589285714284,
+            "samples": 4480,
+            "useful_candidates": 10692
+          },
+          "fully_covered_rate": 0.0017708333333333332,
+          "incorrect_candidates": 896083,
+          "mean_incorrect_candidates": 5.490704656862745,
+          "mean_missed_actual_experts": 5.490704656862745,
+          "mean_useful_candidates": 2.509295343137255,
+          "missed_actual_experts": 896083,
+          "offload_layers_1_38": {
+            "candidate_count": 8,
+            "fully_covered_rate": 0.001773735810113519,
+            "incorrect_candidates": 848798,
+            "mean_incorrect_candidates": 5.474703302373581,
+            "mean_missed_actual_experts": 5.474703302373581,
+            "mean_useful_candidates": 2.525296697626419,
+            "missed_actual_experts": 848798,
+            "precision": 0.31566208720330236,
+            "recall": 0.31566208720330236,
+            "samples": 155040,
+            "useful_candidates": 391522
+          },
+          "precision": 0.31366191789215686,
+          "recall": 0.31366191789215686,
+          "recall_gain_from_previous_budget": null,
+          "samples": 163200,
+          "steady_state": {
+            "candidate_count": 8,
+            "fully_covered_rate": 0.0017641129032258064,
+            "incorrect_candidates": 870935,
+            "mean_incorrect_candidates": 5.487241683467742,
+            "mean_missed_actual_experts": 5.487241683467742,
+            "mean_useful_candidates": 2.512758316532258,
+            "missed_actual_experts": 870935,
+            "precision": 0.31409478956653225,
+            "recall": 0.31409478956653225,
+            "samples": 158720,
+            "useful_candidates": 398825
+          },
+          "useful_candidates": 409517
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,1 @@
+d84c4f7c0aceb368d2254dd1aaee1a713f1bd76974cd151b40af83ddaac8c524  /home/yaozhenyang/dev/sglang-v100/experiments/expert_prefetch/records/prefetch-predictor/EXP-0002__20260909T103244+0800__v100-embeddedroutemlp-v0001-default-t8-k4-seed0/artifacts/best_model.pt
