@@ -80,11 +80,13 @@ def set_seed(seed: int) -> None:
 
 def _metrics_from_top_candidates(
     candidates: np.ndarray, targets: np.ndarray
-) -> dict[str, float]:
+) -> dict[str, Any]:
     if candidates.shape[:-1] != targets.shape[:-1] or targets.shape[-1] != TOP_K:
         raise ValueError("candidate/target shape mismatch")
-    result: dict[str, float] = {}
+    result: dict[str, Any] = {"candidate_count": int(candidates.shape[-1])}
     for count in (8, 16, 32):
+        if candidates.shape[-1] < count:
+            continue
         available = min(count, candidates.shape[-1])
         matches = (candidates[..., :available, None] == targets[..., None, :]).any(
             axis=-1
@@ -94,6 +96,17 @@ def _metrics_from_top_candidates(
         if count == 8 and available == 8:
             result["exact_set_accuracy"] = float(np.mean(hits == TOP_K))
             result["mean_jaccard"] = float(np.mean(hits / (2 * TOP_K - hits)))
+            result["offload_recall_at_8"] = float(
+                hits[..., 1:39].sum() / targets[..., 1:39, :].size
+            )
+            result["per_layer"] = {
+                str(layer): {
+                    "recall_at_8": float(
+                        hits[..., layer].sum() / targets[..., layer, :].size
+                    )
+                }
+                for layer in range(NUM_LAYERS)
+            }
     return result
 
 
@@ -113,7 +126,7 @@ def frequency_candidates(train_routes: np.ndarray, count: int = 32) -> np.ndarra
 
 def evaluate_baselines(
     train_routes: np.ndarray, split_routes: np.ndarray
-) -> dict[str, dict[str, float]]:
+) -> dict[str, dict[str, Any]]:
     targets = split_routes[:, 1:, :, :]
     frequencies = frequency_candidates(train_routes)
     frequency_prediction = np.broadcast_to(
@@ -206,6 +219,9 @@ def evaluate_model(
         "seconds": elapsed,
         "samples_per_second": total_samples / elapsed,
         "per_layer": per_layer,
+        "offload_recall_at_8": float(
+            layer_hits[1:39].sum().item() / (TOP_K * layer_samples[1:39].sum().item())
+        ),
     }
     for count, hits in hit_counts.items():
         result[f"recall_at_{count}"] = hits / (TOP_K * total_samples)
