@@ -73,3 +73,18 @@ python experiments/expert_prefetch/new_experiment.py \
 - 被改变的单一变量和无法控制的干扰因素。
 
 跨 V100 与 RTX 4070 SUPER 的结果分别归档，不能直接合并为同一组样本。
+
+## 算法版本
+
+会迭代的预测与预取算法统一放在 `algorithms/<algorithm>/versions/vNNNN/`。
+每个版本目录至少包含设计、默认配置、实验索引和小体积汇总结果。版本目录
+用于说明“运行了什么算法”，`records/` 下的全局 `EXP-NNNN` 记录仍是具体实验
+数据和结论的权威来源。
+
+- `vNNNN` 从 `v0001` 开始递增；已经被实验引用的版本不得原地改变行为。
+- 输入/目标语义、特征编码、网络结构、损失或推理契约改变时创建新版本。
+- `t`、`k`、hidden size、学习率等预先声明的超参扫描保留在同一算法版本内。
+- 每次训练或评测仍须先用 `new_experiment.py` 分配全局实验编号，再将该
+  `EXP-NNNN` 和结果链接登记到版本目录的 `EXPERIMENTS.md`。
+- checkpoint、逐步预测和原始日志保存在对应实验的 `artifacts/`、`logs/`；
+  版本目录的 `results/` 只保存跨实验对比表、图和最终小结。

@@ -1,0 +1,48 @@
+format: SGLANG-EXPERT-PREFETCH-ALGORITHM-CONFIG-v1
+algorithm: embedded-route-mlp
+algorithm_version: v0001
+
+dataset:
+  experiment_id: EXP-0001
+  split: request-seed0-96-16-16
+  source_aggregate_sha256: 22464dc1e6f4e45c422dd14e10f3205f74bae252fcce91e167820da713cca7e6
+  train_requests: 96
+  validation_requests: 16
+  test_requests: 16
+  target_positions: [1, 255]
+  target_layers: [0, 39]
+  offload_metric_layers: [1, 38]
+
+features:
+  history_tokens: 8
+  current_previous_layers: 4
+  lead_layers: 0
+  route_rank_encoding: unordered_mean
+  pad_missing_context: true
+  include_validity_mask: true
+  use_token_ids: false
+  use_router_weights: false
+
+model:
+  route_embedding_dim: 32
+  layer_specific_expert_embedding: true
+  target_layer_embedding_dim: 32
+  hidden_dim: 512
+  dropout: 0.1
+  output_experts: 256
+
+training:
+  loss: uniform_set_cross_entropy
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  max_epochs: 20
+  early_stopping_patience: 3
+  gradient_clip_norm: 1.0
+  training_seeds: [0, 1, 2]
+
+evaluation:
+  primary_metric: recall_at_8
+  candidate_counts: [8, 16, 32]
+  report_per_layer: true
+  report_cold_and_steady_state: true
