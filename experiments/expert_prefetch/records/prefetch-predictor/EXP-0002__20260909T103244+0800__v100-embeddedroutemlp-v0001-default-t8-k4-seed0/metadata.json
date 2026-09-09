@@ -1,0 +1,23 @@
+{
+  "format": "SGLANG-EXPERT-PREFETCH-EXPERIMENT-v1",
+  "experiment_id": "EXP-0002",
+  "type": "prefetch-predictor",
+  "title": "V100 EmbeddedRouteMLP v0001 default t8 k4 seed0",
+  "status": "completed",
+  "started_at": "2026-09-09T10:32:44+08:00",
+  "ended_at": "2026-09-09T10:43:14+08:00",
+  "timezone": "Asia/Singapore",
+  "device": "Tesla V100-SXM2-16GB GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96",
+  "hostname": "debian",
+  "git_branch": "lab/expert-prefetch",
+  "git_commit": "a639034c4aa276bba9858bab2effdbdb825c9c7d",
+  "git_dirty": false,
+  "algorithm": "embedded-route-mlp",
+  "algorithm_version": "v0001",
+  "result": {
+    "best_epoch": 6,
+    "test_recall_at_8": 0.3434168198529412,
+    "test_offload_recall_at_8": 0.34588170794633644,
+    "checkpoint_sha256": "d84c4f7c0aceb368d2254dd1aaee1a713f1bd76974cd151b40af83ddaac8c524"
+  }
+}

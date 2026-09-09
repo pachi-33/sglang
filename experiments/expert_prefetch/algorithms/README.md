@@ -23,4 +23,4 @@ algorithms/<algorithm>/
 
 | 算法 | 当前版本 | 状态 |
 |---|---|---|
-| [embedded-route-mlp](embedded-route-mlp/README.md) | `v0001` | 已实现，待首个正式实验 |
+| [embedded-route-mlp](embedded-route-mlp/README.md) | `v0001` | EXP-0002初始实验通过 |
