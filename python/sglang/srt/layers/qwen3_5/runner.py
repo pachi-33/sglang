@@ -15,6 +15,7 @@ from .decode_timing import DecodeTimingCapture
 from .dense import fp16_embedding, linear_fp16
 from .expert_pack.store import ExpertOffloadConfig, ExpertPackStore
 from .expert_trace import ExpertTraceStep
+from .mock_prefetch import MockPrefetchScheduler, RouteCaptureStep
 from .gdn import (
     chunk_gdn,
     depthwise_conv4_silu,
@@ -509,6 +510,8 @@ class Qwen35StatelessRunner:
         router_capture: RouterCapture | None = None,
         expert_trace_step: ExpertTraceStep | None = None,
         decode_timing: DecodeTimingCapture | None = None,
+        route_capture_step: RouteCaptureStep | None = None,
+        prefetch_scheduler: MockPrefetchScheduler | None = None,
     ) -> torch.Tensor:
         w = layer.weights
         offloaded = self.expert_store is not None and 1 <= layer.layer_id <= 38
@@ -522,19 +525,26 @@ class Qwen35StatelessRunner:
                 shared_down=w["mlp.shared_expert.down_proj"],
                 shared_gate=w["mlp.shared_expert_gate"],
                 expert_store=self.expert_store if offloaded else None,
-                layer_id=layer.layer_id if offloaded else None,
+                layer_id=layer.layer_id,
             ),
             residual=hidden,
             capture_router=(
-                router_capture is not None or expert_trace_step is not None
+                router_capture is not None
+                or expert_trace_step is not None
+                or route_capture_step is not None
             ),
             timing_hook=(
                 None
                 if decode_timing is None
                 else lambda boundary: decode_timing.record(layer.layer_id, boundary)
             ),
+            prefetch_scheduler=prefetch_scheduler,
         )
-        if router_capture is None and expert_trace_step is None:
+        if (
+            router_capture is None
+            and expert_trace_step is None
+            and route_capture_step is None
+        ):
             return result
         output, ids, probabilities = result
         if router_capture is not None:
@@ -544,6 +554,8 @@ class Qwen35StatelessRunner:
             router_capture[layer.layer_id] = (ids[-1], probabilities[-1])
         if expert_trace_step is not None:
             expert_trace_step.capture(layer.layer_id, ids)
+        if route_capture_step is not None:
+            route_capture_step.capture(layer.layer_id, ids)
         return output
 
     def _finish_layer(
@@ -555,6 +567,8 @@ class Qwen35StatelessRunner:
         router_capture: RouterCapture | None = None,
         expert_trace_step: ExpertTraceStep | None = None,
         decode_timing: DecodeTimingCapture | None = None,
+        route_capture_step: RouteCaptureStep | None = None,
+        prefetch_scheduler: MockPrefetchScheduler | None = None,
     ) -> torch.Tensor:
         hidden, post_norm = residual_add_gemma_rms_norm(
             hidden, projected, layer.weights["post_attention_layernorm.weight"]
@@ -566,6 +580,8 @@ class Qwen35StatelessRunner:
             router_capture=router_capture,
             expert_trace_step=expert_trace_step,
             decode_timing=decode_timing,
+            route_capture_step=route_capture_step,
+            prefetch_scheduler=prefetch_scheduler,
         )
 
     def prefill_hidden(
@@ -575,6 +591,7 @@ class Qwen35StatelessRunner:
         cache: SingleRequestCache,
         router_capture: RouterCapture | None = None,
         expert_trace_step: ExpertTraceStep | None = None,
+        route_capture_step: RouteCaptureStep | None = None,
     ) -> torch.Tensor:
         """Run one nonempty fresh sequence and populate its continuation cache."""
         _require_cuda_matrix(hidden, "hidden_states")
@@ -609,6 +626,7 @@ class Qwen35StatelessRunner:
                     layer,
                     router_capture=router_capture,
                     expert_trace_step=expert_trace_step,
+                    route_capture_step=route_capture_step,
                 )
             # Cache progress is transactional: surface asynchronous kernel
             # failures before publishing a new consumed length.  The pipeline
@@ -631,6 +649,8 @@ class Qwen35StatelessRunner:
         router_capture: RouterCapture | None = None,
         expert_trace_step: ExpertTraceStep | None = None,
         decode_timing: DecodeTimingCapture | None = None,
+        route_capture_step: RouteCaptureStep | None = None,
+        prefetch_scheduler: MockPrefetchScheduler | None = None,
     ) -> torch.Tensor:
         """Advance an existing single-sequence cache by one token."""
         _require_cuda_matrix(hidden, "hidden_states")
@@ -682,6 +702,8 @@ class Qwen35StatelessRunner:
                     router_capture=router_capture,
                     expert_trace_step=expert_trace_step,
                     decode_timing=decode_timing,
+                    route_capture_step=route_capture_step,
+                    prefetch_scheduler=prefetch_scheduler,
                 )
                 if decode_timing is not None:
                     decode_timing.record(layer.layer_id, "layer_end")

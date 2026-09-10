@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import math
 import os
 import random
 import resource
@@ -49,6 +50,8 @@ class RequestFuncInput:
     model: str
     expert_trace: bool = False
     request_index: Optional[int] = None
+    stream: Optional[bool] = None
+    mock_expert_prefetch: Optional[dict] = None
 
 
 @dataclass
@@ -63,6 +66,16 @@ class RequestFuncOutput:
     output_len: int = 0
     request_id: str = ""
     reported_prompt_len: Optional[int] = None
+    completion_token_ids: List[int] = field(default_factory=list)
+    record_request_id: str = ""
+    record_latency: float = 0.0
+    mock_expert_prefetch_metrics: Optional[dict] = None
+
+
+def _prompt_sha256(prompt: Union[str, List[int]]) -> str:
+    if isinstance(prompt, str):
+        return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    return hashlib.sha256(np.asarray(prompt, dtype="<i4").tobytes()).hexdigest()
 
 
 def remove_prefix(text: str, prefix: str) -> str:
@@ -206,11 +219,17 @@ async def async_request_openai_completions(
             "temperature": 0.0,
             "best_of": 1,
             "max_tokens": request_func_input.output_len,
-            "stream": not args.disable_stream,
+            "stream": (
+                not args.disable_stream
+                if request_func_input.stream is None
+                else request_func_input.stream
+            ),
             "ignore_eos": True,
         }
         if request_func_input.expert_trace:
             payload["expert_trace"] = True
+        if request_func_input.mock_expert_prefetch is not None:
+            payload["mock_expert_prefetch"] = request_func_input.mock_expert_prefetch
         headers = {"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"}
 
         output = RequestFuncOutput()
@@ -278,6 +297,19 @@ async def async_request_openai_completions(
             text = choice.get("text", "") or ""
             is_terminal = streaming and choice.get("finish_reason") is not None
             sglang_metadata = data.get("sglang")
+            if isinstance(sglang_metadata, dict) and isinstance(
+                sglang_metadata.get("completion_token_ids"), list
+            ):
+                token_ids = sglang_metadata["completion_token_ids"]
+                if not streaming or is_terminal:
+                    output.completion_token_ids = [int(token) for token in token_ids]
+                elif len(token_ids) == 1:
+                    output.completion_token_ids.append(int(token_ids[0]))
+            mock_metrics = data.get("mock_expert_prefetch_metrics")
+            if mock_metrics is not None:
+                if not isinstance(mock_metrics, dict):
+                    raise RuntimeError("mock expert prefetch metrics must be an object")
+                output.mock_expert_prefetch_metrics = mock_metrics
             if (
                 not is_terminal
                 and isinstance(sglang_metadata, dict)
@@ -378,6 +410,59 @@ async def async_request_openai_completions(
     if pbar:
         pbar.update(1)
     return output
+
+
+async def async_request_mock_expert_prefetch(
+    request_func_input: RequestFuncInput,
+    pbar: Optional[tqdm] = None,
+) -> RequestFuncOutput:
+    """Run an unmeasured record followed by the measured streaming replay."""
+    config = request_func_input.mock_expert_prefetch
+    if not isinstance(config, dict):
+        raise ValueError("mock expert prefetch request requires a configuration")
+    pair_id = config.get("pair_id")
+    if not isinstance(pair_id, str) or not pair_id:
+        raise ValueError("mock expert prefetch pair_id is required")
+    record_input = RequestFuncInput(
+        model=request_func_input.model,
+        prompt=request_func_input.prompt,
+        api_url=request_func_input.api_url,
+        prompt_len=request_func_input.prompt_len,
+        output_len=request_func_input.output_len,
+        request_index=request_func_input.request_index,
+        stream=False,
+        mock_expert_prefetch={"phase": "record", "pair_id": pair_id},
+    )
+    record = await async_request_openai_completions(record_input)
+    if not record.success:
+        record.error = "mock record failed: " + record.error
+        if pbar:
+            pbar.update(1)
+        return record
+    replay_config = dict(config)
+    replay_config["phase"] = "replay"
+    replay_input = RequestFuncInput(
+        model=request_func_input.model,
+        prompt=request_func_input.prompt,
+        api_url=request_func_input.api_url,
+        prompt_len=request_func_input.prompt_len,
+        output_len=request_func_input.output_len,
+        request_index=request_func_input.request_index,
+        stream=True,
+        mock_expert_prefetch=replay_config,
+    )
+    replay = await async_request_openai_completions(replay_input)
+    replay.record_request_id = record.request_id
+    replay.record_latency = record.latency
+    if replay.success and record.completion_token_ids != replay.completion_token_ids:
+        replay.success = False
+        replay.error = "mock record and replay completion token IDs differ"
+    if replay.success and replay.mock_expert_prefetch_metrics is None:
+        replay.success = False
+        replay.error = "mock replay response omitted prefetch metrics"
+    if pbar:
+        pbar.update(1)
+    return replay
 
 
 def get_model(pretrained_model_name_or_path: str) -> str:
@@ -753,6 +838,7 @@ async def benchmark(
     enable_multi: bool,
     max_concurrency: Optional[int] = None,
     expert_trace: bool = False,
+    mock_expert_prefetch: Optional[dict] = None,
 ):
     if max_concurrency is not None and (
         isinstance(max_concurrency, bool)
@@ -762,7 +848,12 @@ async def benchmark(
         raise ValueError("max_concurrency must be a positive integer or None")
 
     if backend in ASYNC_REQUEST_FUNCS:
-        request_func = ASYNC_REQUEST_FUNCS[backend]
+        base_request_func = ASYNC_REQUEST_FUNCS[backend]
+        request_func = (
+            async_request_mock_expert_prefetch
+            if mock_expert_prefetch is not None
+            else base_request_func
+        )
     else:
         raise ValueError(f"Unknown backend: {backend}")
 
@@ -776,7 +867,7 @@ async def benchmark(
         output_len=test_output_len,
         expert_trace=False,
     )
-    test_output = await request_func(request_func_input=test_input)
+    test_output = await base_request_func(request_func_input=test_input)
     if not test_output.success:
         raise ValueError(
             "Initial test run failed - Please make sure benchmark arguments "
@@ -795,6 +886,7 @@ async def benchmark(
     request_index = 0
     async for request in get_request(input_requests, request_rate):
         prompt, prompt_len, output_len = request
+        pair_prompt_digest = _prompt_sha256(prompt)
         request_func_input = RequestFuncInput(
             model=model_id,
             prompt=prompt,
@@ -803,6 +895,17 @@ async def benchmark(
             output_len=output_len,
             expert_trace=expert_trace,
             request_index=request_index,
+            mock_expert_prefetch=(
+                None
+                if mock_expert_prefetch is None
+                else {
+                    **mock_expert_prefetch,
+                    "pair_id": (
+                        f"bench-s{mock_expert_prefetch['seed']}-"
+                        f"{request_index}-{pair_prompt_digest[:16]}"
+                    ),
+                }
+            ),
         )
         request_index += 1
         tasks.append(
@@ -820,7 +923,12 @@ async def benchmark(
     if pbar is not None:
         pbar.close()
 
-    benchmark_duration = time.perf_counter() - benchmark_start_time
+    wall_duration = time.perf_counter() - benchmark_start_time
+    benchmark_duration = (
+        sum(output.latency for output in outputs if output.success)
+        if mock_expert_prefetch is not None
+        else wall_duration
+    )
 
     metrics, output_lens = calculate_metrics(
         input_requests=input_requests,
@@ -835,6 +943,18 @@ async def benchmark(
     print("{:<40} {:<10}".format("Traffic request rate:", request_rate))
     print("{:<40} {:<10}".format("Successful requests:", metrics.completed))
     print("{:<40} {:<10.2f}".format("Benchmark duration (s):", benchmark_duration))
+    if mock_expert_prefetch is not None:
+        print(
+            "{:<40} {:<10.2f}".format(
+                "Full Record+Replay wall time (s):", wall_duration
+            )
+        )
+        print(
+            "{:<40} {:<10.2f}".format(
+                "Excluded Record duration (s):",
+                sum(output.record_latency for output in outputs),
+            )
+        )
     print("{:<40} {:<10}".format("Total input tokens:", metrics.total_input))
     print("{:<40} {:<10}".format("Total generated tokens:", metrics.total_output))
     print(
@@ -905,6 +1025,7 @@ async def benchmark(
             "random_output_len": args.random_output_len,
             "random_range_ratio": args.random_range_ratio,
             "benchmark_duration": benchmark_duration,
+            "wall_duration": wall_duration,
         }
         if expert_trace:
             trace_requests = []
@@ -934,6 +1055,26 @@ async def benchmark(
                 )
             result["expert_trace"] = True
             result["trace_requests"] = trace_requests
+        if mock_expert_prefetch is not None:
+            result["mock_expert_prefetch"] = dict(mock_expert_prefetch)
+            result["record_duration"] = sum(output.record_latency for output in outputs)
+            result["mock_requests"] = [
+                {
+                    "request_index": index,
+                    "record_response_id": output.record_request_id or None,
+                    "replay_response_id": output.request_id or None,
+                    "success": output.success,
+                    "record_duration": output.record_latency,
+                    "replay_duration": output.latency,
+                    "tokens_equal": output.success,
+                    "prompt_sha256": _prompt_sha256(input_requests[index][0]),
+                    "prompt_tokens": input_requests[index][1],
+                    "completion_tokens": input_requests[index][2],
+                    "prefetch_metrics": output.mock_expert_prefetch_metrics,
+                    "error": output.error,
+                }
+                for index, output in enumerate(outputs)
+            ]
     else:
         print(f"Error running benchmark for request rate: {request_rate}")
         print("-" * 30)
@@ -954,6 +1095,7 @@ async def benchmark(
 
     result = {
         "duration": benchmark_duration,
+        "wall_duration": wall_duration,
         "completed": metrics.completed,
         "total_input_tokens": metrics.total_input,
         "total_output_tokens": metrics.total_output,
@@ -982,6 +1124,11 @@ async def benchmark(
         "mean_e2e_latency_ms": metrics.mean_e2e_latency_ms,
         "median_e2e_latency_ms": metrics.median_e2e_latency_ms,
     }
+    if mock_expert_prefetch is not None:
+        result["record_duration"] = sum(output.record_latency for output in outputs)
+        result["mock_expert_prefetch_metrics"] = [
+            output.mock_expert_prefetch_metrics for output in outputs
+        ]
     return result
 
 
@@ -1010,6 +1157,25 @@ def fire(args: argparse.Namespace):
         raise ValueError("--expert-trace is only supported by the sglang backend")
     if args.random_input_token_ids and args.dataset_name != "random":
         raise ValueError("--random-input-token-ids requires --dataset-name random")
+    if args.mock_expert_prefetch:
+        if args.backend != "sglang":
+            raise ValueError("--mock-expert-prefetch requires --backend sglang")
+        if args.expert_trace:
+            raise ValueError(
+                "mock expert prefetch and expert trace are mutually exclusive"
+            )
+        if args.disable_stream:
+            raise ValueError("mock expert prefetch requires streaming Replay")
+        if args.max_concurrency != 1:
+            raise ValueError("mock expert prefetch requires --max-concurrency 1")
+        if not math.isinf(args.request_rate):
+            raise ValueError("mock expert prefetch requires --request-rate inf")
+        maximum_recall = min(1.0, args.mock_prefetch_top_k / 8)
+        if not 0 <= args.mock_prefetch_recall <= maximum_recall:
+            raise ValueError(
+                "--mock-prefetch-recall exceeds the Top-8 recall possible "
+                "for the configured top-k"
+            )
 
     if args.port is None:
         args.port = {
@@ -1106,6 +1272,16 @@ def fire(args: argparse.Namespace):
                     enable_multi=args.multi,
                     max_concurrency=args.max_concurrency,
                     expert_trace=args.expert_trace,
+                    mock_expert_prefetch=(
+                        None
+                        if not args.mock_expert_prefetch
+                        else {
+                            "route_recall": args.mock_prefetch_recall,
+                            "top_k": args.mock_prefetch_top_k,
+                            "lead_layers": args.mock_prefetch_lead_layers,
+                            "seed": args.mock_prefetch_seed,
+                        }
+                    ),
                 )
             )
     else:
@@ -1121,6 +1297,16 @@ def fire(args: argparse.Namespace):
                 enable_multi=args.multi,
                 max_concurrency=args.max_concurrency,
                 expert_trace=args.expert_trace,
+                mock_expert_prefetch=(
+                    None
+                    if not args.mock_expert_prefetch
+                    else {
+                        "route_recall": args.mock_prefetch_recall,
+                        "top_k": args.mock_prefetch_top_k,
+                        "lead_layers": args.mock_prefetch_lead_layers,
+                        "seed": args.mock_prefetch_seed,
+                    }
+                ),
             )
         )
 
@@ -1265,6 +1451,15 @@ if __name__ == "__main__":
             "instead of decoding them back to text."
         ),
     )
+    parser.add_argument(
+        "--mock-expert-prefetch",
+        action="store_true",
+        help="Run an unmeasured route-record pass before each measured Replay.",
+    )
+    parser.add_argument("--mock-prefetch-recall", type=float, default=0.5)
+    parser.add_argument("--mock-prefetch-top-k", type=int, default=8)
+    parser.add_argument("--mock-prefetch-lead-layers", type=int, default=2)
+    parser.add_argument("--mock-prefetch-seed", type=int, default=0)
 
     set_ulimit()
 

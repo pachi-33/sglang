@@ -43,6 +43,11 @@ from .pipeline import (
     Qwen35Pipeline,
     load_tokenizer_compat,
 )
+from .mock_prefetch import (
+    MockPrefetchConfig,
+    MockPrefetchPairConflictError,
+    MockPrefetchRun,
+)
 
 logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
@@ -103,6 +108,15 @@ class TextResponseFormat(_RequestModel):
     type: Literal["text"] = "text"
 
 
+class MockExpertPrefetchRequest(_RequestModel):
+    phase: Literal["record", "replay"]
+    pair_id: str = Field(min_length=1, max_length=200)
+    route_recall: StrictNumber | None = Field(default=None, ge=0.0, le=1.0)
+    top_k: StrictInt | None = Field(default=None, ge=0, le=256)
+    lead_layers: StrictInt | None = Field(default=None, ge=1, le=38)
+    seed: StrictInt | None = None
+
+
 class CompletionRequest(_RequestModel):
     model: str
     prompt: str | list[StrictInt]
@@ -126,6 +140,7 @@ class CompletionRequest(_RequestModel):
     # early-stop check.
     ignore_eos: StrictBool = False
     expert_trace: StrictBool = False
+    mock_expert_prefetch: MockExpertPrefetchRequest | None = None
 
 
 class ChatCompletionRequest(_RequestModel):
@@ -148,6 +163,7 @@ class ChatCompletionRequest(_RequestModel):
     user: str | None = None
     ignore_eos: StrictBool = False
     expert_trace: StrictBool = False
+    mock_expert_prefetch: MockExpertPrefetchRequest | None = None
 
 
 class NativeGenerateRequest(_RequestModel):
@@ -156,6 +172,7 @@ class NativeGenerateRequest(_RequestModel):
     messages: list[ChatMessageRequest] | None = None
     max_new_tokens: StrictInt = Field(default=16, ge=1, le=2048)
     expert_trace: StrictBool = False
+    mock_expert_prefetch: MockExpertPrefetchRequest | None = None
 
 
 @dataclass(frozen=True)
@@ -164,6 +181,7 @@ class PipelineGeneration:
     completion_token_ids: tuple[int, ...]
     text: str
     finish_reason: Literal["stop", "length"]
+    mock_expert_prefetch_metrics: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -298,6 +316,9 @@ class _PipelineGenerationStream:
                     skip_special_tokens=False,
                 ),
                 finish_reason="stop" if stopped else "length",
+                mock_expert_prefetch_metrics=self.engine._mock_metrics(
+                    self.generation_kwargs.get("mock_expert_prefetch")
+                ),
             )
             if not result.text.startswith(committed_text):
                 raise PipelineProtocolError(
@@ -382,6 +403,7 @@ class Qwen35PipelineAPIEngine:
         ignore_eos: bool = False,
         expert_trace: bool = False,
         request_id: str | None = None,
+        mock_expert_prefetch: MockPrefetchRun | None = None,
     ) -> PipelineGeneration:
         if not self._request_lock.acquire(blocking=False):
             raise PipelineBusyError("the single pipeline request slot is busy")
@@ -397,11 +419,13 @@ class Qwen35PipelineAPIEngine:
                 raise APIRequestError("prompt must produce at least one token")
             eos_token_ids = () if ignore_eos else EOS_TOKEN_IDS
             trace_kwargs = self._expert_trace_kwargs(expert_trace, request_id)
+            mock_kwargs = self._mock_prefetch_kwargs(mock_expert_prefetch)
             generated = self.pipeline.generate_ids(
                 prompt_ids,
                 max_new_tokens=max_new_tokens,
                 eos_token_ids=eos_token_ids,
                 **trace_kwargs,
+                **mock_kwargs,
             )
             stopped = bool(generated and generated[-1] in eos_token_ids)
             visible_ids = [token for token in generated if token not in eos_token_ids]
@@ -410,6 +434,7 @@ class Qwen35PipelineAPIEngine:
                 completion_token_ids=tuple(generated),
                 text=self.tokenizer.decode(visible_ids, skip_special_tokens=False),
                 finish_reason="stop" if stopped else "length",
+                mock_expert_prefetch_metrics=self._mock_metrics(mock_expert_prefetch),
             )
         finally:
             self._request_lock.release()
@@ -422,6 +447,7 @@ class Qwen35PipelineAPIEngine:
         ignore_eos: bool = False,
         expert_trace: bool = False,
         request_id: str | None = None,
+        mock_expert_prefetch: MockPrefetchRun | None = None,
     ) -> _PipelineGenerationStream:
         generate = getattr(self.backend, "generate_ids_stream", None)
         if not callable(generate):
@@ -443,6 +469,7 @@ class Qwen35PipelineAPIEngine:
                 raise APIRequestError("prompt must produce at least one token")
             eos_token_ids = () if ignore_eos else EOS_TOKEN_IDS
             trace_kwargs = self._expert_trace_kwargs(expert_trace, request_id)
+            trace_kwargs.update(self._mock_prefetch_kwargs(mock_expert_prefetch))
             stream = _PipelineGenerationStream(
                 self,
                 generate,
@@ -466,6 +493,7 @@ class Qwen35PipelineAPIEngine:
         ignore_eos: bool = False,
         expert_trace: bool = False,
         request_id: str | None = None,
+        mock_expert_prefetch: MockPrefetchRun | None = None,
     ) -> PipelineGeneration:
         if isinstance(prompt, str):
             if not prompt:
@@ -480,6 +508,7 @@ class Qwen35PipelineAPIEngine:
             ignore_eos=ignore_eos,
             expert_trace=expert_trace,
             request_id=request_id,
+            mock_expert_prefetch=mock_expert_prefetch,
         )
 
     def stream_raw(
@@ -490,6 +519,7 @@ class Qwen35PipelineAPIEngine:
         ignore_eos: bool = False,
         expert_trace: bool = False,
         request_id: str | None = None,
+        mock_expert_prefetch: MockPrefetchRun | None = None,
     ) -> _PipelineGenerationStream:
         if isinstance(prompt, str):
             if not prompt:
@@ -504,6 +534,7 @@ class Qwen35PipelineAPIEngine:
             ignore_eos=ignore_eos,
             expert_trace=expert_trace,
             request_id=request_id,
+            mock_expert_prefetch=mock_expert_prefetch,
         )
 
     def complete_chat(
@@ -514,6 +545,7 @@ class Qwen35PipelineAPIEngine:
         ignore_eos: bool = False,
         expert_trace: bool = False,
         request_id: str | None = None,
+        mock_expert_prefetch: MockPrefetchRun | None = None,
     ) -> PipelineGeneration:
         wire_messages = [dict(message) for message in messages]
         if not wire_messages:
@@ -528,6 +560,7 @@ class Qwen35PipelineAPIEngine:
             ignore_eos=ignore_eos,
             expert_trace=expert_trace,
             request_id=request_id,
+            mock_expert_prefetch=mock_expert_prefetch,
         )
 
     def stream_chat(
@@ -538,6 +571,7 @@ class Qwen35PipelineAPIEngine:
         ignore_eos: bool = False,
         expert_trace: bool = False,
         request_id: str | None = None,
+        mock_expert_prefetch: MockPrefetchRun | None = None,
     ) -> _PipelineGenerationStream:
         wire_messages = [dict(message) for message in messages]
         if not wire_messages:
@@ -552,6 +586,7 @@ class Qwen35PipelineAPIEngine:
             ignore_eos=ignore_eos,
             expert_trace=expert_trace,
             request_id=request_id,
+            mock_expert_prefetch=mock_expert_prefetch,
         )
 
     def _expert_trace_kwargs(
@@ -569,6 +604,26 @@ class Qwen35PipelineAPIEngine:
         if not isinstance(request_id, str) or not request_id:
             raise RuntimeError("an expert trace request requires a server request ID")
         return {"expert_trace": True, "request_id": request_id}
+
+    def _mock_prefetch_kwargs(self, run: MockPrefetchRun | None) -> dict[str, Any]:
+        if run is None:
+            return {}
+        enabled = getattr(self.backend, "mock_expert_prefetch_enabled", False)
+        if callable(enabled):
+            enabled = enabled()
+        if not enabled:
+            raise APIRequestError("mock expert prefetch is not enabled")
+        return {"mock_expert_prefetch": run}
+
+    def _mock_metrics(self, run: MockPrefetchRun | None) -> dict[str, Any] | None:
+        if run is None or run.phase != "replay":
+            return None
+        value = getattr(self.backend, "last_mock_prefetch_metrics", None)
+        if callable(value):
+            value = value()
+        if not isinstance(value, dict) or value.get("pair_id") != run.pair_id:
+            raise RuntimeError("mock replay completed without matching metrics")
+        return dict(value)
 
     def close(self) -> None:
         # Shutdown waits for an in-flight request so worker sockets cannot be
@@ -627,6 +682,45 @@ def _chat_max_tokens(request: ChatCompletionRequest) -> int:
     return request.max_completion_tokens or request.max_tokens or 16
 
 
+def _mock_prefetch_run(
+    request: MockExpertPrefetchRequest | None,
+) -> MockPrefetchRun | None:
+    if request is None:
+        return None
+    configured = (
+        request.route_recall,
+        request.top_k,
+        request.lead_layers,
+        request.seed,
+    )
+    if request.phase == "record":
+        if any(value is not None for value in configured):
+            raise APIRequestError(
+                "record phase must not include mock prefetch hyperparameters"
+            )
+        return MockPrefetchRun("record", request.pair_id)
+    if any(value is None for value in configured[:3]):
+        raise APIRequestError(
+            "replay phase requires route_recall, top_k and lead_layers"
+        )
+    return MockPrefetchRun(
+        "replay",
+        request.pair_id,
+        MockPrefetchConfig(
+            route_recall=float(request.route_recall),
+            top_k=int(request.top_k),
+            lead_layers=int(request.lead_layers),
+            seed=0 if request.seed is None else int(request.seed),
+        ),
+    )
+
+
+def _mock_extension(result: PipelineGeneration) -> dict[str, Any]:
+    if result.mock_expert_prefetch_metrics is None:
+        return {}
+    return {"mock_expert_prefetch_metrics": result.mock_expert_prefetch_metrics}
+
+
 def _openai_usage(result: PipelineGeneration) -> dict[str, int]:
     prompt_tokens = len(result.prompt_token_ids)
     completion_tokens = len(result.completion_token_ids)
@@ -650,6 +744,9 @@ def _error_response(
     if isinstance(exc, PipelineBusyError):
         status = HTTPStatus.TOO_MANY_REQUESTS
         error_type = "server_busy"
+    elif isinstance(exc, MockPrefetchPairConflictError):
+        status = HTTPStatus.CONFLICT
+        error_type = "mock_prefetch_pair_conflict"
     elif isinstance(exc, APIRequestError):
         status = HTTPStatus(exc.status_code)
         error_type = (
@@ -749,6 +846,7 @@ def _completion_sse(
                     ],
                     "usage": _openai_usage(event.result),
                     "sglang": _token_metadata(event.result),
+                    **_mock_extension(event.result),
                 }
             )
         yield "data: [DONE]\n\n"
@@ -823,6 +921,7 @@ def _chat_completion_sse(
                     ],
                     "usage": _openai_usage(event.result),
                     "sglang": _token_metadata(event.result),
+                    **_mock_extension(event.result),
                 }
             )
         yield "data: [DONE]\n\n"
@@ -957,6 +1056,9 @@ def create_app(
                     request.max_new_tokens,
                     expert_trace=request.expert_trace,
                     request_id=request_id,
+                    mock_expert_prefetch=_mock_prefetch_run(
+                        request.mock_expert_prefetch
+                    ),
                 )
             prompt: str | Sequence[int]
             prompt = (
@@ -967,6 +1069,7 @@ def create_app(
                 request.max_new_tokens,
                 expert_trace=request.expert_trace,
                 request_id=request_id,
+                mock_expert_prefetch=_mock_prefetch_run(request.mock_expert_prefetch),
             )
 
         result = await invoke(run)
@@ -981,6 +1084,7 @@ def create_app(
                 "finish_reason": result.finish_reason,
                 **_token_metadata(result),
             },
+            **_mock_extension(result),
         }
 
     @app.post("/v1/completions")
@@ -1000,6 +1104,9 @@ def create_app(
                     ignore_eos=request.ignore_eos,
                     expert_trace=request.expert_trace,
                     request_id=request_id,
+                    mock_expert_prefetch=_mock_prefetch_run(
+                        request.mock_expert_prefetch
+                    ),
                 )
             return engine.complete_raw(
                 request.prompt,
@@ -1007,6 +1114,7 @@ def create_app(
                 ignore_eos=request.ignore_eos,
                 expert_trace=request.expert_trace,
                 request_id=request_id,
+                mock_expert_prefetch=_mock_prefetch_run(request.mock_expert_prefetch),
             )
 
         result = await invoke(run)
@@ -1043,6 +1151,7 @@ def create_app(
             ],
             "usage": _openai_usage(result),
             "sglang": _token_metadata(result),
+            **_mock_extension(result),
         }
 
     @app.post("/v1/chat/completions")
@@ -1065,6 +1174,9 @@ def create_app(
                     ignore_eos=request.ignore_eos,
                     expert_trace=request.expert_trace,
                     request_id=request_id,
+                    mock_expert_prefetch=_mock_prefetch_run(
+                        request.mock_expert_prefetch
+                    ),
                 )
             return engine.complete_chat(
                 messages,
@@ -1072,6 +1184,7 @@ def create_app(
                 ignore_eos=request.ignore_eos,
                 expert_trace=request.expert_trace,
                 request_id=request_id,
+                mock_expert_prefetch=_mock_prefetch_run(request.mock_expert_prefetch),
             )
 
         result = await invoke(run)
@@ -1108,6 +1221,7 @@ def create_app(
             ],
             "usage": _openai_usage(result),
             "sglang": _token_metadata(result),
+            **_mock_extension(result),
         }
 
     return app

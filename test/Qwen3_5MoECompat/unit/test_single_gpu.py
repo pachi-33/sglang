@@ -37,7 +37,14 @@ class _FakeRunner:
         self.embedded.append(values)
         return input_ids.to(dtype=torch.float32).view(-1, 1)
 
-    def prefill_hidden(self, hidden, *, cache, expert_trace_step=None):
+    def prefill_hidden(
+        self,
+        hidden,
+        *,
+        cache,
+        expert_trace_step=None,
+        route_capture_step=None,
+    ):
         if self.prefill_error is not None:
             if self.fail_fatally:
                 self.failed = True
@@ -50,7 +57,14 @@ class _FakeRunner:
         return hidden
 
     def decode_hidden(
-        self, hidden, *, cache, expected_prefix_len, expert_trace_step=None
+        self,
+        hidden,
+        *,
+        cache,
+        expected_prefix_len,
+        expert_trace_step=None,
+        route_capture_step=None,
+        prefetch_scheduler=None,
     ):
         self.decode_calls.append(
             (hidden.to(dtype=torch.int64).view(-1).tolist(), expected_prefix_len)
@@ -116,6 +130,51 @@ class _FakeTraceSession:
             raise type(self).finalize_error
 
 
+class _FakeRouteStep:
+    def __init__(self, recorder):
+        self.recorder = recorder
+
+    def commit(self, token):
+        self.recorder.tokens.append(token)
+
+
+class _FakeRouteRecorder:
+    def __init__(self, max_rows, device):
+        self.max_rows = max_rows
+        self.tokens = []
+
+    def begin_step(self, *, prefill):
+        return _FakeRouteStep(self)
+
+    def finish(self):
+        routes = torch.tensor([[[[rank for rank in range(8)] for _ in range(40)]]])
+        routes = routes.reshape(1, 40, 8).repeat(len(self.tokens), 1, 1).to(torch.uint8)
+        return single_gpu.RecordedRouteOracle(routes, tuple(self.tokens))
+
+
+class _FakeExpertStore:
+    def __init__(self):
+        self.clears = 0
+        self.begins = []
+        self.finishes = 0
+        self.aborts = 0
+
+    def clear_cache_after_record(self):
+        self.clears += 1
+        return self.clears
+
+    def begin_replay(self, config):
+        self.begins.append(config)
+        return self.clears
+
+    def finish_replay(self):
+        self.finishes += 1
+        return {"prediction_candidates": 1}
+
+    def abort_replay(self):
+        self.aborts += 1
+
+
 class TestSingleGPU(unittest.TestCase):
     def setUp(self):
         _FakeTraceSession.instances.clear()
@@ -174,6 +233,7 @@ class TestSingleGPU(unittest.TestCase):
         backend, constructor = self._backend(
             runner,
             capacity=123,
+            expert_cache_ratio=0.35,
             expert_cache_mib=6144,
             expert_stage_slots=8,
             expert_io_workers=2,
@@ -187,6 +247,7 @@ class TestSingleGPU(unittest.TestCase):
             self.assertTrue(kwargs["load_globals"])
             config = kwargs["expert_offload"]
             self.assertEqual(config.cache_mib, 6144)
+            self.assertEqual(config.cache_ratio, 0.35)
             self.assertEqual(config.stage_slots, 8)
             self.assertEqual(config.io_workers, 2)
             self.assertEqual(backend.cache.capacity, 123)
@@ -431,6 +492,80 @@ class TestSingleGPU(unittest.TestCase):
         finally:
             backend.close()
 
+    def test_mock_record_clears_cache_and_replay_publishes_metrics(self):
+        runner = _FakeRunner((11, 12, 11, 12))
+        runner.expert_store = _FakeExpertStore()
+        with mock.patch.object(single_gpu, "RouteOracleRecorder", _FakeRouteRecorder):
+            backend, _ = self._backend(
+                runner, capacity=8, enable_mock_expert_prefetch=True
+            )
+            try:
+                record = single_gpu.MockPrefetchRun("record", "pair-1")
+                replay = single_gpu.MockPrefetchRun(
+                    "replay",
+                    "pair-1",
+                    single_gpu.MockPrefetchConfig(0.5, 8, 2),
+                )
+                self.assertEqual(
+                    backend.generate_ids(
+                        [1],
+                        max_new_tokens=2,
+                        eos_token_ids=(),
+                        mock_expert_prefetch=record,
+                    ),
+                    [11, 12],
+                )
+                self.assertEqual(runner.expert_store.clears, 1)
+                self.assertEqual(
+                    backend.generate_ids(
+                        [1],
+                        max_new_tokens=2,
+                        eos_token_ids=(),
+                        mock_expert_prefetch=replay,
+                    ),
+                    [11, 12],
+                )
+                metrics = backend.last_mock_prefetch_metrics
+                self.assertEqual(metrics["pair_id"], "pair-1")
+                self.assertTrue(metrics["record_replay_tokens_equal"])
+                self.assertEqual(runner.expert_store.finishes, 1)
+                self.assertIsNone(backend._mock_pair)
+            finally:
+                backend.close()
+
+    def test_mock_replay_divergence_fails_backend_and_consumes_pair(self):
+        runner = _FakeRunner((11, 12, 11, 13))
+        runner.expert_store = _FakeExpertStore()
+        with mock.patch.object(single_gpu, "RouteOracleRecorder", _FakeRouteRecorder):
+            backend, _ = self._backend(
+                runner, capacity=8, enable_mock_expert_prefetch=True
+            )
+            try:
+                backend.generate_ids(
+                    [1],
+                    max_new_tokens=2,
+                    eos_token_ids=(),
+                    mock_expert_prefetch=single_gpu.MockPrefetchRun(
+                        "record", "pair-bad"
+                    ),
+                )
+                with self.assertRaisesRegex(RuntimeError, "diverged"):
+                    backend.generate_ids(
+                        [1],
+                        max_new_tokens=2,
+                        eos_token_ids=(),
+                        mock_expert_prefetch=single_gpu.MockPrefetchRun(
+                            "replay",
+                            "pair-bad",
+                            single_gpu.MockPrefetchConfig(0.5, 8, 2),
+                        ),
+                    )
+                self.assertTrue(backend.failed)
+                self.assertIsNone(backend._mock_pair)
+                self.assertEqual(runner.expert_store.aborts, 1)
+            finally:
+                backend.close()
+
     def test_validation_rejects_bad_ids_and_total_context_before_mutation(self):
         runner = _FakeRunner((1,))
         backend, _ = self._backend(runner, capacity=4)
@@ -542,6 +677,7 @@ class TestSingleGPU(unittest.TestCase):
     def test_cli_defaults_and_requested_offload_profile(self):
         defaults = single_gpu._parse_args([])
         self.assertEqual(defaults.expert_cache_mib, 7168)
+        self.assertEqual(defaults.expert_cache_ratio, 0.40)
         self.assertEqual(defaults.expert_stage_slots, 16)
         self.assertEqual(defaults.expert_io_workers, 2)
         self.assertEqual(defaults.capacity, 2048)

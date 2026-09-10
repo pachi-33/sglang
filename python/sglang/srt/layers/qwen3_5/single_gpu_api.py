@@ -26,6 +26,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model-dir", default=MODEL_DIR_DEFAULT)
     parser.add_argument("--served-model-name")
     parser.add_argument("--expert-pack-manifest", default=EXPERT_PACK_MANIFEST_DEFAULT)
+    parser.add_argument("--expert-cache-ratio", type=float, default=0.40)
     parser.add_argument("--expert-cache-mib", type=int, default=7168)
     parser.add_argument("--expert-stage-slots", type=int, default=16)
     parser.add_argument("--expert-io-workers", type=int, default=2)
@@ -35,6 +36,14 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--expert-trace-dir",
         help="server-local directory for explicitly requested expert traces",
     )
+    parser.add_argument("--enable-mock-expert-prefetch", action="store_true")
+    parser.add_argument(
+        "--expert-source", choices=("pinned-memory",), default="pinned-memory"
+    )
+    parser.add_argument(
+        "--expert-cache-policy", choices=("layer-lru",), default="layer-lru"
+    )
+    parser.add_argument("--mock-prefetch-log")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--api-key", default=os.environ.get("SGLANG_API_KEY"))
@@ -54,12 +63,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     backend = Qwen35SingleGPU(
         model_dir,
         expert_pack_manifest=args.expert_pack_manifest,
+        expert_cache_ratio=args.expert_cache_ratio,
         expert_cache_mib=args.expert_cache_mib,
         expert_stage_slots=args.expert_stage_slots,
         expert_io_workers=args.expert_io_workers,
         capacity=args.capacity,
         stats_path=args.stats_path,
         expert_trace_dir=args.expert_trace_dir,
+        enable_mock_expert_prefetch=args.enable_mock_expert_prefetch,
+        mock_prefetch_log=args.mock_prefetch_log,
     )
     engine = None
     try:

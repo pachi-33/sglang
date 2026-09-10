@@ -9,6 +9,7 @@ bypasses SGLang's scheduler and radix cache.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -24,6 +25,15 @@ from .expert_trace import (
     PHASE_PREFILL_LAST,
     ExpertTraceConfig,
     ExpertTraceSession,
+)
+from .mock_prefetch import (
+    DeterministicMockPredictionProvider,
+    MockPrefetchConfig,
+    MockPrefetchPairConflictError,
+    MockPrefetchRun,
+    MockPrefetchScheduler,
+    RecordedRouteOracle,
+    RouteOracleRecorder,
 )
 from .pipeline import (
     EOS_TOKEN_IDS,
@@ -109,12 +119,15 @@ class Qwen35SingleGPU:
         model_dir: str | Path = MODEL_DIR_DEFAULT,
         *,
         expert_pack_manifest: str | Path = EXPERT_PACK_MANIFEST_DEFAULT,
+        expert_cache_ratio: float = 0.40,
         expert_cache_mib: int = 7168,
         expert_stage_slots: int = 16,
         expert_io_workers: int = 2,
         capacity: int = 2048,
         stats_path: str | Path | None = None,
         expert_trace_dir: str | Path | None = None,
+        enable_mock_expert_prefetch: bool = False,
+        mock_prefetch_log: str | Path | None = None,
     ) -> None:
         if isinstance(capacity, bool) or not isinstance(capacity, int):
             raise TypeError("capacity must be a Python int")
@@ -127,10 +140,12 @@ class Qwen35SingleGPU:
         device = _require_single_supported_gpu()
         config = ExpertOffloadConfig(
             manifest_path=expert_pack_manifest,
+            cache_ratio=expert_cache_ratio,
             cache_mib=expert_cache_mib,
             stage_slots=expert_stage_slots,
             io_workers=expert_io_workers,
             stats_path=stats_path,
+            mock_prefetch_log=mock_prefetch_log,
         )
         runner = Qwen35StatelessRunner(
             model_dir,
@@ -150,12 +165,15 @@ class Qwen35SingleGPU:
         self.device = device
         self.expert_offload = config
         self.expert_trace = trace_config
+        self.mock_expert_prefetch_enabled = bool(enable_mock_expert_prefetch)
         self.runner = runner
         self.cache: SingleRequestCache = cache
         self._closed = False
         self._failed = False
         self._request_count = 0
         self._last_generation: dict[str, Any] | None = None
+        self._mock_pair: dict[str, Any] | None = None
+        self._last_mock_prefetch_metrics: dict[str, Any] | None = None
 
     @property
     def closed(self) -> bool:
@@ -168,6 +186,14 @@ class Qwen35SingleGPU:
     @property
     def expert_trace_enabled(self) -> bool:
         return self.expert_trace is not None
+
+    @property
+    def last_mock_prefetch_metrics(self) -> dict[str, Any] | None:
+        return (
+            None
+            if self._last_mock_prefetch_metrics is None
+            else dict(self._last_mock_prefetch_metrics)
+        )
 
     @property
     def stats(self) -> dict[str, Any]:
@@ -239,6 +265,7 @@ class Qwen35SingleGPU:
         eos_token_ids: Sequence[int] = EOS_TOKEN_IDS,
         expert_trace: bool = False,
         request_id: str | None = None,
+        mock_expert_prefetch: MockPrefetchRun | None = None,
     ) -> list[int]:
         """Generate greedily and reset the sole cache after every active request."""
         return self._generate_ids(
@@ -248,6 +275,7 @@ class Qwen35SingleGPU:
             token_callback=None,
             expert_trace=expert_trace,
             request_id=request_id,
+            mock_expert_prefetch=mock_expert_prefetch,
         )
 
     def generate_ids_stream(
@@ -259,6 +287,7 @@ class Qwen35SingleGPU:
         eos_token_ids: Sequence[int] = EOS_TOKEN_IDS,
         expert_trace: bool = False,
         request_id: str | None = None,
+        mock_expert_prefetch: MockPrefetchRun | None = None,
     ) -> list[int]:
         """Generate greedily and synchronously report every sampled token."""
         if not callable(token_callback):
@@ -270,6 +299,7 @@ class Qwen35SingleGPU:
             token_callback=token_callback,
             expert_trace=expert_trace,
             request_id=request_id,
+            mock_expert_prefetch=mock_expert_prefetch,
         )
 
     def _generate_ids(
@@ -281,6 +311,7 @@ class Qwen35SingleGPU:
         token_callback: Callable[[int], None] | None,
         expert_trace: bool,
         request_id: str | None,
+        mock_expert_prefetch: MockPrefetchRun | None,
     ) -> list[int]:
         if self._closed:
             raise RuntimeError("single-GPU backend is closed")
@@ -298,6 +329,15 @@ class Qwen35SingleGPU:
             raise ValueError(
                 "expert trace was requested but no expert_trace_dir is configured"
             )
+        if mock_expert_prefetch is not None:
+            if not isinstance(mock_expert_prefetch, MockPrefetchRun):
+                raise TypeError("mock_expert_prefetch must be MockPrefetchRun")
+            if not self.mock_expert_prefetch_enabled:
+                raise ValueError("mock expert prefetch is not enabled on this service")
+            if expert_trace:
+                raise ValueError(
+                    "expert_trace and mock expert prefetch are mutually exclusive"
+                )
 
         ids = self._validate_token_sequence(prompt_ids, "prompt_ids")
         if not ids or any(token < 0 or token >= TOKENIZER_VOCAB_SIZE for token in ids):
@@ -314,6 +354,28 @@ class Qwen35SingleGPU:
         if any(token < 0 or token >= TOKENIZER_VOCAB_SIZE for token in eos):
             raise ValueError("eos_token_ids contains an invalid token")
 
+        fingerprint = self._mock_request_fingerprint(ids, max_new_tokens, eos_values)
+        mock_phase = (
+            None if mock_expert_prefetch is None else mock_expert_prefetch.phase
+        )
+        if mock_phase == "record":
+            if self._mock_pair is not None:
+                raise MockPrefetchPairConflictError(
+                    "an unconsumed mock prefetch pair already exists"
+                )
+        elif mock_phase == "replay":
+            assert mock_expert_prefetch is not None
+            if self._mock_pair is None:
+                raise ValueError("mock prefetch pair was not recorded")
+            if self._mock_pair["pair_id"] != mock_expert_prefetch.pair_id:
+                raise MockPrefetchPairConflictError(
+                    "mock prefetch pair_id does not match recorded pair"
+                )
+            if self._mock_pair["fingerprint"] != fingerprint:
+                raise ValueError(
+                    "mock prefetch replay request differs from record request"
+                )
+
         request_started = False
         primary_error: BaseException | None = None
         generated: list[int] = []
@@ -324,7 +386,28 @@ class Qwen35SingleGPU:
         self._request_count += 1
         request_index = self._request_count
         trace_session: ExpertTraceSession | None = None
+        route_recorder: RouteOracleRecorder | None = None
+        prefetch_scheduler: MockPrefetchScheduler | None = None
+        replay_active = False
         try:
+            if mock_phase == "record":
+                route_recorder = RouteOracleRecorder(max_new_tokens, self.device)
+            elif mock_phase == "replay":
+                assert mock_expert_prefetch is not None
+                assert mock_expert_prefetch.config is not None
+                assert self._mock_pair is not None
+                oracle: RecordedRouteOracle = self._mock_pair["oracle"]
+                provider = DeterministicMockPredictionProvider(
+                    oracle,
+                    mock_expert_prefetch.config,
+                    pair_id=mock_expert_prefetch.pair_id,
+                )
+                store = self.runner.expert_store
+                if store is None:
+                    raise RuntimeError("mock prefetch requires an ExpertPack store")
+                epoch = store.begin_replay(mock_expert_prefetch.config)
+                prefetch_scheduler = MockPrefetchScheduler(provider, store, epoch)
+                replay_active = True
             request_started = True
             request_started_ns = time.perf_counter_ns()
             _reset_peak_memory_stats(self.device)
@@ -360,8 +443,23 @@ class Qwen35SingleGPU:
                 prefill_kwargs: dict[str, Any] = {"cache": self.cache}
                 if prefill_trace is not None:
                     prefill_kwargs["expert_trace_step"] = prefill_trace
+                record_step = (
+                    None
+                    if route_recorder is None
+                    else route_recorder.begin_step(prefill=True)
+                )
+                if record_step is not None:
+                    prefill_kwargs["route_capture_step"] = record_step
                 hidden = self.runner.prefill_hidden(hidden, **prefill_kwargs)
                 generated = [self._sample(hidden)]
+                if record_step is not None:
+                    record_step.commit(generated[-1])
+                if mock_phase == "replay":
+                    assert self._mock_pair is not None
+                    if generated[-1] != self._mock_pair["oracle"].sampled_token_ids[0]:
+                        raise RuntimeError(
+                            "mock replay token diverged from deterministic record at row 0"
+                        )
                 if trace_session is not None:
                     assert prefill_trace is not None
                     self._commit_trace_step(trace_session, prefill_trace, generated[-1])
@@ -392,8 +490,28 @@ class Qwen35SingleGPU:
                     }
                     if decode_trace is not None:
                         decode_kwargs["expert_trace_step"] = decode_trace
+                    record_step = (
+                        None
+                        if route_recorder is None
+                        else route_recorder.begin_step(prefill=False)
+                    )
+                    if record_step is not None:
+                        decode_kwargs["route_capture_step"] = record_step
+                    if prefetch_scheduler is not None:
+                        prefetch_scheduler.begin_decode_row(len(generated))
+                        decode_kwargs["prefetch_scheduler"] = prefetch_scheduler
                     hidden = self.runner.decode_hidden(hidden, **decode_kwargs)
                     generated.append(self._sample(hidden))
+                    if record_step is not None:
+                        record_step.commit(generated[-1])
+                    if mock_phase == "replay":
+                        assert self._mock_pair is not None
+                        expected_tokens = self._mock_pair["oracle"].sampled_token_ids
+                        if generated[-1] != expected_tokens[len(generated) - 1]:
+                            raise RuntimeError(
+                                "mock replay token diverged from deterministic record at "
+                                f"row {len(generated) - 1}"
+                            )
                     if trace_session is not None:
                         assert decode_trace is not None
                         self._commit_trace_step(
@@ -405,9 +523,53 @@ class Qwen35SingleGPU:
                     previous_token_ns = token_ns
                     if token_callback is not None:
                         token_callback(generated[-1])
+            if mock_phase == "record":
+                assert route_recorder is not None
+                assert mock_expert_prefetch is not None
+                oracle = route_recorder.finish()
+                self._mock_pair = {
+                    "pair_id": mock_expert_prefetch.pair_id,
+                    "fingerprint": fingerprint,
+                    "oracle": oracle,
+                }
+                store = self.runner.expert_store
+                if store is None:
+                    raise RuntimeError("mock prefetch requires an ExpertPack store")
+                store.clear_cache_after_record()
+            elif mock_phase == "replay":
+                assert self._mock_pair is not None
+                expected = self._mock_pair["oracle"].sampled_token_ids
+                if tuple(generated) != expected:
+                    raise RuntimeError(
+                        "mock replay tokens differ from deterministic record"
+                    )
+                store = self.runner.expert_store
+                assert store is not None
+                metrics = store.finish_replay()
+                replay_active = False
+                assert prefetch_scheduler is not None
+                metrics.update(
+                    {
+                        "pair_id": mock_expert_prefetch.pair_id,
+                        "route_recall_configured": mock_expert_prefetch.config.route_recall,
+                        "route_recall_achieved": prefetch_scheduler.provider.achieved_recall,
+                        "top_k": mock_expert_prefetch.config.top_k,
+                        "lead_layers": mock_expert_prefetch.config.lead_layers,
+                        "seed": mock_expert_prefetch.config.seed,
+                        "eligible_groups": prefetch_scheduler.provider.eligible_groups,
+                        "record_replay_tokens_equal": True,
+                    }
+                )
+                self._last_mock_prefetch_metrics = metrics
+                self._mock_pair = None
             return generated
         except BaseException as exc:
             primary_error = exc
+            if replay_active and self.runner.expert_store is not None:
+                self.runner.expert_store.abort_replay()
+            if mock_phase == "replay":
+                self._mock_pair = None
+                self._failed = True
             if bool(getattr(self.runner, "failed", False)):
                 self._failed = True
             raise
@@ -513,6 +675,25 @@ class Qwen35SingleGPU:
             },
         }
 
+    def _mock_request_fingerprint(
+        self,
+        prompt_ids: Sequence[int],
+        max_new_tokens: int,
+        eos_token_ids: Sequence[int],
+    ) -> str:
+        payload = json.dumps(
+            {
+                "model_dir": str(self.model_dir.resolve()),
+                "prompt_ids": list(prompt_ids),
+                "max_new_tokens": max_new_tokens,
+                "eos_token_ids": list(eos_token_ids),
+                "sampling": "greedy-v1",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
     def close(self) -> None:
         if self._closed:
             return
@@ -530,6 +711,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", default=MODEL_DIR_DEFAULT)
     parser.add_argument("--expert-pack-manifest", default=EXPERT_PACK_MANIFEST_DEFAULT)
+    parser.add_argument("--expert-cache-ratio", type=float, default=0.40)
     parser.add_argument("--expert-cache-mib", type=int, default=7168)
     parser.add_argument("--expert-stage-slots", type=int, default=16)
     parser.add_argument("--expert-io-workers", type=int, default=2)
@@ -573,6 +755,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     with Qwen35SingleGPU(
         args.model_dir,
         expert_pack_manifest=args.expert_pack_manifest,
+        expert_cache_ratio=args.expert_cache_ratio,
         expert_cache_mib=args.expert_cache_mib,
         expert_stage_slots=args.expert_stage_slots,
         expert_io_workers=args.expert_io_workers,

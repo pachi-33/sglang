@@ -58,6 +58,8 @@ class _FakePipeline:
         self.after_first_token_gate = None
         self.stream_finished = threading.Event()
         self.expert_trace_enabled = False
+        self.mock_expert_prefetch_enabled = False
+        self.last_mock_prefetch_metrics = None
 
     def generate_ids(self, prompt_ids, **kwargs):
         self.calls.append((list(prompt_ids), dict(kwargs)))
@@ -150,6 +152,94 @@ class TestPipelineAPI(unittest.TestCase):
         )
         self.assertEqual(tokenizer.decoded, [([31, 32], False)])
         self.assertTrue(fake.closed)
+
+    def test_mock_payload_validation_and_engine_metrics(self):
+        record_payload = pipeline_api.MockExpertPrefetchRequest(
+            phase="record", pair_id="pair"
+        )
+        record = pipeline_api._mock_prefetch_run(record_payload)
+        self.assertEqual(record.phase, "record")
+        replay_payload = pipeline_api.MockExpertPrefetchRequest(
+            phase="replay",
+            pair_id="pair",
+            route_recall=0.5,
+            top_k=8,
+            lead_layers=2,
+            seed=0,
+        )
+        replay = pipeline_api._mock_prefetch_run(replay_payload)
+        fake = _FakePipeline(([31],))
+        fake.mock_expert_prefetch_enabled = True
+        fake.last_mock_prefetch_metrics = {"pair_id": "pair", "useful": 1}
+        engine = pipeline_api.Qwen35PipelineAPIEngine(
+            fake, _FakeTokenizer(), model_id="agent-world"
+        )
+        try:
+            result = engine.complete_raw([1], 1, mock_expert_prefetch=replay)
+        finally:
+            engine.close()
+        self.assertEqual(result.mock_expert_prefetch_metrics["useful"], 1)
+        self.assertEqual(fake.calls[0][1]["mock_expert_prefetch"], replay)
+
+    def test_record_payload_rejects_hyperparameters(self):
+        payload = pipeline_api.MockExpertPrefetchRequest(
+            phase="record", pair_id="pair", top_k=8
+        )
+        with self.assertRaisesRegex(pipeline_api.APIRequestError, "record phase"):
+            pipeline_api._mock_prefetch_run(payload)
+
+    def test_mock_record_and_streaming_replay_wire_contract(self):
+        fake, _, _, app = self._fixture([31, 32], [31, 32])
+        fake.mock_expert_prefetch_enabled = True
+        fake.last_mock_prefetch_metrics = {
+            "pair_id": "pair-http",
+            "prefetch_useful": 4,
+        }
+        common = {
+            "model": "agent-world",
+            "prompt": [1, 2],
+            "max_tokens": 2,
+            "ignore_eos": True,
+        }
+        with TestClient(app) as client:
+            record = client.post(
+                "/v1/completions",
+                json={
+                    **common,
+                    "mock_expert_prefetch": {
+                        "phase": "record",
+                        "pair_id": "pair-http",
+                    },
+                },
+            )
+            replay = client.post(
+                "/v1/completions",
+                json={
+                    **common,
+                    "stream": True,
+                    "mock_expert_prefetch": {
+                        "phase": "replay",
+                        "pair_id": "pair-http",
+                        "route_recall": 0.5,
+                        "top_k": 8,
+                        "lead_layers": 2,
+                        "seed": 0,
+                    },
+                },
+            )
+        self.assertEqual(record.status_code, 200)
+        self.assertNotIn("mock_expert_prefetch_metrics", record.json())
+        payloads = self._sse_payloads(replay)
+        terminal = [
+            item
+            for item in payloads
+            if isinstance(item, dict)
+            and item.get("mock_expert_prefetch_metrics") is not None
+        ]
+        self.assertEqual(len(terminal), 1)
+        self.assertEqual(
+            terminal[0]["mock_expert_prefetch_metrics"]["prefetch_useful"], 4
+        )
 
     def test_native_expert_trace_uses_response_id_as_local_basename(self):
         fake, _, _, app = self._fixture([31])

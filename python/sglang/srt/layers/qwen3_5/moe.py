@@ -868,6 +868,7 @@ def fused_nvfp4_moe(
     capture_router: bool = False,
     expert_to_slot: torch.Tensor | None = None,
     timing_hook: Callable[[str], None] | None = None,
+    prefetch_scheduler: Any | None = None,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Router + routed W4A4 MoE + optional FP16 shared expert.
 
@@ -907,6 +908,13 @@ def fused_nvfp4_moe(
     ids, probs = route_topk(_fp16_linear(x, weights.router), top_k)
     if timing_hook is not None:
         timing_hook("router_ready")
+    if prefetch_scheduler is not None:
+        if weights.layer_id is None:
+            raise ValueError("prefetch scheduling requires the original layer ID")
+        # This hook records a compute-stream router-ready event and only
+        # enqueues H2D work on the prefetch stream.  It must return before the
+        # shared/routed tail below is submitted so those streams can overlap.
+        prefetch_scheduler.on_router_ready(weights.layer_id)
     shared = None
     if weights.shared_gate_up is not None and weights.shared_down is not None:
         shared = _fp16_swiglu(x, weights.shared_gate_up, weights.shared_down)
@@ -928,7 +936,12 @@ def fused_nvfp4_moe(
         # Leaving the context records a last-use event after both GEMMs and
         # combine have been enqueued, so no selected cache slot can be reused
         # while this layer is still consuming it.
-        with weights.expert_store.acquire(weights.layer_id, ids) as lease:
+        output_row = (
+            None if prefetch_scheduler is None else prefetch_scheduler.output_row
+        )
+        with weights.expert_store.acquire(
+            weights.layer_id, ids, output_row=output_row
+        ) as lease:
             if timing_hook is not None:
                 timing_hook("routed_expert_start")
             out = execute_experts(
