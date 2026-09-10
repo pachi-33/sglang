@@ -13,9 +13,9 @@ set -euo pipefail
 # TARGET_KV_HIT_PERCENT=0: every request has a distinct prefix; radix cache
 # remains enabled so this measures the cache-enabled miss path.
 #
-# The SGLang JSONL contains aggregate cache statistics (--cache-report),
-# client-side concurrency, and per-request details (--output-details). This
-# script also emits a structured *.summary.json with distributions and SLOs.
+# The raw SGLang JSONL keeps per-request details because ITL/TPOT distributions
+# and SLOs need them. The generated *.summary.json and terminal output contain
+# aggregate statistics only and do not print individual request records.
 
 SGLANG_ROOT="${SGLANG_ROOT:-/home/y00951466/sglang}"
 MODEL="${MODEL:-/home/weights/GLM-5.2-w4a8}"
@@ -33,7 +33,6 @@ PAGE_SIZE="${PAGE_SIZE:-auto}"
 # TARGET_KV_HIT_PERCENT > PREFIX_PERCENT > CACHE_MODE > default 90.
 TARGET_KV_HIT_PERCENT="${TARGET_KV_HIT_PERCENT:-${PREFIX_PERCENT:-${CACHE_MODE:-0}}}"
 SEED="${SEED:-42}"
-OUTPUT_DETAILS="${OUTPUT_DETAILS:-1}"
 RESULT_DIR="${RESULT_DIR:-./benchmark_results/cache}"
 
 usage() {
@@ -48,14 +47,12 @@ Options:
   --max-concurrency N           Client-side maximum in-flight requests.
   --request-rate RATE           Requests/s, or inf for burst traffic.
   --page-size N|auto            KV page size for prefix alignment (default auto).
-  --output-details              Save per-request metrics (default).
-  --no-output-details           Disable per-request metrics to reduce file size.
   --result-dir DIR              Directory for JSONL and summary files.
   -h, --help                    Show this help.
 
 The same settings can be supplied as environment variables: INPUT_LEN,
 OUTPUT_LEN, TARGET_KV_HIT_PERCENT, NUM_REQUESTS, MAX_CONCURRENCY, REQUEST_RATE,
-PAGE_SIZE, OUTPUT_DETAILS, and RESULT_DIR. MODEL, HOST, PORT, and SGLANG_ROOT
+PAGE_SIZE, and RESULT_DIR. MODEL, HOST, PORT, and SGLANG_ROOT
 remain configurable through environment variables.
 EOF
 }
@@ -104,14 +101,6 @@ while (( $# > 0 )); do
             require_value "$@"
             PAGE_SIZE="$2"
             shift 2
-            ;;
-        --output-details)
-            OUTPUT_DETAILS=1
-            shift
-            ;;
-        --no-output-details)
-            OUTPUT_DETAILS=0
-            shift
             ;;
         --result-dir)
             require_value "$@"
@@ -211,7 +200,7 @@ echo "  prefix/question:     ${PREFIX_LEN}/${QUESTION_LEN} target tokens"
 echo "  groups x prompts:    ${NUM_GROUPS} x ${PROMPTS_PER_GROUP}"
 echo "  request rate:        ${REQUEST_RATE} req/s"
 echo "  max concurrency:     ${MAX_CONCURRENCY}"
-echo "  per-request details: ${OUTPUT_DETAILS}"
+echo "  per-request details: collected in raw JSONL; omitted from summary output"
 echo "  result:              ${OUTPUT_FILE}"
 echo "  summary:             ${SUMMARY_FILE}"
 echo "  console log:         ${CONSOLE_LOG}"
@@ -246,16 +235,13 @@ BENCH_ARGS=(
     --tag "target_kv_hit_${TARGET_KV_HIT_PERCENT}pct"
     --seed "${SEED}"
     --output-file "${OUTPUT_FILE}"
+    --output-details
 )
 
 if (( FLUSH_AFTER_WARMUP )); then
     # Keep radix caching enabled, but remove the warmup entry before measuring
     # the unique-prefix workload. This measures the cache-enabled miss path.
     BENCH_ARGS+=(--flush-cache)
-fi
-
-if [[ "${OUTPUT_DETAILS}" == "1" ]]; then
-    BENCH_ARGS+=(--output-details)
 fi
 
 "${BENCH_ARGS[@]}" 2>&1 | tee "${CONSOLE_LOG}"
@@ -490,8 +476,7 @@ jq -s \
             attention_backend: $run.server_info.attention_backend,
             prefill_attention_backend: $run.server_info.prefill_attention_backend,
             decode_attention_backend: $run.server_info.decode_attention_backend
-        },
-        per_request: $requests
+        }
     }' "${OUTPUT_FILE}" > "${SUMMARY_FILE}"
 
 if [[ "$(jq -r '.kv_cache.actual_aggregate_hit_rate_pct' "${SUMMARY_FILE}")" == "null" ]]; then
