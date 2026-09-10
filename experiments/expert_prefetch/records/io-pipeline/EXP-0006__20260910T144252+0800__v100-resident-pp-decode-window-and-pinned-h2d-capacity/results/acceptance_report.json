@@ -1,0 +1,17 @@
+{
+  "checks": {
+    "adjacent_windows_5632": true,
+    "decode_rows_5888_complete_and_monotonic": true,
+    "exp0001_first_256_tokens_equal": true,
+    "gpu_processes_empty_before_after_pp_and_after_h2d": true,
+    "h2d_7_candidates_x_200_samples": true,
+    "ledger_consistent": true,
+    "no_partial_files": true,
+    "offload_relevant_windows_5376": true,
+    "payload_bytes_exact": true,
+    "resident_experts_and_no_store": true,
+    "timed_control_tokens_equal": true
+  },
+  "format": "SGLANG-QWEN35-RESIDENT-DECODE-EXPERIMENT-ACCEPTANCE-v1",
+  "status": "passed"
+}

@@ -1,0 +1,102 @@
+{
+  "component_copies_per_expert": 8,
+  "format": "SGLANG-QWEN35-PINNED-H2D-BENCHMARK-v1",
+  "gpu": {
+    "capability": [
+      7,
+      0
+    ],
+    "name": "Tesla V100-SXM2-16GB",
+    "uuid": "GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96"
+  },
+  "manifest_path": "/home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4-expertpack-v1/manifest.json",
+  "pack_path": "/home/yaozhenyang/huggingface/Qwen-AgentWorld-35B-A3B-NVFP4-expertpack-v1/experts.pack",
+  "payload_size": 1769488,
+  "raw_samples": {
+    "file": "/home/yaozhenyang/dev/sglang-v100/experiments/expert_prefetch/records/io-pipeline/EXP-0006__20260910T144252+0800__v100-resident-pp-decode-window-and-pinned-h2d-capacity/artifacts/h2d_samples.npz",
+    "sha256": "f9cb81fe2f499607c8d316e3535ba2fd10f88bb1380be36e6c604a99124486ae",
+    "size": 6838
+  },
+  "rows": [
+    {
+      "candidate_count": 1,
+      "effective_gib_per_second_at_p50": 2.979828089141622,
+      "mean_ms": 0.555058721601963,
+      "p50_ms": 0.5530399978160858,
+      "p90_ms": 0.5635712206363678,
+      "p95_ms": 0.5656239777803421,
+      "p99_ms": 0.5713382244110108,
+      "samples": 200,
+      "transfer_bytes": 1769488
+    },
+    {
+      "candidate_count": 2,
+      "effective_gib_per_second_at_p50": 2.994991602118617,
+      "mean_ms": 1.1014779216051103,
+      "p50_ms": 1.1004799604415894,
+      "p90_ms": 1.1026368498802186,
+      "p95_ms": 1.1115567982196808,
+      "p99_ms": 1.1154092347621918,
+      "samples": 200,
+      "transfer_bytes": 3538976
+    },
+    {
+      "candidate_count": 4,
+      "effective_gib_per_second_at_p50": 2.998042745144815,
+      "mean_ms": 2.1994793677330016,
+      "p50_ms": 2.1987199783325195,
+      "p90_ms": 2.1998432636260987,
+      "p95_ms": 2.2010097026824953,
+      "p99_ms": 2.2165455126762392,
+      "samples": 200,
+      "transfer_bytes": 7077952
+    },
+    {
+      "candidate_count": 8,
+      "effective_gib_per_second_at_p50": 2.99926494373934,
+      "mean_ms": 4.396237115859986,
+      "p50_ms": 4.395648002624512,
+      "p90_ms": 4.3969597816467285,
+      "p95_ms": 4.397968077659607,
+      "p99_ms": 4.408651480674743,
+      "samples": 200,
+      "transfer_bytes": 14155904
+    },
+    {
+      "candidate_count": 16,
+      "effective_gib_per_second_at_p50": 3.0003025451338092,
+      "mean_ms": 8.788947830200195,
+      "p50_ms": 8.78825569152832,
+      "p90_ms": 8.790179538726807,
+      "p95_ms": 8.797104167938233,
+      "p99_ms": 8.801984157562256,
+      "samples": 200,
+      "transfer_bytes": 28311808
+    },
+    {
+      "candidate_count": 24,
+      "effective_gib_per_second_at_p50": 3.0005573901695732,
+      "mean_ms": 13.182514896392822,
+      "p50_ms": 13.18126392364502,
+      "p90_ms": 13.185046672821045,
+      "p95_ms": 13.192707395553589,
+      "p99_ms": 13.20227912902832,
+      "samples": 200,
+      "transfer_bytes": 42467712
+    },
+    {
+      "candidate_count": 32,
+      "effective_gib_per_second_at_p50": 3.000496442667329,
+      "mean_ms": 17.577211694717406,
+      "p50_ms": 17.5753755569458,
+      "p90_ms": 17.584840965270995,
+      "p95_ms": 17.58918981552124,
+      "p99_ms": 17.598466033935548,
+      "samples": 200,
+      "transfer_bytes": 56623616
+    }
+  ],
+  "samples_per_candidate": 200,
+  "scope": "pinned CPU to V100 only; excludes SSD, checksum, and allocation",
+  "warmup_per_candidate": 20
+}
