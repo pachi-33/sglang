@@ -1859,12 +1859,44 @@ class Scheduler(
     @DynamicGradMode()
     def event_loop_normal(self):
         """A normal scheduler loop."""
-        import mindspore
-        from mindspore.profiler import ProfilerLevel, ProfilerActivity, AicoreMetrics, HostSystem
+        # 初始化打点
+        import os
+        print("================= [DEBUG] 决定是否打印profiling=================================")
+        enable_profiling: bool = os.getenv("ENABLE_PROFILING", "0") == "1"
+        prof_bs: int = os.getenv("PROFILING_BS", 2)
+        profiling_stage: str = os.getenv("PROFILING_STAGE", "decode")
+        prof_step: int = os.getenv("PROFILING_step", 8)
+        if enable_profiling:
+            print("[DEBUG] 我们正在打印profiling")
+            prof_cnt = 0
+            import torch_npu
+            experimental_config = torch_npu.profiler._ExperimentalConfig(
+                aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
+                profiler_level=torch_npu.profiler.ProfilerLevel.Level2,
+                l2_cache=False,
+                data_simplification=False,
+            )
+            dp_rank = self.ps.dp_rank if self.ps.dp_rank is not None else 0
+            worker_name = f"tp{self.ps.tp_rank}_pp{self.ps.pp_rank}_dp{dp_rank}_attp{self.ps.attn_tp_rank}_attcp{self.ps.attn_cp_rank}"
+            profiling_path = "/home/y00951466/sglang/profilling/"
+            os.makedirs(profiling_path, exist_ok=True)
+            prof = torch_npu.profiler.profile(
+                activities=[
+                    torch_npu.profiler.ProfilerActivity.CPU,
+                    torch_npu.profiler.ProfilerActivity.NPU,
+                ],
+                on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(
+                    profiling_path, worker_name=worker_name
+                ),
+                schedule=torch_npu.profiler.schedule(wait=1, warmup=1, active=10, repeat=1, skip_first=1),
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=True,
+                with_flops=False,
+                with_modules=False,
+                experimental_config=experimental_config)
 
         while True:
-            # 初始化打点
-
             if self.gracefully_exit:
                 break
 
@@ -1885,11 +1917,26 @@ class Scheduler(
             # Launch the current batch
             if batch:
                 # 开始打点
+                if enable_profiling:
+                    is_prof_stage = False
+                    if (profiling_stage == "decode" and batch.forward_mode.is_decode()) or (profiling_stage == "prefill" and batch.forward_mode.is_extend()):
+                        is_prof_stage = True
+                    
+                    if len(batch.reqs) >= prof_bs and prof_cnt == 0 and is_prof_stage:
+                        prof.start()
+                        prof_cnt += 1
+                    if prof_cnt > 0 and is_prof_stage:
+                        prof_cnt += 1
+                    if prof_cnt == prof_step and is_prof_stage:
+                        torch.npu.synchronize()
+                        prof.stop()
 
                 result = self.run_batch(batch)
                 self.process_batch_result(batch, result)
 
                 # 打点结束
+                if enable_profiling and prof_cnt > 0 and prof_cnt < prof_step and is_prof_stage:
+                    prof.step()
             else:
                 # When the server is idle, do self-check and re-init some states.
                 self._sched_idled = True
@@ -1911,6 +1958,44 @@ class Scheduler(
             # Process the results of the last batch
             tmp_batch, tmp_result = self.result_queue.popleft()
             self.process_batch_result(tmp_batch, tmp_result)
+
+        # 初始化打点
+        import os
+        print("================= [DEBUG] 决定是否打印profiling=================================")
+        enable_profiling: bool = os.getenv("ENABLE_PROFILING", "0") == "1"
+        prof_bs: int = os.getenv("PROFILING_BS", 2)
+        profiling_stage: str = os.getenv("PROFILING_STAGE", "decode")
+        prof_step: int = os.getenv("PROFILING_step", 8)
+        if enable_profiling:
+            print("[DEBUG] 我们正在打印profiling")
+            prof_cnt = 0
+            import torch_npu
+            experimental_config = torch_npu.profiler._ExperimentalConfig(
+                aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
+                profiler_level=torch_npu.profiler.ProfilerLevel.Level2,
+                l2_cache=False,
+                data_simplification=False,
+            )
+            dp_rank = self.ps.dp_rank if self.ps.dp_rank is not None else 0
+            worker_name = f"tp{self.ps.tp_rank}_pp{self.ps.pp_rank}_dp{dp_rank}_attp{self.ps.attn_tp_rank}_attcp{self.ps.attn_cp_rank}"
+            profiling_path = "/home/y00951466/sglang/profilling/"
+            os.makedirs(profiling_path, exist_ok=True)
+            prof = torch_npu.profiler.profile(
+                activities=[
+                    torch_npu.profiler.ProfilerActivity.CPU,
+                    torch_npu.profiler.ProfilerActivity.NPU,
+                ],
+                on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(
+                    profiling_path, worker_name=worker_name
+                ),
+                schedule=torch_npu.profiler.schedule(wait=1, warmup=1, active=10, repeat=1, skip_first=1),
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=True,
+                with_flops=False,
+                with_modules=False,
+                experimental_config=experimental_config)
+
 
         while True:
             if self.gracefully_exit:
@@ -1948,10 +2033,29 @@ class Scheduler(
 
             # Launch the current batch
             if batch:
+                # 开始打点
+                if enable_profiling:
+                    is_prof_stage = False
+                    if (profiling_stage == "decode" and batch.forward_mode.is_decode()) or (profiling_stage == "prefill" and batch.forward_mode.is_extend()):
+                        is_prof_stage = True
+                    
+                    if len(batch.reqs) >= prof_bs and prof_cnt == 0 and is_prof_stage:
+                        prof.start()
+                        prof_cnt += 1
+                    if prof_cnt > 0 and is_prof_stage:
+                        prof_cnt += 1
+                    if prof_cnt == prof_step and is_prof_stage:
+                        torch.npu.synchronize()
+                        prof.stop()
+
                 batch_result = self.run_batch(batch)
                 # Fence result processing behind this forward's shared reads.
                 self._apply_war_barrier()
                 self.result_queue.append((batch.copy(), batch_result))
+                
+                # 打点结束
+                if enable_profiling and prof_cnt > 0 and prof_cnt < prof_step and is_prof_stage:
+                    prof.step()
             else:
                 batch_result = None
                 self._sched_idled = True
