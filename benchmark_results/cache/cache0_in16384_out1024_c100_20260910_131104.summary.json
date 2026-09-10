@@ -1,0 +1,161 @@
+{
+  "files": {
+    "raw_result_jsonl": "./benchmark_results/cache/cache0_in16384_out1024_c100_20260910_131104.jsonl",
+    "console_log": "./benchmark_results/cache/cache0_in16384_out1024_c100_20260910_131104.console.log"
+  },
+  "test_configuration": {
+    "tag": "target_kv_hit_0pct",
+    "backend": "sglang",
+    "dataset_name": "generated-shared-prefix",
+    "target_input_tokens": 16384,
+    "target_output_tokens": 1024,
+    "target_kv_cache_hit_rate_pct": 0,
+    "request_rate_req_s": 1.7976931348623157e+308,
+    "configured_max_concurrency": 100
+  },
+  "completion": {
+    "requested_requests": 128,
+    "completed_requests": 128,
+    "failed_requests": 0,
+    "errors": []
+  },
+  "actual_workload": {
+    "duration_s": 9.436744830018142,
+    "total_input_tokens": 2183456,
+    "total_output_tokens": 128,
+    "total_output_tokens_retokenized": 128,
+    "input_tokens_per_request": {
+      "count": 128,
+      "min": 16967,
+      "mean": 17058.25,
+      "p50": 17058,
+      "p90": 17103.3,
+      "p95": 17123.65,
+      "p99": 17138.92,
+      "max": 17160
+    },
+    "output_tokens_per_request": {
+      "count": 128,
+      "min": 1,
+      "mean": 1,
+      "p50": 1,
+      "p90": 1,
+      "p95": 1,
+      "p99": 1,
+      "max": 1
+    }
+  },
+  "kv_cache": {
+    "target_hit_rate_pct": 0,
+    "actual_aggregate_hit_rate_pct": 0,
+    "target_error_percentage_points": 0,
+    "total_prompt_tokens": 2183456,
+    "total_cached_tokens": 0,
+    "device_cached_tokens": null,
+    "host_cached_tokens": null,
+    "storage_cached_tokens": null,
+    "storage_backend": null,
+    "per_request_hit_rate_pct": {
+      "count": 128,
+      "min": 0,
+      "mean": 0,
+      "p50": 0,
+      "p90": 0,
+      "p95": 0,
+      "p99": 0,
+      "max": 0
+    }
+  },
+  "concurrency": {
+    "configured_client_max": 100,
+    "actual_average_inflight_requests": 93.91050692087492,
+    "approximate_peak_1s_bucket_requests": 113,
+    "server_configured_max_running_requests": 64,
+    "effective_max_running_requests_per_dp": 4
+  },
+  "throughput": {
+    "request_req_s": 13.563999271532058,
+    "input_token_s": 231378.09057361173,
+    "output_token_s": 13.563999271532058,
+    "total_token_s": 231391.65457288327,
+    "peak_output_token_s": 100
+  },
+  "latency_ms": {
+    "e2e": {
+      "mean": 6923.51164585898,
+      "median": 8805.596854988835,
+      "std": 2991.2640943520933,
+      "p90": 8808.098672991036,
+      "p95": 8808.44264551124,
+      "p99": 8809.330094182224
+    },
+    "ttft": {
+      "mean": 6923.502034061357,
+      "median": 8805.588284987607,
+      "std": 2991.2641610188684,
+      "p90": 8808.089856998413,
+      "p95": 8808.433857014461,
+      "p99": 8809.321515495249
+    },
+    "tpot": {
+      "mean": 0,
+      "median": 0,
+      "std": 0,
+      "p90": 0,
+      "p95": 0,
+      "p99": 0
+    },
+    "itl": {
+      "mean": 0,
+      "median": 0,
+      "std": 0,
+      "p90": 0,
+      "p95": 0,
+      "p99": 0,
+      "max": null
+    }
+  },
+  "tpot_slo": {
+    "limit_20_ms": {
+      "threshold_ms": 20,
+      "eligible_requests": 0,
+      "passed_requests": 0,
+      "pass_rate_pct": null,
+      "request_goodput_req_s": 0
+    },
+    "limit_50_ms": {
+      "threshold_ms": 50,
+      "eligible_requests": 0,
+      "passed_requests": 0,
+      "pass_rate_pct": null,
+      "request_goodput_req_s": 0
+    }
+  },
+  "server": {
+    "version": "0.5.20.dev336+gb5c9b68f0",
+    "model_path": "/home/weights/GLM-5.2-w4a8",
+    "device": "npu",
+    "dtype": "auto",
+    "quantization": "modelslim",
+    "kv_cache_dtype": "bf16",
+    "context_length": null,
+    "max_total_num_tokens": 14592,
+    "max_req_input_len": 14586,
+    "page_size": 128,
+    "mem_fraction_static": 0.75,
+    "memory_usage": null,
+    "tp_size": 16,
+    "pp_size": 1,
+    "dp_size": 16,
+    "ep_size": 16,
+    "enable_dp_attention": true,
+    "disable_radix_cache": false,
+    "radix_eviction_policy": "lru",
+    "chunked_prefill_size": 4096,
+    "max_prefill_tokens": 1024000,
+    "schedule_policy": "fcfs",
+    "attention_backend": "ascend",
+    "prefill_attention_backend": "ascend",
+    "decode_attention_backend": "ascend"
+  }
+}
