@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import torch
 import triton
@@ -867,6 +867,7 @@ def fused_nvfp4_moe(
     *,
     capture_router: bool = False,
     expert_to_slot: torch.Tensor | None = None,
+    timing_hook: Callable[[str], None] | None = None,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Router + routed W4A4 MoE + optional FP16 shared expert.
 
@@ -901,7 +902,11 @@ def fused_nvfp4_moe(
         or residual.device != x.device
     ):
         raise ValueError("residual must be contiguous FP16 [T,H] on x.device")
+    if timing_hook is not None:
+        timing_hook("router_start")
     ids, probs = route_topk(_fp16_linear(x, weights.router), top_k)
+    if timing_hook is not None:
+        timing_hook("router_ready")
     shared = None
     if weights.shared_gate_up is not None and weights.shared_down is not None:
         shared = _fp16_swiglu(x, weights.shared_gate_up, weights.shared_down)
@@ -910,6 +915,8 @@ def fused_nvfp4_moe(
                 shared, _fp16_linear(x, weights.shared_gate)
             )
     if not offloaded and getattr(weights.gate_up, "kind", None) == "fp16":
+        if timing_hook is not None:
+            timing_hook("routed_expert_start")
         out = execute_fp16_experts(x, weights.gate_up, weights.down, ids, probs)
         if shared is not None:
             out = _fp16_add(out, shared)
@@ -922,6 +929,8 @@ def fused_nvfp4_moe(
         # combine have been enqueued, so no selected cache slot can be reused
         # while this layer is still consuming it.
         with weights.expert_store.acquire(weights.layer_id, ids) as lease:
+            if timing_hook is not None:
+                timing_hook("routed_expert_start")
             out = execute_experts(
                 x,
                 lease.gate_up,
@@ -933,6 +942,8 @@ def fused_nvfp4_moe(
                 residual=residual,
             )
     else:
+        if timing_hook is not None:
+            timing_hook("routed_expert_start")
         out = execute_experts(
             x,
             weights.gate_up,

@@ -11,6 +11,7 @@ import torch
 
 from .attention import causal_gqa, causal_gqa_decode
 from .checkpoint import Qwen35Checkpoint
+from .decode_timing import DecodeTimingCapture
 from .dense import fp16_embedding, linear_fp16
 from .expert_pack.store import ExpertOffloadConfig, ExpertPackStore
 from .expert_trace import ExpertTraceStep
@@ -507,6 +508,7 @@ class Qwen35StatelessRunner:
         *,
         router_capture: RouterCapture | None = None,
         expert_trace_step: ExpertTraceStep | None = None,
+        decode_timing: DecodeTimingCapture | None = None,
     ) -> torch.Tensor:
         w = layer.weights
         offloaded = self.expert_store is not None and 1 <= layer.layer_id <= 38
@@ -525,6 +527,11 @@ class Qwen35StatelessRunner:
             residual=hidden,
             capture_router=(
                 router_capture is not None or expert_trace_step is not None
+            ),
+            timing_hook=(
+                None
+                if decode_timing is None
+                else lambda boundary: decode_timing.record(layer.layer_id, boundary)
             ),
         )
         if router_capture is None and expert_trace_step is None:
@@ -547,6 +554,7 @@ class Qwen35StatelessRunner:
         *,
         router_capture: RouterCapture | None = None,
         expert_trace_step: ExpertTraceStep | None = None,
+        decode_timing: DecodeTimingCapture | None = None,
     ) -> torch.Tensor:
         hidden, post_norm = residual_add_gemma_rms_norm(
             hidden, projected, layer.weights["post_attention_layernorm.weight"]
@@ -557,6 +565,7 @@ class Qwen35StatelessRunner:
             layer,
             router_capture=router_capture,
             expert_trace_step=expert_trace_step,
+            decode_timing=decode_timing,
         )
 
     def prefill_hidden(
@@ -621,6 +630,7 @@ class Qwen35StatelessRunner:
         expected_prefix_len: int,
         router_capture: RouterCapture | None = None,
         expert_trace_step: ExpertTraceStep | None = None,
+        decode_timing: DecodeTimingCapture | None = None,
     ) -> torch.Tensor:
         """Advance an existing single-sequence cache by one token."""
         _require_cuda_matrix(hidden, "hidden_states")
@@ -645,7 +655,15 @@ class Qwen35StatelessRunner:
         prefix_len = cache.consumed_len
         position = torch.tensor([prefix_len], device=self.device, dtype=torch.int32)
         try:
+            if decode_timing is not None:
+                if decode_timing.layer_ids != self.layer_ids:
+                    raise ValueError(
+                        "decode timing layer IDs must match the runner layer slice"
+                    )
+                decode_timing.begin_step()
             for layer in self.layers:
+                if decode_timing is not None:
+                    decode_timing.record(layer.layer_id, "layer_start")
                 layer_cache = cache.layers[layer.layer_id]
                 if layer.is_gdn:
                     if not isinstance(layer_cache, GDNLayerCache):
@@ -663,9 +681,16 @@ class Qwen35StatelessRunner:
                     layer,
                     router_capture=router_capture,
                     expert_trace_step=expert_trace_step,
+                    decode_timing=decode_timing,
                 )
+                if decode_timing is not None:
+                    decode_timing.record(layer.layer_id, "layer_end")
             torch.cuda.synchronize(self.device)
+            if decode_timing is not None:
+                decode_timing.finish_step()
         except Exception as error:
+            if decode_timing is not None:
+                decode_timing.abort_step()
             cache.poisoned = True
             self._fail_offload(error)
             raise

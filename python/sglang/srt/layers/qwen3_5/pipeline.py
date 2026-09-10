@@ -31,6 +31,15 @@ EOS_TOKEN_IDS = (248046, 248044)
 PROTOCOL_VERSION = 1
 ROUTER_TOP_K = 8
 ROUTER_CAPTURE_KEY = "router_top8"
+DECODE_TIMING_KEY = "decode_timing"
+DECODE_TIMING_FORMAT = "SGLANG-QWEN35-DECODE-TIMING-v1"
+DECODE_TIMING_BOUNDARIES = (
+    "layer_start",
+    "router_start",
+    "router_ready",
+    "routed_expert_start",
+    "layer_end",
+)
 NUM_HIDDEN_LAYERS = 40
 DEFAULT_SPLIT_LAYER = 17
 DEFAULT_FRONT_UUID = SM89_UUID
@@ -60,6 +69,7 @@ class PipelineWorkerError(RuntimeError):
 
 
 RouterWireCapture = dict[int, tuple[tuple[int, ...], tuple[float, ...]]]
+DecodeTimingRows = list[dict[str, float | int]]
 
 
 def _require_exact_int(value: Any, label: str) -> int:
@@ -185,6 +195,51 @@ def _router_capture_summary(
         "max_prob_abs": maximum_probability_error,
         "layers": layers,
     }
+
+
+def _parse_decode_timing(
+    header: dict[str, Any], expected_layer_ids: Sequence[int]
+) -> DecodeTimingRows:
+    raw = header.get(DECODE_TIMING_KEY)
+    if not isinstance(raw, dict) or set(raw) != {
+        "format",
+        "layer_ids",
+        "boundaries",
+        "elapsed_ms",
+    }:
+        raise PipelineProtocolError("worker returned malformed decode timing")
+    wanted = list(expected_layer_ids)
+    if raw["format"] != DECODE_TIMING_FORMAT:
+        raise PipelineProtocolError("worker returned unsupported decode timing format")
+    if raw["layer_ids"] != wanted:
+        raise PipelineProtocolError("worker decode timing has invalid layer IDs")
+    if raw["boundaries"] != list(DECODE_TIMING_BOUNDARIES):
+        raise PipelineProtocolError("worker decode timing has invalid boundaries")
+    elapsed_ms = raw["elapsed_ms"]
+    if not isinstance(elapsed_ms, list) or len(elapsed_ms) != len(wanted):
+        raise PipelineProtocolError("worker decode timing has invalid layer shape")
+    parsed: DecodeTimingRows = []
+    for layer_id, values in zip(wanted, elapsed_ms):
+        if not isinstance(values, list) or len(values) != len(DECODE_TIMING_BOUNDARIES):
+            raise PipelineProtocolError("worker decode timing has invalid event shape")
+        row: dict[str, float | int] = {"layer_id": layer_id}
+        previous = -1.0
+        for boundary, value in zip(DECODE_TIMING_BOUNDARIES, values):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0.0
+                or value < previous
+            ):
+                raise PipelineProtocolError(
+                    "worker decode timing contains invalid event offsets"
+                )
+            parsed_value = float(value)
+            row[f"{boundary}_ms"] = parsed_value
+            previous = parsed_value
+        parsed.append(row)
+    return parsed
 
 
 def _recv_exact(sock: socket.socket, size: int) -> bytes:
@@ -494,6 +549,7 @@ class Qwen35Pipeline:
         self._epoch = 0
         self._closed = False
         self.last_validation: list[dict[str, Any]] = []
+        self.last_decode_timing: list[dict[str, Any]] = []
         self.front = _WorkerClient(
             "front",
             resolved_front_uuid,
@@ -595,6 +651,21 @@ class Qwen35Pipeline:
         if not has_capture:
             raise PipelineProtocolError("worker omitted requested router capture")
         return _parse_router_capture(response, expected_layer_ids)
+
+    @staticmethod
+    def _expect_decode_timing(
+        response: dict[str, Any], expected_layer_ids: Sequence[int], *, enabled: bool
+    ) -> DecodeTimingRows:
+        has_timing = DECODE_TIMING_KEY in response
+        if not enabled:
+            if has_timing:
+                raise PipelineProtocolError(
+                    "worker returned decode timing when it was not requested"
+                )
+            return []
+        if not has_timing:
+            raise PipelineProtocolError("worker omitted requested decode timing")
+        return _parse_decode_timing(response, expected_layer_ids)
 
     @staticmethod
     def _check_progress(
@@ -803,6 +874,7 @@ class Qwen35Pipeline:
         max_new_tokens: int,
         eos_token_ids: Sequence[int] = EOS_TOKEN_IDS,
         validate_stateless: bool = False,
+        decode_timing_role: str | None = None,
     ) -> list[int]:
         """Generate greedily, resetting the sole request slot on every exit."""
         if self._closed:
@@ -813,6 +885,8 @@ class Qwen35Pipeline:
             raise ValueError("max_new_tokens must be nonnegative")
         if not isinstance(validate_stateless, bool):
             raise TypeError("validate_stateless must be bool")
+        if decode_timing_role not in (None, "front", "back"):
+            raise ValueError("decode_timing_role must be None, front, or back")
         if any(
             isinstance(token, bool) or not isinstance(token, int)
             for token in prompt_ids
@@ -828,6 +902,8 @@ class Qwen35Pipeline:
         # Keep that total-context limit distinct from the R-1 decode count.
         if len(ids) + max_new_tokens > self.capacity:
             raise ValueError("prompt plus generated tokens exceeds cache capacity")
+        self.last_validation = []
+        self.last_decode_timing = []
         if max_new_tokens == 0:
             return []
         if any(
@@ -840,7 +916,6 @@ class Qwen35Pipeline:
             raise ValueError("eos_token_ids contains an invalid token")
 
         self._epoch += 1
-        self.last_validation = []
         epoch = self._epoch
         reset_needed = False
         primary_error: BaseException | None = None
@@ -918,12 +993,18 @@ class Qwen35Pipeline:
                         "shape": [1],
                         "dtype": "int32",
                         "capture_router": validate_stateless,
+                        "capture_decode_timing": decode_timing_role == "front",
                     },
                     _int32_payload([generated[-1]]),
                 )
                 self._expect_hidden(front_header, front_payload, 1)
                 cached_front_routes = self._expect_router_capture(
                     front_header, self.front_layer_ids, enabled=validate_stateless
+                )
+                front_timing = self._expect_decode_timing(
+                    front_header,
+                    self.front_layer_ids,
+                    enabled=decode_timing_role == "front",
                 )
                 back_header, back_payload = self.back.request(
                     {
@@ -935,6 +1016,7 @@ class Qwen35Pipeline:
                         "shape": [1, 2048],
                         "dtype": "float16",
                         "capture_router": validate_stateless,
+                        "capture_decode_timing": decode_timing_role == "back",
                     },
                     front_payload,
                 )
@@ -942,7 +1024,25 @@ class Qwen35Pipeline:
                 cached_back_routes = self._expect_router_capture(
                     back_header, self.back_layer_ids, enabled=validate_stateless
                 )
+                back_timing = self._expect_decode_timing(
+                    back_header,
+                    self.back_layer_ids,
+                    enabled=decode_timing_role == "back",
+                )
                 self._check_progress(front_header, back_header, prefix_len + 1)
+                if decode_timing_role is not None:
+                    self.last_decode_timing.append(
+                        {
+                            "step_id": step_id,
+                            "prefix_len": prefix_len,
+                            "role": decode_timing_role,
+                            "layers": (
+                                front_timing
+                                if decode_timing_role == "front"
+                                else back_timing
+                            ),
+                        }
+                    )
                 token, logits = self._sample(
                     last_hidden,
                     epoch,
@@ -1009,6 +1109,13 @@ def _capture_router_requested(header: dict[str, Any]) -> bool:
     return capture
 
 
+def _decode_timing_requested(header: dict[str, Any]) -> bool:
+    capture = header.get("capture_decode_timing", False)
+    if not isinstance(capture, bool):
+        raise PipelineProtocolError("capture_decode_timing must be bool")
+    return capture
+
+
 def _router_capture_header(
     torch_module, capture, expected_layer_ids: Sequence[int]
 ) -> dict[str, Any]:
@@ -1069,6 +1176,7 @@ def _worker_main(
     # Imports happen only after CUDA_VISIBLE_DEVICES was fixed by Popen.
     import torch
 
+    from .decode_timing import DecodeTimingCapture
     from .runner import Qwen35StatelessRunner
 
     if role not in ("front", "back"):
@@ -1106,6 +1214,8 @@ def _worker_main(
             "layer_start": layer_start,
             "layer_end": layer_end,
             "capacity": capacity,
+            "expert_offload_enabled": runner.expert_store is not None,
+            "routed_experts_resident": runner.expert_store is None,
             **_memory_header(torch),
         },
     )
@@ -1114,6 +1224,7 @@ def _worker_main(
     epoch: int | None = None
     highest_epoch = 0
     last_step = -1
+    decode_timing_capture: DecodeTimingCapture | None = None
 
     def progress(kind: str, **extra: Any) -> dict[str, Any]:
         return {
@@ -1161,6 +1272,8 @@ def _worker_main(
                     send_frame(sock, {"kind": "OK", "role": role})
                     return 0
                 if command == "RESET":
+                    if decode_timing_capture is not None:
+                        decode_timing_capture.abort_step()
                     runner.reset_request_cache(cache)
                     active = False
                     poisoned = False
@@ -1312,12 +1425,20 @@ def _worker_main(
                         )
                     capture_router = _capture_router_requested(header)
                     router_capture = {} if capture_router else None
+                    capture_decode_timing = _decode_timing_requested(header)
+                    if capture_decode_timing and decode_timing_capture is None:
+                        decode_timing_capture = DecodeTimingCapture(
+                            runner.layer_ids, device=runner.device
+                        )
                     with torch.inference_mode():
                         hidden = runner.decode_hidden(
                             hidden,
                             cache=cache,
                             expected_prefix_len=prefix_len,
                             router_capture=router_capture,
+                            decode_timing=(
+                                decode_timing_capture if capture_decode_timing else None
+                            ),
                         )
                     last_step = int(header["step_id"])
                     router_header = (
@@ -1329,6 +1450,15 @@ def _worker_main(
                         if router_capture is not None
                         else {}
                     )
+                    timing_header = (
+                        {DECODE_TIMING_KEY: decode_timing_capture.last_result}
+                        if capture_decode_timing
+                        and decode_timing_capture is not None
+                        and decode_timing_capture.last_result is not None
+                        else {}
+                    )
+                    if capture_decode_timing and not timing_header:
+                        raise RuntimeError("decode timing did not produce a result")
                     send_frame(
                         sock,
                         progress(
@@ -1336,6 +1466,7 @@ def _worker_main(
                             shape=[1, 2048],
                             dtype="float16",
                             **router_header,
+                            **timing_header,
                         ),
                         _hidden_payload(hidden),
                     )

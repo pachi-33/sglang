@@ -80,6 +80,20 @@ class _ScriptedWorker:
             }
         }
 
+    def _decode_timing(self):
+        elapsed_ms = []
+        for index, _ in enumerate(self.layer_ids):
+            base = float(index * len(pipeline.DECODE_TIMING_BOUNDARIES))
+            elapsed_ms.append([base + float(offset) for offset in range(5)])
+        return {
+            pipeline.DECODE_TIMING_KEY: {
+                "format": pipeline.DECODE_TIMING_FORMAT,
+                "layer_ids": list(self.layer_ids),
+                "boundaries": list(pipeline.DECODE_TIMING_BOUNDARIES),
+                "elapsed_ms": elapsed_ms,
+            }
+        }
+
     def request(self, header, payload=b""):
         self.calls.append((dict(header), payload))
         command = header["command"]
@@ -135,6 +149,8 @@ class _ScriptedWorker:
             }, self._hidden(1)
             if header.get("capture_router"):
                 response.update(self._router_capture(command))
+            if header.get("capture_decode_timing"):
+                response.update(self._decode_timing())
         elif command == "SAMPLE":
             if self._replay_last_sample:
                 token_id = self._last_sample_token
@@ -295,6 +311,27 @@ class TestPipelineFrames(unittest.TestCase):
         with self.assertRaisesRegex(pipeline.PipelineProtocolError, "must be bool"):
             pipeline._capture_router_requested({"capture_router": 1})
 
+    def test_decode_timing_flag_and_payload_are_strict(self):
+        self.assertFalse(pipeline._decode_timing_requested({}))
+        self.assertTrue(
+            pipeline._decode_timing_requested({"capture_decode_timing": True})
+        )
+        with self.assertRaisesRegex(pipeline.PipelineProtocolError, "must be bool"):
+            pipeline._decode_timing_requested({"capture_decode_timing": 1})
+
+        layers = (17, 18)
+        valid = _ScriptedWorker("back", layer_ids=layers)._decode_timing()
+        parsed = pipeline._parse_decode_timing(valid, layers)
+        self.assertEqual([row["layer_id"] for row in parsed], [17, 18])
+        self.assertEqual(parsed[1]["layer_end_ms"], 9.0)
+
+        malformed = json.loads(json.dumps(valid))
+        malformed[pipeline.DECODE_TIMING_KEY]["elapsed_ms"][0][2] = -1.0
+        with self.assertRaisesRegex(
+            pipeline.PipelineProtocolError, "invalid event offsets"
+        ):
+            pipeline._parse_decode_timing(malformed, layers)
+
     def test_frame_integer_shapes_reject_bool_float_and_tuple_coercion(self):
         pipeline._require_exact_shape([1, 2048], [1, 2048], "shape")
         cases = ([True, 2048], [1.0, 2048], (1, 2048))
@@ -434,10 +471,14 @@ class TestPipelineInputValidation(unittest.TestCase):
 
     def test_zero_generation_needs_no_worker_and_keeps_request_slot_idle(self):
         instance = self._unstarted_pipeline(capacity=3)
+        instance.last_validation = [{"stale": True}]
+        instance.last_decode_timing = [{"stale": True}]
         self.assertEqual(instance.generate_ids([4, 5, 6], max_new_tokens=0), [])
         instance.front.request.assert_not_called()
         instance.back.request.assert_not_called()
         self.assertEqual(instance._epoch, 0)
+        self.assertEqual(instance.last_validation, [])
+        self.assertEqual(instance.last_decode_timing, [])
 
     def test_bad_prompt_and_cache_overflow_are_rejected_before_worker_start(self):
         cases = (
@@ -541,6 +582,16 @@ class TestPipelineInputValidation(unittest.TestCase):
             [header["expected_prefix_len"] for header in decode_headers], [3, 4]
         )
         self.assertEqual({header["epoch"] for header in decode_headers}, {1})
+        self.assertTrue(
+            all(header["capture_decode_timing"] is False for header in decode_headers)
+        )
+        self.assertTrue(
+            all(
+                header["capture_decode_timing"] is False
+                for header, _ in instance.back.calls
+                if header["command"] == "DECODE_HIDDEN"
+            )
+        )
         decode_ids = []
         for _, payload in [
             call for call in instance.front.calls if call[0]["command"] == "DECODE_ID"
@@ -551,6 +602,50 @@ class TestPipelineInputValidation(unittest.TestCase):
         self.assertEqual(decode_ids, [[91], [92]])
         self.assertEqual(instance.front.calls[-1][0]["command"], "RESET")
         self.assertEqual(instance.back.calls[-1][0]["command"], "RESET")
+
+    def test_decode_timing_targets_only_the_selected_worker(self):
+        instance = self._scripted_pipeline(capacity=6, tokens=(91, 92, 93))
+
+        generated = instance.generate_ids(
+            [4, 5, 6], max_new_tokens=3, decode_timing_role="back"
+        )
+
+        self.assertEqual(generated, [91, 92, 93])
+        front_decodes = [
+            header
+            for header, _ in instance.front.calls
+            if header["command"] == "DECODE_ID"
+        ]
+        back_decodes = [
+            header
+            for header, _ in instance.back.calls
+            if header["command"] == "DECODE_HIDDEN"
+        ]
+        self.assertTrue(front_decodes)
+        self.assertTrue(back_decodes)
+        self.assertTrue(
+            all(header["capture_decode_timing"] is False for header in front_decodes)
+        )
+        self.assertTrue(
+            all(header["capture_decode_timing"] is True for header in back_decodes)
+        )
+        self.assertEqual(len(instance.last_decode_timing), 2)
+        self.assertEqual(
+            [row["step_id"] for row in instance.last_decode_timing], [1, 2]
+        )
+        for step in instance.last_decode_timing:
+            self.assertEqual(step["role"], "back")
+            self.assertEqual(
+                [row["layer_id"] for row in step["layers"]],
+                list(pipeline.BACK_LAYER_IDS),
+            )
+
+    def test_invalid_decode_timing_role_is_rejected_before_worker_start(self):
+        instance = self._unstarted_pipeline(capacity=4)
+        with self.assertRaisesRegex(ValueError, "decode_timing_role"):
+            instance.generate_ids([1, 2], max_new_tokens=1, decode_timing_role="v100")
+        instance.front.request.assert_not_called()
+        instance.back.request.assert_not_called()
 
     def test_total_context_capacity_is_stricter_than_decode_count(self):
         instance = self._scripted_pipeline(capacity=4, tokens=(91,))
