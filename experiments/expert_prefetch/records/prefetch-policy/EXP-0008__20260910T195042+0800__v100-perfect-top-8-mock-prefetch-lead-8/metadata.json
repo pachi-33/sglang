@@ -1,0 +1,15 @@
+{
+  "format": "SGLANG-EXPERT-PREFETCH-EXPERIMENT-v1",
+  "experiment_id": "EXP-0008",
+  "type": "prefetch-policy",
+  "title": "V100 perfect Top-8 mock prefetch lead 8",
+  "status": "completed",
+  "started_at": "2026-09-10T19:50:42+08:00",
+  "ended_at": "2026-09-10T19:59:00+08:00",
+  "timezone": "Asia/Singapore",
+  "device": "Tesla V100-SXM2-16GB GPU-49f8dc6e-3362-d9b2-d1da-8755345e8f96",
+  "hostname": "debian",
+  "git_branch": "lab/expert-prefetch",
+  "git_commit": "eb965adef81b3655f51d29155a5f47e82f566f9e",
+  "git_dirty": false
+}
