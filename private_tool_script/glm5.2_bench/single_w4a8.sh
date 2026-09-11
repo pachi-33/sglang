@@ -56,11 +56,10 @@ python3 -m sglang.launch_server \
         --quantization modelslim \
         --moe-a2a-backend deepep --deepep-mode auto \
         --load-balance-method round_robin \
-        --device npu --host 127.0.0.1 --port 8818
+        --device npu --host 127.0.0.1 --port 8818 \
+	--speculative-algorithm NEXTN --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5
+
 	# --speculative-draft-model-quantization unquant \
-	# --speculative-algorithm NEXTN --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5  \
-
-
 
 
 # python -m sglang.bench_serving \
