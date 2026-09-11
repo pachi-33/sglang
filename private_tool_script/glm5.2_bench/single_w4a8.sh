@@ -6,7 +6,7 @@ sysctl -w kernel.numa_balancing=0
 sysctl -w kernel.sched_migration_cost_ns=50000
 # bind cpu
 export SGLANG_SET_CPU_AFFINITY=1
-export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 unset https_proxy
 unset http_proxy
 unset HTTPS_PROXY
@@ -27,10 +27,10 @@ export HCCL_SOCKET_IFNAME=lo
 export GLOO_SOCKET_IFNAME=lo
 export TRANSFORMERS_VERBOSITY=error
 
-MODEL_PATH=/home/weights/GLM-5.2-w4a8
+MODEL_PATH=/home/weights/GLM-5.2-W4A8C8-A5-0731
 export SGLANG_NPU_PROFILING=0
 export SGLANG_NPU_PROFILING_BS=16
-export PYTHONPATH=/home/y00951466/sglang/python:$PYTHONPATH
+# export PYTHONPATH=/home/y00951466/sglang/python:$PYTHONPATH
 export DEEPEP_NORMAL_LONG_SEQ_ROUND=72
 export DEEPEP_NORMAL_LONG_SEQ_PER_ROUND_TOKENS=1024
 export DEEPEP_NORMAL_COMBINE_ENABLE_LONG_SEQ=1
@@ -42,7 +42,7 @@ python3 -m sglang.launch_server \
         --model-path $MODEL_PATH \
         --attention-backend ascend \
         --device npu \
-        --tp-size 16 \
+        --tp-size 8 \
         --nnodes 1 \
         --dp-size 2 \
 	--enable-dp-attention \
