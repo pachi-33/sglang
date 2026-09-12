@@ -18,20 +18,22 @@ set -euo pipefail
 # aggregate statistics only and do not print individual request records.
 
 SGLANG_ROOT="${SGLANG_ROOT:-/home/y00951466/sglang}"
-MODEL="${MODEL:-/home/weights/GLM-5.2-w4a8}"
+# MODEL="${MODEL:-/home/weights/GLM-5.2-w4a8}"
+MODEL="${MODEL:-/home/weights/GLM-5.2-W4A8C8-A5-0731}"
+
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8818}"
 BASE_URL="http://${HOST}:${PORT}"
 
-INPUT_LEN="${INPUT_LEN:-16384}" # 16K
-OUTPUT_LEN="${OUTPUT_LEN:-1024}" # 1K
-NUM_REQUESTS="${NUM_REQUESTS:-1024}"
-MAX_CONCURRENCY="${MAX_CONCURRENCY:-100}"
+INPUT_LEN="${INPUT_LEN:-65536}" # 16K 16384; 64k 65536; 128K 131072
+OUTPUT_LEN="${OUTPUT_LEN:-4096}" # 1K
+NUM_REQUESTS="${NUM_REQUESTS:-24}"
+MAX_CONCURRENCY="${MAX_CONCURRENCY:-24}"
 REQUEST_RATE="${REQUEST_RATE:-inf}"
 PAGE_SIZE="${PAGE_SIZE:-auto}" #2
 # Backward-compatible precedence:
 # TARGET_KV_HIT_PERCENT > PREFIX_PERCENT > CACHE_MODE > default 90.
-TARGET_KV_HIT_PERCENT="${TARGET_KV_HIT_PERCENT:-${PREFIX_PERCENT:-${CACHE_MODE:-90}}}"
+TARGET_KV_HIT_PERCENT=95
 SEED="${SEED:-42}"
 RESULT_DIR="${RESULT_DIR:-./benchmark_results/cache}"
 
