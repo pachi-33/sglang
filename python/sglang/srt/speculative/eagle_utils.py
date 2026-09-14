@@ -223,8 +223,70 @@ def build_tree_kernel_efficient(
     positions = torch.empty((bs * num_verify_tokens,), device=device, dtype=torch.long)
 
     if _is_npu:
+        import torch.distributed as dist
+
+        rank = (
+            dist.get_rank()
+            if dist.is_available() and dist.is_initialized()
+            else -1
+        )
+
+        # 保证打印的是算子实际收到的 dtype
+        parent_list_i64 = parent_list.to(dtype=torch.int64)
+
+        def dump_tensor(name, tensor, print_values=True):
+            print(
+                f"[build_tree][rank={rank}] {name}: "
+                f"shape={tuple(tensor.shape)}, "
+                f"dtype={tensor.dtype}, "
+                f"device={tensor.device}, "
+                f"stride={tensor.stride()}, "
+                f"contiguous={tensor.is_contiguous()}, "
+                f"numel={tensor.numel()}",
+                flush=True,
+            )
+
+            if print_values:
+                # 这些索引张量很小，可以完整打印
+                print(
+                    f"[build_tree][rank={rank}] {name}.values="
+                    f"{tensor.detach().cpu().tolist()}",
+                    flush=True,
+                )
+
+        # 把之前异步算子的错误与 build_tree 分隔开
+        torch.npu.synchronize()
+
+        print(
+            f"[build_tree][rank={rank}] "
+            f"topk={topk}, "
+            f"spec_steps={spec_steps}, "
+            f"num_verify_tokens={num_verify_tokens}, "
+            f"tree_mask_mode={tree_mask_mode}, "
+            f"seq_lens_sum={seq_lens_sum}",
+            flush=True,
+        )
+
+        dump_tensor("parent_list", parent_list_i64)
+        dump_tensor("top_scores_index", top_scores_index)
+        dump_tensor("seq_lens", seq_lens)
+
+        # tree_mask 可能非常大，只打印属性和前 64 个元素
+        dump_tensor("tree_mask", tree_mask, print_values=False)
+        print(
+            f"[build_tree][rank={rank}] tree_mask.head="
+            f"{tree_mask[:64].detach().cpu().tolist()}",
+            flush=True,
+        )
+
+        # 以下是输出缓冲区，调用前内容没有意义，只打印属性
+        dump_tensor("positions", positions, print_values=False)
+        dump_tensor("retrieve_index", retrieve_index, print_values=False)
+        dump_tensor("retrieve_next_token", retrieve_next_token, print_values=False)
+        dump_tensor("retrieve_next_sibling", retrieve_next_sibling, print_values=False)
+
         torch.ops.npu.build_tree_kernel_efficient(
-            parent_list.to(dtype=torch.int64),
+            parent_list_i64,
             top_scores_index,
             seq_lens,
             tree_mask,
@@ -237,6 +299,9 @@ def build_tree_kernel_efficient(
             num_verify_tokens,
             tree_mask_mode,
         )
+
+        # 调试期间保留，让错误准确落在该算子
+        torch.npu.synchronize()
     elif _is_xpu:
         sgl_build_tree_kernel_triton(
             parent_list,
