@@ -1,0 +1,869 @@
+    decode = capture_decode_graph(model_runner=model_runner)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py", line 588, in capture_decode_graph
+    runner = graph_runners[model_runner.device](model_runner)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/hardware_backend/npu/graph_runner/npu_graph_runner.py", line 103, in __init__
+    super().__init__(
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 488, in __init__
+    raise Exception(
+Exception: Capture cuda graph failed: The Inner error is reported as above. The process exits for this inner error, and the current working event is 0xaaab32685688.
+Since the operator is called asynchronously, the stacktrace may be inaccurate. If you want to get the accurate stacktrace, please set the environment variable ASCEND_LAUNCH_BLOCKING=1.
+Note: ASCEND_LAUNCH_BLOCKING=1 will force ops to run in synchronous mode, resulting in performance degradation. Please unset ASCEND_LAUNCH_BLOCKING in time after debugging.
+[ERROR] 2026-09-14-11:37:55 (PID:68072, Device:4, RankID:-1) ERR00100 PTA call acl api failed.
+EZ9999: Inner Error!
+EZ9999[PID: 68072] 2026-09-14-11:37:53.941.040 (EZ9999):  The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 0, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xff7df7ff1ffe880b,0x9c201a0f800ffff, mte error info: 0xfffffee70005ebbf, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+TraceBack (most recent call last):
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 1, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfffdfff01ff2880b,0x9c201a0f800ffff, mte error info: 0xfffeffee0007fff7, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 2, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xedfffbf51fdc880b,0x9c201a0f8007ee7, mte error info: 0xfffffdff0006bedc, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 3, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x1bf9fffb06ee880b,0x9c201a0f800dfef, mte error info: 0xffffffff000796ba, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 4, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x77dff7eb05fe880b,0x9c201a0f800ffff, mte error info: 0xffffffff0006ffeb, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 5, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xffffeded0edc880b,0x9c201a0f800feff, mte error info: 0xbfef53f70004bf7f, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 6, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xdeffffff1ff6880b,0x9c201a07800dfff, mte error info: 0xcbdbedc70002e8fe, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 7, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfbfbffff187a880b,0x9c201a0f800dfff, mte error info: 0xef9fefdf0003fefe, vec error info: 0, cube error info: 0, l1 error info: 0xbfab001f5fdd, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 18, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xefbfffe71ffe880b,0x9c201a0f800cfff, mte error info: 0x9ed8ddff0005bb7e, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 20, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xefffff771ff6880b,0x9c201a0f800f77a, mte error info: 0xffff35ff0007f737, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 21, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xeffbbffd0efc880b,0x9c201a0b000ddff, mte error info: 0xf1f9f8df000639be, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 22, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xadf3f7bf0f24880b,0x9c201a0b000ffdd, mte error info: 0xeebbb7e60004fdff, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 23, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfffffeff14fc880b,0x9c201a0f800ffff, mte error info: 0xabf70fdb000506b8, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 24, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x7abffffd1bfe880b,0x9c201a0e800ffff, mte error info: 0xbffff92f0007ffbf, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 25, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfb7ffe7f1fa4880b,0x9c201a0f800bff7, mte error info: 0xfbfffbcf0000759a, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 26, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xffffffdd1ffe880b,0x9c201a0f800efff, mte error info: 0xfff5f5ff0003fcf6, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       An error occurred in the kernel task, retCode=0x26, [aicore exception].[FUNC:PreCheckTaskErr][FILE:davinci_kernel_task.cc][LINE:1262]
+       Failed to check stream, stream_id=55, retCode=0x7150026.[FUNC:EvtRecord][FILE:event_c.cc][LINE:31]
+       rtEventRecord execution failed, reason=aicore exception[FUNC:FuncErrorReason][FILE:error_message_manage.cc][LINE:69]
+
+Possible solutions:
+1. set --mem-fraction-static to a smaller value (e.g., 0.8 or 0.7)
+2. set --cuda-graph-max-bs-decode to a smaller value (e.g., 16)
+3. disable decode CUDA graph by --cuda-graph-backend-decode=disabled. (Not recommended. Huge performance loss)
+Open an issue on GitHub https://github.com/sgl-project/sglang/issues/new/choose 
+
+
+/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py:-1: ResourceWarning: Unclosed socket <zmq.Socket(zmq.DEALER) at 0xfffaecd47f50>
+/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py:-1: ResourceWarning: Unclosed socket <zmq.Socket(zmq.PUSH) at 0xfffaecd47e00>
+/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py:-1: ResourceWarning: Unclosed socket <zmq.Socket(zmq.PUSH) at 0xfffaecd47e70>
+/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py:-1: ResourceWarning: Unclosed socket <zmq.Socket(zmq.PULL) at 0xfffaecd47ee0>
+/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py:-1: ResourceWarning: Unclosed context <zmq.Context() at 0xfffaecd41a90>
+[rank3]:[W914 11:37:56.113298100 Logger.cpp:75] Warning: Failed to generate log message. (function operator())
+[rank3]:[E914 11:37:56.113361290 ProcessGroupHCCL.cpp:2011] [Rank 3] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68071, Device:3, RankID:-1) ERR02005 DIST internal error
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  [Rank 3] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68071, Device:3, RankID:-1) ERR02005 DIST internal error
+Fatal Python error: Aborted
+
+Thread 0x0000fff8abfff100 (most recent call first):
+  File "/usr/local/python3.12.13/lib/python3.12/threading.py", line 359 in wait
+  File "/usr/local/python3.12.13/lib/python3.12/threading.py", line 655 in wait
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/tqdm/_monitor.py", line 69 in run
+  File "/usr/local/python3.12.13/lib/python3.12/threading.py", line 1075[rank5]:[W914 11:37:56.113472810 Logger.cpp:75] Warning: Failed to generate log message. (function operator())
+ in _bootstrap_inner
+  File "/usr/local/python3.12.13/lib/python3.12/threading.py", line 1032 in _bootstrap
+
+Thread 0x0000ffffb3fe6080 (most recent call first):
+  File "/usr/local/python3.12.13/lib/python3.12/selectors.py", line 415 in select
+  File "/usr/local/python3.12.13/lib/python3.12/subprocess.py", line 2115 in _communicate
+[rank5]:[E914 11:37:56.113534850 ProcessGroupHCCL.cpp:2011] [Rank 5] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68073, Device:5, RankID:-1) ERR02005 DIST internal error
+  File "/usr/local/python3.12.13/lib/python3.12/subprocess.py", line 1209 in communicateterminate called after throwing an instance of '
+std::runtime_error  File '
+"/usr/local/python3.12.13/lib/python3.12/subprocess.py", line   what():  550[Rank 5] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68073, Device:5, RankID:-1) ERR02005 DIST internal error in 
+run
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/triton/backends/ascend/compiler.py"Fatal Python error: Aborted
+
+, line 661 in Thread 0xlinalg_to_bin_enable_npu_compile_910_950000fff893fff100
+ (most recent call first):
+  File   File ""/usr/local/python3.12.13/lib/python3.12/site-packages/triton/backends/ascend/compiler.py/usr/local/python3.12.13/lib/python3.12/threading.py"", line , line 1233359 in  in <lambda>wait
+
+  File   File ""/usr/local/python3.12.13/lib/python3.12/site-packages/triton/compiler/compiler.py/usr/local/python3.12.13/lib/python3.12/threading.py"", line , line 289655 in  in compilewait
+
+  File   File ""/usr/local/python3.12.13/lib/python3.12/site-packages/triton/runtime/jit.py/usr/local/python3.12.13/lib/python3.12/site-packages/tqdm/_monitor.py"", line , line 78769 in  in _do_compilerun
+
+  File   File ""/usr/local/python3.12.13/lib/python3.12/site-packages/triton/runtime/jit.py/usr/local/python3.12.13/lib/python3.12/threading.py"", line , line 6221075 in  in run_bootstrap_inner
+
+  File   File ""/usr/local/python3.12.13/lib/python3.12/site-packages/triton/runtime/jit.py/usr/local/python3.12.13/lib/python3.12/threading.py"", line , line 3331032 in  in <lambda>_bootstrap
+
+  File [rank7]:[W914 11:37:56.113976680 Logger.cpp:75] Warning: Failed to generate log message. (function operator())
+
+"Thread 0x/sgl-workspace/sglang/python/sglang/kernels/ops/memory/memcpy_triton.py0000ffffb01ae080" (most recent call first):
+, line   File 49" in /sgl-workspace/sglang/python/sglang/srt/model_executor/runner/base_cuda_graph_runner.py[rank7]:[E914 11:37:56.114043630 ProcessGroupHCCL.cpp:2011] [Rank 7] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68075, Device:7, RankID:-1) ERR02005 DIST internal error
+memcpy_triton"
+, line   File 61terminate called after throwing an instance of '" in std::runtime_error/sgl-workspace/sglang/python/sglang/srt/layers/dp_attention.pyfreeze_gc'
+"
+, line   File   what():  523"[Rank 7] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68075, Device:7, RankID:-1) ERR02005 DIST internal error in /usr/local/python3.12.13/lib/python3.12/contextlib.py
+memcpy"
+, line   File Fatal Python error: 158"Aborted in /sgl-workspace/sglang/python/sglang/srt/layers/dp_attention.py
+
+__exit__"
+Thread 0x, line   File 0000fff88ffff100898" (most recent call first):
+ in /sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py  File dp_scatter""
+, line /usr/local/python3.12.13/lib/python3.12/threading.py  File 1064"" in , line /sgl-workspace/sglang/python/sglang/srt/layers/communicator.pycapture359"
+ in , line   File wait1284"
+ in /sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py  File _gather_hidden_states_and_residual""
+/usr/local/python3.12.13/lib/python3.12/threading.py, line   File "486", line  in /sgl-workspace/sglang/python/sglang/srt/layers/communicator.py655__init__" in 
+, line wait  File 874
+" in   File /sgl-workspace/sglang/python/sglang/srt/hardware_backend/npu/graph_runner/npu_graph_runner.pyprepare_mlp""
+/usr/local/python3.12.13/lib/python3.12/site-packages/tqdm/_monitor.py, line   File "103", line  in /sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.py69__init__" in 
+, line run  File 2465
+" in   File /sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.pyforward""
+/usr/local/python3.12.13/lib/python3.12/threading.py, line   File "588", line  in /usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py1075capture_decode_graph" in 
+, line _bootstrap_inner  File 1787
+" in   File /sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py_call_impl""
+/usr/local/python3.12.13/lib/python3.12/threading.py, line   File "269", line  in /usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py1032capture_cuda_graphs" in 
+, line _bootstrap  File 1776
+" in 
+/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner.py_wrapped_call_implThread 0x"
+0000ffffadd9c080, line   File  (most recent call first):
+1084"  File  in /sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.py"init_cuda_graphs"/usr/local/python3.12.13/lib/python3.12/selectors.py
+, line "  File 2812, line " in 415/sgl-workspace/sglang/python/sglang/srt/managers/tp_worker.pyforward in "
+select, line   File 
+443"  File  in /usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py"init_cuda_graphs"/usr/local/python3.12.13/lib/python3.12/subprocess.py
+, line "  File 1787, line " in 2115/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py_call_impl in "
+_communicate, line   File [rank1]:[W914 11:37:56.115080450 Logger.cpp:75] Warning: Failed to generate log message. (function operator())
+
+1090"  File  in /usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py"init_all_cuda_graphs"/usr/local/python3.12.13/lib/python3.12/subprocess.py
+, line "  File 1776[rank1]:[E914 11:37:56.115168860 ProcessGroupHCCL.cpp:2011] [Rank 1] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68069, Device:1, RankID:-1) ERR02005 DIST internal error
+, line " in 1209/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py_wrapped_call_implterminate called after throwing an instance of ' in "
+std::runtime_errorcommunicate, line   File '
+
+1107"[rank6]:[W914 11:37:56.115296500 Logger.cpp:75] Warning: Failed to generate log message. (function operator())
+  File  in   what():  /sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.py"init_model_worker[Rank 1] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68069, Device:1, RankID:-1) ERR02005 DIST internal error"/usr/local/python3.12.13/lib/python3.12/subprocess.py
+
+[rank6]:[E914 11:37:56.115384750 ProcessGroupHCCL.cpp:2011] [Rank 6] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68074, Device:6, RankID:-1) ERR02005 DIST internal error
+, line "  File Fatal Python error: 3050, line terminate called after throwing an instance of '"Aborted in 550std::runtime_error/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py
+
+forward in '
+"Thread 0x
+run, line   what():  0000fff897fff100  File 
+573[Rank 6] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68074, Device:6, RankID:-1) ERR02005 DIST internal error (most recent call first):
+"  File  in 
+  File /usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py"__init__"Fatal Python error: "/usr/local/python3.12.13/lib/python3.12/site-packages/triton/backends/ascend/compiler.py
+/usr/local/python3.12.13/lib/python3.12/threading.pyAborted, line "  File "
+
+124", line , line Thread 0x in /sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py6613590000fff897fff100decorate_context" in  in  (most recent call first):
+
+, line linalg_to_bin_enable_npu_compile_910_95wait  File   File 5795
+
+"" in   File   File /usr/local/python3.12.13/lib/python3.12/threading.py/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.pyrun_scheduler_process""""
+/usr/local/python3.12.13/lib/python3.12/site-packages/triton/backends/ascend/compiler.py/usr/local/python3.12.13/lib/python3.12/threading.py, line , line   File ""3591222", line , line  in  in /usr/local/python3.12.13/lib/python3.12/multiprocessing/process.py1233655waitrun_once" in  in 
+
+, line <lambda>wait  File   File 108
+
+"" in   File   File /usr/local/python3.12.13/lib/python3.12/threading.py/sgl-workspace/sglang/python/sglang/srt/hardware_backend/npu/graph_runner/npu_cudagraph_backend.pyrun""""
+/usr/local/python3.12.13/lib/python3.12/site-packages/triton/compiler/compiler.py/usr/local/python3.12.13/lib/python3.12/site-packages/tqdm/_monitor.py, line , line   File ""65592", line , line  in  in /usr/local/python3.12.13/lib/python3.12/multiprocessing/process.py28969waitcapture_one" in  in 
+
+, line compilerun  File   File 314
+
+"" in   File   File /usr/local/python3.12.13/lib/python3.12/site-packages/tqdm/_monitor.py/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py_bootstrap""""
+/usr/local/python3.12.13/lib/python3.12/site-packages/triton/runtime/jit.py/usr/local/python3.12.13/lib/python3.12/threading.py, line , line   File ""691261", line , line  in  in /usr/local/python3.12.13/lib/python3.12/multiprocessing/spawn.py7871075runcapture_one_shape" in  in 
+
+, line _do_compile_bootstrap_inner  File   File 135
+
+"" in   File   File /usr/local/python3.12.13/lib/python3.12/threading.py/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py_main""""
+/usr/local/python3.12.13/lib/python3.12/site-packages/triton/runtime/jit.py/usr/local/python3.12.13/lib/python3.12/threading.py, line , line   File ""10751143", line , line  in  in /usr/local/python3.12.13/lib/python3.12/multiprocessing/spawn.py6221032_bootstrap_inner_capture_one_stream" in  in 
+
+, line run_bootstrap  File   File 122
+
+"" in   File 
+/usr/local/python3.12.13/lib/python3.12/threading.py/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.pyspawn_main"Thread 0x""
+/usr/local/python3.12.13/lib/python3.12/site-packages/triton/runtime/jit.py0000ffff9ff9e080, line , line   File " (most recent call first):
+10321074", line   File  in  in <string>333"_bootstrapcapture" in /usr/local/python3.12.13/lib/python3.12/selectors.py
+
+, line <lambda>"
+  File 1
+, line Thread 0x" in   File 4150000ffffa0ea3080/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py<module>" in  (most recent call first):
+"
+/sgl-workspace/sglang/python/sglang/kernels/ops/memory/memcpy_triton.pyselect  File , line "
+"486, line   File /usr/local/python3.12.13/lib/python3.12/selectors.py in 49""__init__ in /usr/local/python3.12.13/lib/python3.12/subprocess.py, line 
+memcpy_triton"415  File 
+, line  in "  File 2115select
+Extension modules: /sgl-workspace/sglang/python/sglang/srt/hardware_backend/npu/graph_runner/npu_graph_runner.py" in 
+numpy._core._multiarray_umath"/sgl-workspace/sglang/python/sglang/srt/layers/dp_attention.py_communicate  File , line , "
+"103numpy.linalg._umath_linalg, line   File /usr/local/python3.12.13/lib/python3.12/subprocess.py in 523, ""__init__ in psutil._psutil_linux/usr/local/python3.12.13/lib/python3.12/subprocess.py, line 
+memcpy, "2115  File 
+pybase64._pybase64, line  in "  File 1209_communicate, /sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py" in 
+charset_normalizer.md"/sgl-workspace/sglang/python/sglang/srt/layers/dp_attention.pycommunicate  File , , line "
+"charset_normalizer.cd588, line   File /usr/local/python3.12.13/lib/python3.12/subprocess.py in 898", "capture_decode_graph in /usr/local/python3.12.13/lib/python3.12/subprocess.pyrequests.packages.charset_normalizer.md, line 
+dp_scatter"1209,   File 
+, line  in requests.packages.chardet.md"  File 550communicate/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py, " in 
+"requests.packages.charset_normalizer.cd/sgl-workspace/sglang/python/sglang/srt/layers/communicator.pyrun  File , line , "
+"269requests.packages.chardet.cd, line   File /usr/local/python3.12.13/lib/python3.12/subprocess.py in 1284, ""capture_cuda_graphs in torch._C/usr/local/python3.12.13/lib/python3.12/site-packages/triton/backends/ascend/compiler.py, line 
+_gather_hidden_states_and_residual, "550  File 
+torch._C._dynamo.autograd_compiler in , line "  File , run661/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner.py"torch._C._dynamo.eval_frame
+ in "/sgl-workspace/sglang/python/sglang/srt/layers/communicator.py,   File linalg_to_bin_enable_npu_compile_910_95, line "torch._C._dynamo.guards"
+1084, line , /usr/local/python3.12.13/lib/python3.12/site-packages/triton/backends/ascend/compiler.py  File  in 874torch._C._dynamo.utils""init_cuda_graphs in , /usr/local/python3.12.13/lib/python3.12/site-packages/triton/backends/ascend/compiler.py, line 
+prepare_mlptorch._C._fft"661  File 
+, , line  in "  File torch._C._linalg1233linalg_to_bin_enable_npu_compile_910_95/sgl-workspace/sglang/python/sglang/srt/managers/tp_worker.py",  in 
+"/sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.pytorch._C._nested<lambda>  File , line ", 
+"443, line torch._C._nn  File /usr/local/python3.12.13/lib/python3.12/site-packages/triton/backends/ascend/compiler.py in 2465, ""init_cuda_graphs in torch._C._sparse/usr/local/python3.12.13/lib/python3.12/site-packages/triton/compiler/compiler.py, line 
+forward, "1233  File 
+torch._C._special, line  in "  File 289<lambda>/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py" in 
+", /usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.pycompile  File , line torch_npu._C"
+"1090, line   File /usr/local/python3.12.13/lib/python3.12/site-packages/triton/compiler/compiler.py in 1787, ""init_all_cuda_graphs in numpy.random._common/usr/local/python3.12.13/lib/python3.12/site-packages/triton/runtime/jit.py, line 
+_call_impl, "289  File 
+numpy.random.bit_generator, line  in "  File , 787compile/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py"numpy.random._bounded_integers in 
+"/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py, _do_compile  File , line "numpy.random._mt19937
+"1107, line ,   File /usr/local/python3.12.13/lib/python3.12/site-packages/triton/runtime/jit.py in 1776numpy.random.mtrand""init_model_worker in , /usr/local/python3.12.13/lib/python3.12/site-packages/triton/runtime/jit.py, line 
+_wrapped_call_implnumpy.random._philox"787, line   File 
+,  in 622"  File numpy.random._pcg64_do_compile in /sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", 
+run"/sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.pynumpy.random._sfc64  File 
+", line , "  File , line 573numpy.random._generator/usr/local/python3.12.13/lib/python3.12/site-packages/triton/runtime/jit.py"2812 in "/usr/local/python3.12.13/lib/python3.12/site-packages/triton/runtime/jit.py in __init__, line "forward, 
+622, line 
+markupsafe._speedups  File  in 333  File ", run in "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.pyyaml._yaml
+<lambda>/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py"  File 
+", line , "  File , line 5795PIL._imaging/usr/local/python3.12.13/lib/python3.12/site-packages/triton/runtime/jit.py"1787 in , "/sgl-workspace/sglang/python/sglang/kernels/ops/memory/memcpy_triton.py in run_scheduler_processPIL._imagingft, line "_call_impl
+, 333, line 
+  File av._core in 49  File ", <lambda> in "/usr/local/python3.12.13/lib/python3.12/multiprocessing/process.pyav.logging
+memcpy_triton/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py",   File 
+", line av.buffer"  File , line 108, /sgl-workspace/sglang/python/sglang/kernels/ops/memory/memcpy_triton.py"1776 in av.audio.format"/sgl-workspace/sglang/python/sglang/srt/layers/dp_attention.py in run, , line "_wrapped_call_impl
+av.error49, line 
+  File ,  in 523  File "av.dictionarymemcpy_triton in "/usr/local/python3.12.13/lib/python3.12/multiprocessing/process.py, 
+memcpy/sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.py"av.container.pyio  File 
+", line , "  File , line 314av.format/sgl-workspace/sglang/python/sglang/srt/layers/dp_attention.py"3050 in , "/sgl-workspace/sglang/python/sglang/srt/layers/dp_attention.py in _bootstrapav.index, line "forward
+, 523, line 
+  File av.utils in 898  File ", memcpy in "/usr/local/python3.12.13/lib/python3.12/multiprocessing/spawn.pyav.stream
+dp_scatter/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py",   File 
+", line av.container.streams"  File , line 135, /sgl-workspace/sglang/python/sglang/srt/layers/dp_attention.py"124 in av.sidedata.encparams"/sgl-workspace/sglang/python/sglang/srt/layers/communicator.py in _main, , line "decorate_context
+av.sidedata.motionvectors898, line 
+  File ,  in 1284  File "av.sidedata.sidedatadp_scatter in "/usr/local/python3.12.13/lib/python3.12/multiprocessing/spawn.py, 
+_gather_hidden_states_and_residual/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py"av.opaque  File 
+", line , "  File , line 122av.rational/sgl-workspace/sglang/python/sglang/srt/layers/communicator.py"1222 in , "/sgl-workspace/sglang/python/sglang/srt/layers/communicator.py in spawn_mainav.packet, line "run_once
+, 1284, line 
+  File av.container.input in 874  File ", _gather_hidden_states_and_residual in "<string>av.bitstream
+prepare_mlp/sgl-workspace/sglang/python/sglang/srt/hardware_backend/npu/graph_runner/npu_cudagraph_backend.py",   File 
+", line av.container.output"  File , line 1, /sgl-workspace/sglang/python/sglang/srt/layers/communicator.py"92 in av.container.core"/sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.py in <module>, , line "capture_one
+av.codec.context874, line 
+,  in 2465  File av.video.formatprepare_mlp in ", 
+forward/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.pyav.video.reformatter  File 
+", "  File , line av.plane/sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.py"1261, 
+Extension modules: "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py in av.video.planenumpy._core._multiarray_umath, line "capture_one_shape, , 2465, line 
+av.video.framenumpy.linalg._umath_linalg in 1787  File , forward in , "av.video.stream
+_call_implpsutil._psutil_linux/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py,   File 
+", av.codec.hwaccel"  File , line pybase64._pybase64, /usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py"1143av.codec.codec", /usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py in , , line charset_normalizer.md"_capture_one_streamav.frame1787, , line 
+,  in charset_normalizer.cd1776  File av.audio.layout_call_impl in ", , 
+_wrapped_call_impl/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.pyav.audio.planerequests.packages.charset_normalizer.md  File 
+", , "  File , line av.audio.framerequests.packages.chardet.md/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py"1074, , "/sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.py in av.audio.streamrequests.packages.charset_normalizer.cd, line "capture, , 1776, line 
+av.filter.linkrequests.packages.chardet.cd,  in 2812  File av.filter.context, _wrapped_call_impl in ", torch._C
+forward/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.pyav.filter.graph,   File 
+", torch._C._dynamo.autograd_compiler"  File av.filter.filter, line , /sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.py"486, torch._C._dynamo.eval_frame"/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py in av.filter.loudnorm, , line "__init__, torch._C._dynamo.guards2812, line 
+av.audio.resampler,  in 1787  File , torch._C._dynamo.utilsforward in "av.audio.codeccontext, 
+_call_impl/sgl-workspace/sglang/python/sglang/srt/hardware_backend/npu/graph_runner/npu_graph_runner.py, torch._C._fft  File 
+"av.audio.fifo, "  File , line , torch._C._linalg/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py"103av.device, "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py in , torch._C._nested, line "__init__av.video.codeccontext, 1787, line 
+torch._C._nn in , 1776  File , _call_implzmq.backend.cython._zmq in "torch._C._sparse
+_wrapped_call_impl, /sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py,   File 
+regex._regex"torch._C._special"  File , line /usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", 588"/sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.py_cffi_backend in , , line "capture_decode_graph, torch_npu._C1776, line 3050 in 
+scipy._lib._ccallback_c in forward  File , , _wrapped_call_impl
+"scipy.linalg._fblasnumpy.random._common
+  File /sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py, ,   File ""scipy.linalg._flapacknumpy.random.bit_generator"/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py, line , , /sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.py"269scipy.linalg.cython_lapacknumpy.random._bounded_integers", line  in , , , line 124capture_cuda_graphsscipy.linalg._cythonized_array_utilsnumpy.random._mt199373050 in 
+, ,  in decorate_context  File scipy.linalg._solve_toeplitznumpy.random.mtrandforward
+", , 
+  File /sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner.pyscipy.linalg._decomp_lu_cythonnumpy.random._philox  File "", , "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py, line scipy.linalg._matfuncs_sqrtm_triunumpy.random._pcg64/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py"1084, , ", line  in scipy.linalg.cython_blasnumpy.random._sfc64, line 1222init_cuda_graphs, , 124 in 
+scipy.linalg._matfuncs_expmnumpy.random._generator in run_once  File , decorate_context
+"scipy.linalg._decomp_update
+  File /sgl-workspace/sglang/python/sglang/srt/managers/tp_worker.py, ,   File ""markupsafe._speedupsscipy.sparse._sparsetools"/sgl-workspace/sglang/python/sglang/srt/hardware_backend/npu/graph_runner/npu_cudagraph_backend.py, line , , /sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py"443yaml._yaml_csparsetools", line  in , , line 92, init_cuda_graphsscipy.sparse._csparsetools1222 in PIL._imaging
+,  in capture_one  File , scipy.sparse.linalg._dsolve._superlurun_once
+"PIL._imagingft, 
+  File /sgl-workspace/sglang/python/sglang/srt/managers/scheduler.pyscipy.sparse.linalg._eigen.arpack._arpack,   File "", av._core"/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py, line scipy.sparse.linalg._propack._spropack, /sgl-workspace/sglang/python/sglang/srt/hardware_backend/npu/graph_runner/npu_cudagraph_backend.py"1090, av.logging", line  in scipy.sparse.linalg._propack._dpropack, , line 1261init_all_cuda_graphs, av.buffer92 in 
+scipy.sparse.linalg._propack._cpropack, ,  in capture_one_shape  File av.audio.formatscipy.sparse.linalg._propack._zpropackcapture_one
+", , 
+  File /sgl-workspace/sglang/python/sglang/srt/managers/scheduler.pyav.errorscipy.sparse.csgraph._tools,   File "", av.dictionary"/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py, line scipy.sparse.csgraph._shortest_path, /sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py"1107, av.container.pyio", line  in scipy.sparse.csgraph._traversal, , , line 1143init_model_workerav.formatscipy.sparse.csgraph._min_spanning_tree1261 in 
+, ,  in _capture_one_stream  File av.indexscipy.sparse.csgraph._flowcapture_one_shape
+", , 
+  File /sgl-workspace/sglang/python/sglang/srt/managers/scheduler.pyav.utilsscipy.sparse.csgraph._matching  File "", , "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py, line av.streamscipy.sparse.csgraph._reordering/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py"573, , ", line  in av.container.streamsscipy.optimize._minpack2, line 1074__init__, , 1143 in 
+av.sidedata.encparamsscipy.optimize._group_columns in capture  File , , _capture_one_stream
+"av.sidedata.motionvectorsscipy._lib.messagestream
+  File /sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py, ,   File ""av.sidedata.sidedatascipy.optimize._trlib._trlib"/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py, line , , /sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py"5795av.opaquescipy.optimize._lbfgsb", line  in , , , line 486run_scheduler_processav.rational_moduleTNC1074 in 
+, ,  in __init__  File av.packetscipy.optimize._moduleTNCcapture
+", , 
+  File /usr/local/python3.12.13/lib/python3.12/multiprocessing/process.pyav.container.inputscipy.optimize._cobyla,   File "", av.bitstream"/sgl-workspace/sglang/python/sglang/srt/hardware_backend/npu/graph_runner/npu_graph_runner.py, line scipy.optimize._slsqp, /sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py"108, av.container.output", line  in scipy.optimize._minpack, , 103, line runav.container.corescipy.optimize._lsq.givens_elimination in 486
+, , __init__ in   File av.codec.contextscipy.optimize._zeros
+__init__", ,   File 
+/usr/local/python3.12.13/lib/python3.12/multiprocessing/process.pyav.video.formatscipy.optimize._highs.cython.src._highs_wrapper"  File ", , /sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py", line av.video.reformatterscipy.optimize._highs._highs_wrapper"/sgl-workspace/sglang/python/sglang/srt/hardware_backend/npu/graph_runner/npu_graph_runner.py314, , , line " in av.planescipy.optimize._highs.cython.src._highs_constants588, line _bootstrap, ,  in 103
+av.video.planescipy.optimize._highs._highs_constantscapture_decode_graph in   File , , 
+__init__"av.video.framescipy.linalg._interpolative  File 
+/usr/local/python3.12.13/lib/python3.12/multiprocessing/spawn.py, , "  File "av.video.streamscipy.optimize._bglu_dense/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py", line , , "/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py135av.codec.hwaccelscipy.optimize._lsap, line " in , , 269, line _mainav.codec.codecscipy.spatial._ckdtree in 588
+, , capture_cuda_graphs in   File av.framescipy.spatial._qhull, 
+capture_decode_graph", av.audio.layout  File 
+/usr/local/python3.12.13/lib/python3.12/multiprocessing/spawn.pyscipy.spatial._voronoi, "  File ", av.audio.plane/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner.py", line scipy.spatial._distance_wrap, "/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py122, av.audio.frame, line " in scipy.spatial._hausdorff, 1084, line spawn_main, av.audio.stream in 269
+scipy.special._ufuncs_cxx, init_cuda_graphs in   File , av.filter.link
+capture_cuda_graphs"scipy.special._cdflib,   File 
+<string>, av.filter.context"  File "scipy.special._ufuncs, /sgl-workspace/sglang/python/sglang/srt/managers/tp_worker.py", line , av.filter.graph"/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner.py1scipy.special._specfun, , line " in , av.filter.filter443, line <module>scipy.special._comb,  in 1084
+, av.filter.loudnorminit_cuda_graphs in scipy.special._ellip_harm_2, 
+init_cuda_graphs, av.audio.resampler  File 
+scipy.spatial.transform._rotation, "  File , av.audio.codeccontext/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py"scipy.optimize._direct, "/sgl-workspace/sglang/python/sglang/srt/managers/tp_worker.pyav.audio.fifo, line ", 1090, 
+Extension modules: , line multidict._multidict in , av.devicenumpy._core._multiarray_umath443init_all_cuda_graphsyarl._quoting_c, ,  in 
+av.video.codeccontext, numpy.linalg._umath_linalginit_cuda_graphs  File , propcache._helpers_c, 
+"psutil._psutil_linuxzmq.backend.cython._zmq,   File /sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py, aiohttp._http_writer, ""pybase64._pybase64, regex._regex/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py, line aiohttp._http_parser, , "1107charset_normalizer.md, aiohttp._websocket.mask, line  in _cffi_backend, , , 1090init_model_workercharset_normalizer.cdaiohttp._websocket.reader_cscipy._lib._ccallback_c in 
+, , init_all_cuda_graphs,   File frozenlist._frozenlistscipy.linalg._fblas
+requests.packages.charset_normalizer.md", ,   File , /sgl-workspace/sglang/python/sglang/srt/managers/scheduler.pymsgspec._corescipy.linalg._flapack"requests.packages.chardet.md", /sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py, , , line scipy.linalg.cython_lapack"requests.packages.charset_normalizer.cdtvm_ffi.core573, , , line ,  in scipy.linalg._cythonized_array_utilslxml._elementpath1107requests.packages.chardet.cd__init__, ,  in 
+, scipy.linalg._solve_toeplitzlxml.etreeinit_model_worker  File torch._C, , 
+"scipy.linalg._decomp_lu_cython, , setproctitle._setproctitle  File /sgl-workspace/sglang/python/sglang/srt/managers/scheduler.pytorch._C._dynamo.autograd_compilerscipy.linalg._matfuncs_sqrtm_triu"", , /sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py, , line torch._C._dynamo.eval_framescipy.linalg.cython_blas"google._upb._message5795, , , line  in torch._C._dynamo.guardsscipy.linalg._matfuncs_expm573run_scheduler_process, ,  in 
+torch._C._dynamo.utilsscipy.linalg._decomp_update__init__,   File , , 
+cython.cimports.libc.math"torch._C._fftscipy.sparse._sparsetools  File /usr/local/python3.12.13/lib/python3.12/multiprocessing/process.py, , , ""_sharedtorch._C._linalg_csparsetools/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py, line , , , "108Cython._sharedtorch._C._nestedscipy.sparse._csparsetools, line  in , , , 5795runCython.Utilstorch._C._nnscipy.sparse.linalg._dsolve._superlu in 
+, , , run_scheduler_process  File Cython.Compiler.StringEncodingtorch._C._sparsescipy.sparse.linalg._eigen.arpack._arpack
+", , ,   File /usr/local/python3.12.13/lib/python3.12/multiprocessing/process.pyCython.Plex.Actionstorch._C._specialscipy.sparse.linalg._propack._spropack"", , /usr/local/python3.12.13/lib/python3.12/multiprocessing/process.py, line , Cython.Plex.Transitionsscipy.sparse.linalg._propack._dpropack"314torch_npu._C, , , line  in Cython.Plex.Machinesscipy.sparse.linalg._propack._cpropack108_bootstrap, , ,  in 
+Cython.Plex.DFAnumpy.random._commonscipy.sparse.linalg._propack._zpropackrun  File , , , 
+"Cython.Plex.Scannersnumpy.random.bit_generatorscipy.sparse.csgraph._tools  File /usr/local/python3.12.13/lib/python3.12/multiprocessing/spawn.py, , , ""Cython.Compiler.Scanningnumpy.random._bounded_integersscipy.sparse.csgraph._shortest_path/usr/local/python3.12.13/lib/python3.12/multiprocessing/process.py, line , , , "135Cython.StringIOTreenumpy.random._mt19937scipy.sparse.csgraph._traversal, line  in , , , 314_mainCython.LZSSnumpy.random.mtrandscipy.sparse.csgraph._min_spanning_tree in 
+, , , _bootstrap  File Cython.Compiler.Codenumpy.random._philoxscipy.sparse.csgraph._flow
+", , ,   File /usr/local/python3.12.13/lib/python3.12/multiprocessing/spawn.pynumpy.random._pcg64pyarrow.libscipy.sparse.csgraph._matching"", , , /usr/local/python3.12.13/lib/python3.12/multiprocessing/spawn.py, line numpy.random._sfc64_cyutilityscipy.sparse.csgraph._reordering, "122, pandas._libs._cyutility, , , line  in numpy.random._generatorscipy.optimize._minpack2pandas._libs.tslibs.ccalendar, , 135spawn_mainscipy.optimize._group_columnspandas._libs.tslibs.np_datetime in 
+, , , _main  File scipy._lib.messagestreampandas._libs.tslibs.dtypesmarkupsafe._speedups
+", ,   File , <string>scipy.optimize._trlib._trlibpandas._libs.tslibs.base"yaml._yaml", , /usr/local/python3.12.13/lib/python3.12/multiprocessing/spawn.py, line scipy.optimize._lbfgsbpandas._libs.tslibs.nattype, "1, , PIL._imaging, line  in _moduleTNCpandas._libs.tslibs.timezones, 122<module>, , PIL._imagingft in 
+scipy.optimize._moduleTNCpandas._libs.properties, spawn_main, , av._core
+scipy.optimize._cobylapandas._libs.tslibs.fields,   File , , av.logging"scipy.optimize._slsqppandas._libs.tslibs.timedeltas, , <string>, av.bufferpandas._libs.tslibs.tzconversion"scipy.optimize._minpack, , , line av.audio.format, pandas._libs.tslibs.timestamps1scipy.optimize._lsq.givens_elimination, ,  in 
+Extension modules: av.error, pandas._libs.tslibs.offsets<module>numpy._core._multiarray_umath, scipy.optimize._zeros, 
+av.dictionary, , pandas._libs.tslibs.strptime, numpy.linalg._umath_linalgscipy.optimize._highs.cython.src._highs_wrapper, av.container.pyiopandas._libs.tslibs.parsing, , , , scipy.optimize._highs._highs_wrapperpsutil._psutil_linuxav.formatpandas._libs.tslibs.conversion, , , , scipy.optimize._highs.cython.src._highs_constantspybase64._pybase64av.indexpandas._libs.tslibs.period, , scipy.optimize._highs._highs_constants, av.utils, , pandas._libs.tslibs.vectorized, charset_normalizer.md
+Extension modules: scipy.linalg._interpolative, av.stream, numpy._core._multiarray_umathpandas._libs.ops_dispatch, , , charset_normalizer.cdscipy.optimize._bglu_dense, pandas._libs.missingav.container.streams, numpy.linalg._umath_linalg, , , scipy.optimize._lsaprequests.packages.charset_normalizer.mdpandas._libs.hashtable, av.sidedata.encparams, , , psutil._psutil_linux, scipy.spatial._ckdtreerequests.packages.chardet.mdpandas._libs.algosav.sidedata.motionvectors, , , , pandas._libs.interval, pybase64._pybase64scipy.spatial._qhullrequests.packages.charset_normalizer.cdav.sidedata.sidedata, , , , , pandas._libs.libscipy.spatial._voronoi, requests.packages.chardet.cdcharset_normalizer.mdav.opaque, pyarrow._compute, , , scipy.spatial._distance_wrap, charset_normalizer.cdtorch._Cav.rational, , pandas._libs.ops, scipy.spatial._hausdorffav.packet, , torch._C._dynamo.autograd_compiler, , requests.packages.charset_normalizer.mdpandas._libs.hashing, scipy.special._ufuncs_cxxav.container.input, , torch._C._dynamo.eval_frame, , requests.packages.chardet.mdpandas._libs.arrays, scipy.special._cdflibav.bitstream, , torch._C._dynamo.guards, , requests.packages.charset_normalizer.cdpandas._libs.tslib, , scipy.special._ufuncsav.container.output, torch._C._dynamo.utilspandas._libs.sparse, , requests.packages.chardet.cd, scipy.special._specfun, av.container.core[2026-09-14 11:37:56 DP1 TP5 EP5] Scheduler hit an exception: Traceback (most recent call last):
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 486, in __init__
+    self.capture()
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 1074, in capture
+    self._capture_one_stream()
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 1143, in _capture_one_stream
+    self.capture_one_shape(
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 1261, in capture_one_shape
+    self.backend.capture_one(
+  File "/sgl-workspace/sglang/python/sglang/srt/hardware_backend/npu/graph_runner/npu_cudagraph_backend.py", line 92, in capture_one
+    forward_fn()
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 1222, in run_once
+    out = forward(
+          ^^^^^^^^
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.py", line 3050, in forward
+    hidden_states = self.model(
+                    ^^^^^^^^^^^
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.py", line 2812, in forward
+    hidden_states, residual, topk_indices = layer(
+                                            ^^^^^^
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.py", line 2465, in forward
+    hidden_states, residual = self.layer_communicator.prepare_mlp(
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/layers/communicator.py", line 874, in prepare_mlp
+    return self._communicate_with_all_reduce_and_layer_norm_fn(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/layers/communicator.py", line 1284, in _gather_hidden_states_and_residual
+    dp_scatter(residual, hidden_states, forward_batch)
+  File "/sgl-workspace/sglang/python/sglang/srt/layers/dp_attention.py", line 888, in dp_scatter
+    local_start_pos, local_num_tokens = get_dp_local_info(forward_batch)
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/layers/dp_attention.py", line 459, in get_dp_local_info
+    cumtokens = torch.cumsum(forward_batch.global_num_tokens_gpu, dim=0)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: The Inner error is reported as above. The process exits for this inner error, and the current working event is 0xaaab13a26a08.
+Since the operator is called asynchronously, the stacktrace may be inaccurate. If you want to get the accurate stacktrace, please set the environment variable ASCEND_LAUNCH_BLOCKING=1.
+Note: ASCEND_LAUNCH_BLOCKING=1 will force ops to run in synchronous mode, resulting in performance degradation. Please unset ASCEND_LAUNCH_BLOCKING in time after debugging.
+[ERROR] 2026-09-14-11:37:56 (PID:68073, Device:5, RankID:-1) ERR00100 PTA call acl api failed.
+EZ9999: Inner Error!
+EZ9999[PID: 68073] 2026-09-14-11:37:54.064.446 (EZ9999):  The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 1, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfffff7bf1eb8880b,0x9c201a0f800ffff, mte error info: 0xb79563ef0003cbdf, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+TraceBack (most recent call last):
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 2, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xffdfdff71aa2880b,0x9c201a090007ffd, mte error info: 0xda35bc9f00039dff, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 3, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfdff5ff90760880b,0x9c201a06800bfe7, mte error info: 0xfff1c77f0007ffae, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 4, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x77d97ffb07e0880b,0x9c201a0b000bbff, mte error info: 0xdffd6fee0001fffe, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 5, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xf7f1ffff1bfc880b,0x9c201a04800fdbf, mte error info: 0xb97f5f7e00066ec4, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 6, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfd75fefb0bfe880b,0x9c201a05800b76f, mte error info: 0xec6ded670001ffff, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 7, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xdbfffffe1bec880b,0x9c201a0f000eeff, mte error info: 0xb7dcf5670007fbff, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 8, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xeffedcff1efc880b,0x9c201a0f800bf7f, mte error info: 0xf85df87f0004fffd, vec error info: 0, cube error info: 0, l1 error info: 0xff9f001bdfcf, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 19, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x7f7ffff708de880b,0x9c201a0f800e7ff, mte error info: 0x768f08f70001f37a, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 20, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x7ff3fbde11f2880b,0x9c201a0f800efef, mte error info: 0x99c70eed0007f9bf, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 21, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xf6ffe7ff137e880b,0x9c201a0f8007eff, mte error info: 0xc799fdd70003a9b0, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 22, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfdbedeef181e880b,0x9c201a06800eef7, mte error info: 0xdfbeebff0007fdc5, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 23, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x3ff7b6ee044e880b,0x9c201a0e800ebfd, mte error info: 0x16e5ff82000366fe, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 24, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xeffddfff0dfa880b,0x9c201a0f0007ff7, mte error info: 0xf1e0c3dd00018efb, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 25, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xeafff7ef1f62880b,0x9c201a0f800df79, mte error info: 0x9edcff1f00077d04, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 26, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xe7fd5dff1f7e880b,0x9c201a06800dfcf, mte error info: 0x228e6c1d0006d773, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       An error occurred in the kernel task, retCode=0x26, [aicore exception].[FUNC:PreCheckTaskErr][FILE:davinci_kernel_task.cc][LINE:1262]
+       Failed to check stream, stream_id=55, retCode=0x7150026.[FUNC:EvtRecord][FILE:event_c.cc][LINE:31]
+       rtEventRecord execution failed, reason=aicore exception[FUNC:FuncErrorReason][FILE:error_message_manage.cc][LINE:69]
+
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 5795, in run_scheduler_process
+    scheduler = Scheduler(
+                ^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 573, in __init__
+    self.init_model_worker()
+  File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 1107, in init_model_worker
+    self.init_all_cuda_graphs()
+  File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 1090, in init_all_cuda_graphs
+    self.tp_worker.init_cuda_graphs()
+  File "/sgl-workspace/sglang/python/sglang/srt/managers/tp_worker.py", line 443, in init_cuda_graphs
+    self.model_runner.init_cuda_graphs(
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner.py", line 1084, in init_cuda_graphs
+    capture = capture_cuda_graphs(
+              ^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py", line 269, in capture_cuda_graphs
+    decode = capture_decode_graph(model_runner=model_runner)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py", line 588, in capture_decode_graph
+    runner = graph_runners[model_runner.device](model_runner)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/hardware_backend/npu/graph_runner/npu_graph_runner.py", line 103, in __init__
+    super().__init__(
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 488, in __init__
+    raise Exception(
+Exception: Capture cuda graph failed: The Inner error is reported as above. The process exits for this inner error, and the current working event is 0xaaab13a26a08.
+Since the operator is called asynchronously, the stacktrace may be inaccurate. If you want to get the accurate stacktrace, please set the environment variable ASCEND_LAUNCH_BLOCKING=1.
+Note: ASCEND_LAUNCH_BLOCKING=1 will force ops to run in synchronous mode, resulting in performance degradation. Please unset ASCEND_LAUNCH_BLOCKING in time after debugging.
+[ERROR] 2026-09-14-11:37:56 (PID:68073, Device:5, RankID:-1) ERR00100 PTA call acl api failed.
+EZ9999: Inner Error!
+EZ9999[PID: 68073] 2026-09-14-11:37:54.064.446 (EZ9999):  The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 1, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfffff7bf1eb8880b,0x9c201a0f800ffff, mte error info: 0xb79563ef0003cbdf, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+TraceBack (most recent call last):
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 2, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xffdfdff71aa2880b,0x9c201a090007ffd, mte error info: 0xda35bc9f00039dff, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 3, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfdff5ff90760880b,0x9c201a06800bfe7, mte error info: 0xfff1c77f0007ffae, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 4, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x77d97ffb07e0880b,0x9c201a0b000bbff, mte error info: 0xdffd6fee0001fffe, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 5, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xf7f1ffff1bfc880b,0x9c201a04800fdbf, mte error info: 0xb97f5f7e00066ec4, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 6, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfd75fefb0bfe880b,0x9c201a05800b76f, mte error info: 0xec6ded670001ffff, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 7, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xdbfffffe1bec880b,0x9c201a0f000eeff, mte error info: 0xb7dcf5670007fbff, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 8, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xeffedcff1efc880b,0x9c201a0f800bf7f, mte error info: 0xf85df87f0004fffd, vec error info: 0, cube error info: 0, l1 error info: 0xff9f001bdfcf, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 19, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x7f7ffff708de880b,0x9c201a0f800e7ff, mte error info: 0x768f08f70001f37a, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 20, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x7ff3fbde11f2880b,0x9c201a0f800efef, mte error info: 0x99c70eed0007f9bf, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 21, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xf6ffe7ff137e880b,0x9c201a0f8007eff, mte error info: 0xc799fdd70003a9b0, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 22, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfdbedeef181e880b,0x9c201a06800eef7, mte error info: 0xdfbeebff0007fdc5, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 23, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x3ff7b6ee044e880b,0x9c201a0e800ebfd, mte error info: 0x16e5ff82000366fe, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 24, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xeffddfff0dfa880b,0x9c201a0f0007ff7, mte error info: 0xf1e0c3dd00018efb, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 25, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xeafff7ef1f62880b,0x9c201a0f800df79, mte error info: 0x9edcff1f00077d04, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 26, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xe7fd5dff1f7e880b,0x9c201a06800dfcf, mte error info: 0x228e6c1d0006d773, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       An error occurred in the kernel task, retCode=0x26, [aicore exception].[FUNC:PreCheckTaskErr][FILE:davinci_kernel_task.cc][LINE:1262]
+       Failed to check stream, stream_id=55, retCode=0x7150026.[FUNC:EvtRecord][FILE:event_c.cc][LINE:31]
+       rtEventRecord execution failed, reason=aicore exception[FUNC:FuncErrorReason][FILE:error_message_manage.cc][LINE:69]
+
+Possible solutions:
+1. set --mem-fraction-static to a smaller value (e.g., 0.8 or 0.7)
+2. set --cuda-graph-max-bs-decode to a smaller value (e.g., 16)
+3. disable decode CUDA graph by --cuda-graph-backend-decode=disabled. (Not recommended. Huge performance loss)
+Open an issue on GitHub https://github.com/sgl-project/sglang/issues/new/choose 
+
+
+torch._C._fft, , torch._Ctorch._C._linalg, , pandas._libs.internals, , scipy.special._combtorch._C._dynamo.autograd_compiler, torch._C._nestedav.codec.context, , , pandas._libs.indexing, scipy.special._ellip_harm_2av.video.formattorch._C._dynamo.eval_frame, torch._C._nn, , , pandas._libs.index, scipy.spatial.transform._rotationav.video.reformattertorch._C._dynamo.guards, torch._C._sparse, , , pandas._libs.writers, scipy.optimize._directav.planetorch._C._dynamo.utils, , torch._C._special, , pandas._libs.joinmultidict._multidictav.video.plane, torch._C._fft, , yarl._quoting_cpandas._libs.window.aggregations, av.video.frame, , torch._C._linalg, , propcache._helpers_cpandas._libs.window.indexerstorch_npu._C, av.video.stream, , torch._C._nestedaiohttp._http_writer, , pandas._libs.reshape, av.codec.hwaccelaiohttp._http_parser, torch._C._nn, , , pandas._libs.groupbynumpy.random._common, av.codec.codecaiohttp._websocket.mask, , torch._C._sparse, , pandas._libs.jsonnumpy.random.bit_generator, av.frameaiohttp._websocket.reader_c, torch._C._special, , , pandas._libs.parsersnumpy.random._bounded_integersav.audio.layoutfrozenlist._frozenlist, , , , av.audio.planepandas._libs.testingmsgspec._corenumpy.random._mt19937, , , , , torch_npu._Cav.audio.framepyarrow._acerotvm_ffi.core, numpy.random.mtrand, pyarrow._fs, , av.audio.stream, lxml._elementpathnumpy.random._philox, , , pyarrow._csv, numpy.random._commonnumpy.random._pcg64av.filter.link, lxml.etree, , pyarrow._json, , numpy.random.bit_generatornumpy.random._sfc64, av.filter.contextsetproctitle._setproctitle, , pyarrow._substrait, numpy.random._bounded_integersnumpy.random._generator, av.filter.graph, , pyarrow._dataset, numpy.random._mt19937google._upb._message, av.filter.filter, pyarrow._dataset_orc, numpy.random.mtrand, , av.filter.loudnorm, pyarrow._parquetmarkupsafe._speedups, , numpy.random._philox, av.audio.resamplercython.cimports.libc.math, pyarrow._azurefs, , , yaml._yaml, numpy.random._pcg64av.audio.codeccontext_sharedpyarrow._hdfs, , , , numpy.random._sfc64, av.audio.fifoCython._sharedpyarrow._gcsfsPIL._imaging, , , , numpy.random._generator, av.deviceCython.Utilspyarrow._s3fsPIL._imagingft, , , , av.video.codeccontextCython.Compiler.StringEncodingpyarrow._parquet_encryptionav._core, , , , Cython.Plex.Actionszmq.backend.cython._zmq, pyarrow._dataset_parquet_encryptionav.logging, markupsafe._speedups, , , Cython.Plex.Transitionsregex._regexpyarrow._dataset_parquet, av.buffer, yaml._yaml, , Cython.Plex.Machines, xxhash._xxhashav.audio.format, _cffi_backend, , Cython.Plex.DFA, PIL._imagingav.error, scipy._lib._ccallback_c, , , Cython.Plex.Scanners, npu_utilsPIL._imagingftav.dictionary, scipy.linalg._fblas, , Cython.Compiler.Scanning, , av.container.pyioav._core, scipy.linalg._flapackCython.StringIOTree, , scipy.ndimage._nd_image, , av.formatav.loggingscipy.linalg.cython_lapack, Cython.LZSS, , , _ni_label, av.indexav.buffer, scipy.linalg._cythonized_array_utils, Cython.Compiler.Codeav.utils, scipy.ndimage._ni_label, , , av.audio.formatscipy.linalg._solve_toeplitzpyarrow.libav.stream, , , , , av.error__triton_launcherscipy.linalg._decomp_lu_cython_cyutilityav.container.streams,  (total: , , , av.dictionary236scipy.linalg._matfuncs_sqrtm_triupandas._libs._cyutilityav.sidedata.encparams, ), , , av.container.pyio
+scipy.linalg.cython_blaspandas._libs.tslibs.ccalendarav.sidedata.motionvectors, , , , av.formatscipy.linalg._matfuncs_expmpandas._libs.tslibs.np_datetimeav.sidedata.sidedata, , , , av.indexscipy.linalg._decomp_updatepandas._libs.tslibs.dtypesav.opaque, , , av.utils, scipy.sparse._sparsetoolspandas._libs.tslibs.base, av.rational, , _csparsetools, av.streampandas._libs.tslibs.nattype, av.packet, , scipy.sparse._csparsetools, av.container.streamspandas._libs.tslibs.timezones, av.container.input, , scipy.sparse.linalg._dsolve._superlu, av.sidedata.encparamspandas._libs.properties, av.bitstream, , , scipy.sparse.linalg._eigen.arpack._arpackav.sidedata.motionvectorsav.container.outputpandas._libs.tslibs.fields, , , , scipy.sparse.linalg._propack._spropackav.sidedata.sidedataav.container.corepandas._libs.tslibs.timedeltas, , , , scipy.sparse.linalg._propack._dpropackav.opaqueav.codec.contextpandas._libs.tslibs.tzconversion, , , , scipy.sparse.linalg._propack._cpropackav.rationalav.video.formatpandas._libs.tslibs.timestamps, , , , scipy.sparse.linalg._propack._zpropackav.packetav.video.reformatterpandas._libs.tslibs.offsets, , , , scipy.sparse.csgraph._toolspandas._libs.tslibs.strptime, av.container.inputav.plane, scipy.sparse.csgraph._shortest_path, , pandas._libs.tslibs.parsing, av.bitstreamav.video.plane, scipy.sparse.csgraph._traversal, , pandas._libs.tslibs.conversion, , av.container.outputav.video.framescipy.sparse.csgraph._min_spanning_treepandas._libs.tslibs.period, , , , av.container.coreav.video.streamscipy.sparse.csgraph._flowpandas._libs.tslibs.vectorized, , , , av.codec.contextav.codec.hwaccelscipy.sparse.csgraph._matchingpandas._libs.ops_dispatch, , av.codec.codec, , av.video.format, scipy.sparse.csgraph._reorderingpandas._libs.missing, av.frame, , av.video.reformatter, scipy.optimize._minpack2pandas._libs.hashtableav.audio.layout, , , , av.planescipy.optimize._group_columnspandas._libs.algosav.audio.plane, , , , av.video.planescipy._lib.messagestreampandas._libs.intervalav.audio.frame, , , , av.video.framescipy.optimize._trlib._trlibpandas._libs.libav.audio.stream, , , av.video.stream, scipy.optimize._lbfgsbpyarrow._computeav.filter.link, , , av.codec.hwaccel, , _moduleTNCpandas._libs.ops, av.filter.contextav.codec.codecscipy.optimize._moduleTNC, , , , pandas._libs.hashingav.filter.graphav.framescipy.optimize._cobyla, , , , pandas._libs.arraysav.filter.filterav.audio.layoutscipy.optimize._slsqp, , , , pandas._libs.tslibav.filter.loudnormav.audio.planescipy.optimize._minpack, , , , pandas._libs.sparseav.audio.resamplerav.audio.framescipy.optimize._lsq.givens_elimination, , , , pandas._libs.internalsav.audio.codeccontextav.audio.streamscipy.optimize._zeros, , , , pandas._libs.indexingscipy.optimize._highs.cython.src._highs_wrapper, av.audio.fifoav.filter.link, pandas._libs.index, , scipy.optimize._highs._highs_wrapper, av.deviceav.filter.context, , pandas._libs.writersav.video.codeccontext, scipy.optimize._highs.cython.src._highs_constants, av.filter.graph, , pandas._libs.joinzmq.backend.cython._zmq, scipy.optimize._highs._highs_constants, av.filter.filter, , pandas._libs.window.aggregations, regex._regexscipy.linalg._interpolative, av.filter.loudnormpandas._libs.window.indexers, , , scipy.optimize._bglu_denseav.audio.resamplerpandas._libs.reshape, , , , _cffi_backendscipy.optimize._lsapav.audio.codeccontextpandas._libs.groupby, , , , scipy._lib._ccallback_cscipy.spatial._ckdtreeav.audio.fifopandas._libs.json, , , , scipy.linalg._fblasscipy.spatial._qhullav.device, pandas._libs.parsers, , scipy.spatial._voronoi, , scipy.linalg._flapackav.video.codeccontext, pandas._libs.testingscipy.spatial._distance_wrapscipy.linalg.cython_lapack, , , , pyarrow._acerozmq.backend.cython._zmqscipy.spatial._hausdorffscipy.linalg._cythonized_array_utils, , , pyarrow._fs, regex._regexscipy.special._ufuncs_cxx, , scipy.linalg._solve_toeplitzpyarrow._csvscipy.special._cdflib, , , , scipy.linalg._decomp_lu_cython_cffi_backend, pyarrow._jsonscipy.special._ufuncsscipy.linalg._matfuncs_sqrtm_triu, , , , scipy._lib._ccallback_cpyarrow._substraitscipy.special._specfunscipy.linalg.cython_blas, , , , scipy.linalg._fblaspyarrow._datasetscipy.special._combscipy.linalg._matfuncs_expm, , , scipy.linalg._flapack, pyarrow._dataset_orcscipy.special._ellip_harm_2, scipy.linalg._decomp_update, , scipy.linalg.cython_lapack, pyarrow._parquetscipy.spatial.transform._rotation, scipy.sparse._sparsetools, , scipy.linalg._cythonized_array_utilspyarrow._azurefs, scipy.optimize._direct, , _csparsetoolsscipy.linalg._solve_toeplitzpyarrow._hdfs, , , , multidict._multidictscipy.sparse._csparsetoolsscipy.linalg._decomp_lu_cythonpyarrow._gcsfs, , , , yarl._quoting_cscipy.sparse.linalg._dsolve._superluscipy.linalg._matfuncs_sqrtm_triupyarrow._s3fs, , , , propcache._helpers_cscipy.sparse.linalg._eigen.arpack._arpackscipy.linalg.cython_blas, pyarrow._parquet_encryption, , scipy.sparse.linalg._propack._spropack, aiohttp._http_writerscipy.linalg._matfuncs_expm, pyarrow._dataset_parquet_encryption, , scipy.sparse.linalg._propack._dpropack, aiohttp._http_parserscipy.linalg._decomp_update, pyarrow._dataset_parquet, scipy.sparse.linalg._propack._cpropack, aiohttp._websocket.mask, , , scipy.sparse._sparsetoolsxxhash._xxhashaiohttp._websocket.reader_cscipy.sparse.linalg._propack._zpropack, , _csparsetools, frozenlist._frozenlist, scipy.sparse.csgraph._tools, scipy.sparse._csparsetools, , npu_utils, msgspec._corescipy.sparse.csgraph._shortest_pathscipy.sparse.linalg._dsolve._superlu, , , scipy.sparse.csgraph._traversal, scipy.ndimage._nd_imagescipy.sparse.linalg._eigen.arpack._arpack, tvm_ffi.core, scipy.sparse.csgraph._min_spanning_tree, _ni_label, , scipy.sparse.linalg._propack._spropack, lxml._elementpathscipy.sparse.csgraph._flow, scipy.ndimage._ni_label, , scipy.sparse.linalg._propack._dpropacklxml.etreescipy.sparse.csgraph._matching, , , , __triton_launcherscipy.sparse.linalg._propack._cpropacksetproctitle._setproctitlescipy.sparse.csgraph._reordering (total: , , 236scipy.sparse.linalg._propack._zpropackscipy.optimize._minpack2), , , 
+google._upb._messagescipy.sparse.csgraph._toolsscipy.optimize._group_columns, , scipy.sparse.csgraph._shortest_pathscipy._lib.messagestream, , scipy.sparse.csgraph._traversalscipy.optimize._trlib._trlib, , scipy.sparse.csgraph._min_spanning_treescipy.optimize._lbfgsb, , scipy.sparse.csgraph._flow_moduleTNC, , , scipy.sparse.csgraph._matchingcython.cimports.libc.mathscipy.optimize._moduleTNC, , scipy.sparse.csgraph._reordering, _shared, scipy.optimize._cobyla, scipy.optimize._minpack2, Cython._sharedscipy.optimize._slsqp, , , scipy.optimize._group_columnsCython.Utilsscipy.optimize._minpack, , , scipy._lib.messagestreamCython.Compiler.StringEncodingscipy.optimize._lsq.givens_elimination, , , scipy.optimize._trlib._trlibCython.Plex.Actionsscipy.optimize._zeros, , scipy.optimize._lbfgsb, Cython.Plex.Transitions, scipy.optimize._highs.cython.src._highs_wrapper, _moduleTNC, Cython.Plex.Machines, scipy.optimize._highs._highs_wrapper, scipy.optimize._moduleTNC, Cython.Plex.DFA, scipy.optimize._highs.cython.src._highs_constants, scipy.optimize._cobyla, Cython.Plex.Scanners, scipy.optimize._highs._highs_constants, scipy.optimize._slsqp, Cython.Compiler.Scanning, scipy.linalg._interpolative, scipy.optimize._minpack, Cython.StringIOTreescipy.optimize._bglu_dense, , , scipy.optimize._lsq.givens_eliminationCython.LZSS, scipy.optimize._lsap, scipy.optimize._zeros, Cython.Compiler.Code, scipy.spatial._ckdtreescipy.optimize._highs.cython.src._highs_wrapper, , , pyarrow.libscipy.spatial._qhullscipy.optimize._highs._highs_wrapper, , , _cyutilityscipy.spatial._voronoiscipy.optimize._highs.cython.src._highs_constants, , , pandas._libs._cyutilityscipy.spatial._distance_wrapscipy.optimize._highs._highs_constants, , scipy.spatial._hausdorff, pandas._libs.tslibs.ccalendar, scipy.linalg._interpolative, scipy.special._ufuncs_cxx, pandas._libs.tslibs.np_datetimescipy.optimize._bglu_dense, , , scipy.special._cdflibpandas._libs.tslibs.dtypesscipy.optimize._lsap, , , scipy.special._ufuncspandas._libs.tslibs.basescipy.spatial._ckdtree, , , scipy.special._specfunpandas._libs.tslibs.nattypescipy.spatial._qhull, , , scipy.special._combpandas._libs.tslibs.timezonesscipy.spatial._voronoi, , , scipy.special._ellip_harm_2pandas._libs.propertiesscipy.spatial._distance_wrap, , , scipy.spatial.transform._rotationscipy.spatial._hausdorffpandas._libs.tslibs.fields, , , scipy.optimize._directscipy.special._ufuncs_cxxpandas._libs.tslibs.timedeltas, , scipy.special._cdflibpandas._libs.tslibs.tzconversion, , , scipy.special._ufuncsmultidict._multidict, pandas._libs.tslibs.timestampsscipy.special._specfun, , , yarl._quoting_cpandas._libs.tslibs.offsetsscipy.special._comb, , , propcache._helpers_cpandas._libs.tslibs.strptimescipy.special._ellip_harm_2, , aiohttp._http_writer, pandas._libs.tslibs.parsing, scipy.spatial.transform._rotation, aiohttp._http_parser, , pandas._libs.tslibs.conversionscipy.optimize._directaiohttp._websocket.mask, , pandas._libs.tslibs.periodaiohttp._websocket.reader_c, , , pandas._libs.tslibs.vectorizedmultidict._multidictfrozenlist._frozenlist, , pandas._libs.ops_dispatch, yarl._quoting_c, msgspec._core, pandas._libs.missingpropcache._helpers_c, pandas._libs.hashtable, , aiohttp._http_writerpandas._libs.algos, , , tvm_ffi.coreaiohttp._http_parserpandas._libs.interval, , , aiohttp._websocket.maskpandas._libs.liblxml._elementpath, , , aiohttp._websocket.reader_clxml.etreepyarrow._compute, , , frozenlist._frozenlistsetproctitle._setproctitlepandas._libs.ops, , msgspec._corepandas._libs.hashing, pandas._libs.arrays, pandas._libs.tslib, pandas._libs.sparse, pandas._libs.internals, , pandas._libs.indexing, google._upb._message, tvm_ffi.corepandas._libs.index, pandas._libs.writers, pandas._libs.join, , lxml._elementpathpandas._libs.window.aggregations, , lxml.etreepandas._libs.window.indexers, , setproctitle._setproctitlepandas._libs.reshape, , pandas._libs.groupbycython.cimports.libc.math, pandas._libs.json, , _sharedpandas._libs.parsers, , , google._upb._messageCython._sharedpandas._libs.testing, Cython.Utils, , pyarrow._aceroCython.Compiler.StringEncoding, pyarrow._fs, , Cython.Plex.Actionspyarrow._csv, Cython.Plex.Transitions, , pyarrow._jsonCython.Plex.Machines, , , pyarrow._substraitCython.Plex.DFAcython.cimports.libc.math, , , pyarrow._datasetCython.Plex.Scanners_shared, , Cython.Compiler.Scanning, pyarrow._dataset_orc, Cython._shared, Cython.StringIOTree, pyarrow._parquet, Cython.Utils, Cython.LZSS, pyarrow._azurefsCython.Compiler.StringEncoding, , , Cython.Compiler.Codepyarrow._hdfsCython.Plex.Actions, , , pyarrow.libpyarrow._gcsfsCython.Plex.Transitions, , , _cyutilitypyarrow._s3fsCython.Plex.Machines, , , pandas._libs._cyutilitypyarrow._parquet_encryptionCython.Plex.DFA, , , pandas._libs.tslibs.ccalendarpyarrow._dataset_parquet_encryptionCython.Plex.Scanners, , , pandas._libs.tslibs.np_datetimepyarrow._dataset_parquetCython.Compiler.Scanning, , , pandas._libs.tslibs.dtypesxxhash._xxhashCython.StringIOTree, , pandas._libs.tslibs.baseCython.LZSS, pandas._libs.tslibs.nattype, Cython.Compiler.Code, pandas._libs.tslibs.timezones, , , npu_utilspyarrow.libpandas._libs.properties, , _cyutilitypandas._libs.tslibs.fields, , , scipy.ndimage._nd_imagepandas._libs._cyutilitypandas._libs.tslibs.timedeltas, , , _ni_labelpandas._libs.tslibs.ccalendarpandas._libs.tslibs.tzconversion, , , scipy.ndimage._ni_labelpandas._libs.tslibs.np_datetimepandas._libs.tslibs.timestamps, , , pandas._libs.tslibs.dtypespandas._libs.tslibs.offsets, __triton_launcherpandas._libs.tslibs.base, ,  (total: pandas._libs.tslibs.strptimepandas._libs.tslibs.nattype236, , )pandas._libs.tslibs.parsingpandas._libs.tslibs.timezones
+, , pandas._libs.tslibs.conversionpandas._libs.properties, pandas._libs.tslibs.period, , pandas._libs.tslibs.fieldspandas._libs.tslibs.vectorized, , pandas._libs.tslibs.timedeltaspandas._libs.ops_dispatch, pandas._libs.tslibs.tzconversion, , pandas._libs.missingpandas._libs.tslibs.timestamps, , pandas._libs.hashtablepandas._libs.tslibs.offsets, pandas._libs.algos, , pandas._libs.tslibs.strptimepandas._libs.interval, , pandas._libs.tslibs.parsingpandas._libs.lib, pandas._libs.tslibs.conversion, , pyarrow._computepandas._libs.tslibs.period, , pandas._libs.opspandas._libs.tslibs.vectorized, , pandas._libs.hashingpandas._libs.ops_dispatch, , pandas._libs.arrayspandas._libs.missing, , pandas._libs.tslibpandas._libs.hashtable, , pandas._libs.sparsepandas._libs.algos, , pandas._libs.internalspandas._libs.interval, pandas._libs.indexing, pandas._libs.lib, pandas._libs.index, , pyarrow._computepandas._libs.writers, pandas._libs.ops, pandas._libs.join, , pandas._libs.hashingpandas._libs.window.aggregations, , pandas._libs.arrayspandas._libs.window.indexers, , pandas._libs.tslibpandas._libs.reshape, , pandas._libs.sparsepandas._libs.groupby, pandas._libs.internals, , pandas._libs.jsonpandas._libs.indexing, pandas._libs.parsers, pandas._libs.index, , pandas._libs.testingpandas._libs.writers, , pyarrow._aceropandas._libs.join, pyarrow._fs, pandas._libs.window.aggregations, , pyarrow._csvpandas._libs.window.indexers, pyarrow._json, , pandas._libs.reshapepyarrow._substrait, , pandas._libs.groupbypyarrow._dataset, , pyarrow._dataset_orcpandas._libs.json, , pyarrow._parquetpandas._libs.parsers, pyarrow._azurefs, , pandas._libs.testingpyarrow._hdfs, , pyarrow._gcsfspyarrow._acero, pyarrow._s3fs, pyarrow._fs, , pyarrow._parquet_encryptionpyarrow._csv, , pyarrow._dataset_parquet_encryptionpyarrow._json, pyarrow._dataset_parquet, pyarrow._substrait, , pyarrow._datasetxxhash._xxhash, pyarrow._dataset_orc, pyarrow._parquet, pyarrow._azurefs, pyarrow._hdfs, , pyarrow._gcsfsnpu_utils, pyarrow._s3fs, pyarrow._parquet_encryption, pyarrow._dataset_parquet_encryption, , scipy.ndimage._nd_imagepyarrow._dataset_parquet, _ni_label, xxhash._xxhash, scipy.ndimage._ni_label, __triton_launcher (total: 236)
+, npu_utils, scipy.ndimage._nd_image, _ni_label, scipy.ndimage._ni_label, __triton_launcher (total: 236)
+[rank2]:[W914 11:37:56.197444340 Logger.cpp:75] Warning: Failed to generate log message. (function operator())
+[rank2]:[E914 11:37:56.197520160 ProcessGroupHCCL.cpp:2011] [Rank 2] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68070, Device:2, RankID:-1) ERR02005 DIST internal error
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  [Rank 2] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68070, Device:2, RankID:-1) ERR02005 DIST internal error
+Fatal Python error: Aborted
+
+Thread 0x0000fff883fff100 (most recent call first):
+  File "/usr/local/python3.12.13/lib/python3.12/threading.py", line 359 in wait
+  File "/usr/local/python3.12.13/lib/python3.12/threading.py", line 655 in wait
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/tqdm/_monitor.py", line 69 in run
+  File "/usr/local/python3.12.13/lib/python3.12/threading.py", line 1075 in _bootstrap_inner
+  File "/usr/local/python3.12.13/lib/python3.12/threading.py", line 1032 in _bootstrap
+
+Thread 0x0000ffff8df50080 (most recent call first):
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/base_cuda_graph_runner.py", line 61 in freeze_gc
+  File "/usr/local/python3.12.13/lib/python3.12/contextlib.py", line 158 in __exit__
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 1064 in capture
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 486 in __init__
+  File "/sgl-workspace/sglang/python/sglang/srt/hardware_backend/npu/graph_runner/npu_graph_runner.py", line 103 in __init__
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py", line 588 in capture_decode_graph
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py", line 269 in capture_cuda_graphs
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner.py", line 1084 in init_cuda_graphs
+  File "/sgl-workspace/sglang/python/sglang/srt/managers/tp_worker.py", line 443 in init_cuda_graphs
+  File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 1090 in init_all_cuda_graphs
+  File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 1107 in init_model_worker
+  File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 573 in __init__
+  File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 5795 in run_scheduler_process
+  File "/usr/local/python3.12.13/lib/python3.12/multiprocessing/process.py", line 108 in run
+  File "/usr/local/python3.12.13/lib/python3.12/multiprocessing/process.py", line 314 in _bootstrap
+  File "/usr/local/python3.12.13/lib/python3.12/multiprocessing/spawn.py", line 135 in _main
+  File "/usr/local/python3.12.13/lib/python3.12/multiprocessing/spawn.py", line 122 in spawn_main
+  File "<string>", line 1 in <module>
+
+Extension modules: numpy._core._multiarray_umath, numpy.linalg._umath_linalg, psutil._psutil_linux, pybase64._pybase64, charset_normalizer.md, charset_normalizer.cd, requests.packages.charset_normalizer.md, requests.packages.chardet.md, requests.packages.charset_normalizer.cd, requests.packages.chardet.cd, torch._C, torch._C._dynamo.autograd_compiler, torch._C._dynamo.eval_frame, torch._C._dynamo.guards, torch._C._dynamo.utils, torch._C._fft, torch._C._linalg, torch._C._nested, torch._C._nn, torch._C._sparse, torch._C._special, torch_npu._C, numpy.random._common, numpy.random.bit_generator, numpy.random._bounded_integers, numpy.random._mt19937, numpy.random.mtrand, numpy.random._philox, numpy.random._pcg64, numpy.random._sfc64, numpy.random._generator[rank7]:[E914 11:37:56.198756200 ProcessGroupHCCL.cpp:2011] [Rank 3] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68075, Device:7, RankID:-1) ERR02005 DIST internal error
+, markupsafe._speedups, terminate called recursively
+yaml._yaml, PIL._imaging, PIL._imagingft, av._core, av.logging, av.buffer, av.audio.format[rank5]:[E914 11:37:56.198928070 ProcessGroupHCCL.cpp:2011] [Rank 1] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68073, Device:5, RankID:-1) ERR02005 DIST internal error
+, av.error, av.dictionary, av.container.pyio, terminate called recursively
+av.format, av.index, av.utils, av.stream, av.container.streams, av.sidedata.encparams, av.sidedata.motionvectors, av.sidedata.sidedata, av.opaque, [rank6]:[E914 11:37:56.199056950 ProcessGroupHCCL.cpp:2011] [Rank 2] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68074, Device:6, RankID:-1) ERR02005 DIST internal error
+av.rational, av.packet, av.container.input, av.bitstream, av.container.outputterminate called recursively
+, av.container.core, av.codec.context, av.video.format, av.video.reformatter, av.plane, av.video.plane, av.video.frame, av.video.stream, av.codec.hwaccel, av.codec.codec, av.frame, av.audio.layout, av.audio.plane, av.audio.frame, av.audio.stream, av.filter.link, av.filter.context, av.filter.graph, av.filter.filter, av.filter.loudnorm, av.audio.resampler, av.audio.codeccontext, av.audio.fifo, av.device, av.video.codeccontext, zmq.backend.cython._zmq, regex._regex, _cffi_backend, scipy._lib._ccallback_c, scipy.linalg._fblas, scipy.linalg._flapack, scipy.linalg.cython_lapack, scipy.linalg._cythonized_array_utils, scipy.linalg._solve_toeplitz[rank1]:[E914 11:37:56.199479970 ProcessGroupHCCL.cpp:2011] [Rank 1] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68069, Device:1, RankID:-1) ERR02005 DIST internal error
+, scipy.linalg._decomp_lu_cython, scipy.linalg._matfuncs_sqrtm_triu, scipy.linalg.cython_blas, scipy.linalg._matfuncs_expm, scipy.linalg._decomp_updateterminate called recursively
+, scipy.sparse._sparsetools, _csparsetools, scipy.sparse._csparsetools, scipy.sparse.linalg._dsolve._superlu, scipy.sparse.linalg._eigen.arpack._arpack, scipy.sparse.linalg._propack._spropack, scipy.sparse.linalg._propack._dpropack, scipy.sparse.linalg._propack._cpropack, scipy.sparse.linalg._propack._zpropack, scipy.sparse.csgraph._tools, scipy.sparse.csgraph._shortest_path, scipy.sparse.csgraph._traversal[rank3]:[E914 11:37:56.199635380 ProcessGroupHCCL.cpp:2011] [Rank 3] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-09-14-11:37:56 (PID:68071, Device:3, RankID:-1) ERR02005 DIST internal error
+, scipy.sparse.csgraph._min_spanning_tree, scipy.sparse.csgraph._flow, terminate called recursively
+scipy.sparse.csgraph._matching, scipy.sparse.csgraph._reordering, scipy.optimize._minpack2, scipy.optimize._group_columns, scipy._lib.messagestream, scipy.optimize._trlib._trlib, scipy.optimize._lbfgsb, _moduleTNC, scipy.optimize._moduleTNC, scipy.optimize._cobyla, scipy.optimize._slsqp, scipy.optimize._minpack, scipy.optimize._lsq.givens_elimination, scipy.optimize._zeros, scipy.optimize._highs.cython.src._highs_wrapper, scipy.optimize._highs._highs_wrapper, scipy.optimize._highs.cython.src._highs_constants, scipy.optimize._highs._highs_constants, scipy.linalg._interpolative, scipy.optimize._bglu_dense, scipy.optimize._lsap, scipy.spatial._ckdtree, scipy.spatial._qhull, scipy.spatial._voronoi, scipy.spatial._distance_wrap, scipy.spatial._hausdorff, scipy.special._ufuncs_cxx, scipy.special._cdflib, scipy.special._ufuncs, scipy.special._specfun, scipy.special._comb, scipy.special._ellip_harm_2, scipy.spatial.transform._rotation, scipy.optimize._direct, multidict._multidict, yarl._quoting_c, propcache._helpers_c, aiohttp._http_writer, aiohttp._http_parser, aiohttp._websocket.mask, aiohttp._websocket.reader_c, frozenlist._frozenlist, msgspec._core, tvm_ffi.core, lxml._elementpath, lxml.etree, setproctitle._setproctitle, google._upb._message, cython.cimports.libc.math, _shared, Cython._shared, Cython.Utils, Cython.Compiler.StringEncoding, Cython.Plex.Actions, Cython.Plex.Transitions, Cython.Plex.Machines, Cython.Plex.DFA, Cython.Plex.Scanners, Cython.Compiler.Scanning, Cython.StringIOTree, Cython.LZSS, Cython.Compiler.Code, pyarrow.lib, _cyutility, pandas._libs._cyutility, pandas._libs.tslibs.ccalendar, pandas._libs.tslibs.np_datetime, pandas._libs.tslibs.dtypes, pandas._libs.tslibs.base, pandas._libs.tslibs.nattype, pandas._libs.tslibs.timezones, pandas._libs.properties, pandas._libs.tslibs.fields, pandas._libs.tslibs.timedeltas, pandas._libs.tslibs.tzconversion, pandas._libs.tslibs.timestamps, pandas._libs.tslibs.offsets, pandas._libs.tslibs.strptime, pandas._libs.tslibs.parsing, pandas._libs.tslibs.conversion, pandas._libs.tslibs.period, pandas._libs.tslibs.vectorized, pandas._libs.ops_dispatch, pandas._libs.missing, pandas._libs.hashtable, pandas._libs.algos, pandas._libs.interval, pandas._libs.lib, pyarrow._compute, pandas._libs.ops, pandas._libs.hashing, pandas._libs.arrays, pandas._libs.tslib, pandas._libs.sparse, pandas._libs.internals, pandas._libs.indexing, pandas._libs.index, pandas._libs.writers, pandas._libs.join, pandas._libs.window.aggregations, pandas._libs.window.indexers, pandas._libs.reshape, pandas._libs.groupby, pandas._libs.json, pandas._libs.parsers, pandas._libs.testing, pyarrow._acero, pyarrow._fs, pyarrow._csv, pyarrow._json, pyarrow._substrait, pyarrow._dataset, pyarrow._dataset_orc, pyarrow._parquet, pyarrow._azurefs, pyarrow._hdfs, pyarrow._gcsfs, pyarrow._s3fs, pyarrow._parquet_encryption, pyarrow._dataset_parquet_encryption, pyarrow._dataset_parquet, xxhash._xxhash, npu_utils, scipy.ndimage._nd_image, _ni_label, scipy.ndimage._ni_label, __triton_launcher (total: 236)
+[2026-09-14 11:37:57 DP0 TP2 EP2] Scheduler hit an exception: Traceback (most recent call last):
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 486, in __init__
+    self.capture()
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 1074, in capture
+    self._capture_one_stream()
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 1143, in _capture_one_stream
+    self.capture_one_shape(
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 1261, in capture_one_shape
+    self.backend.capture_one(
+  File "/sgl-workspace/sglang/python/sglang/srt/hardware_backend/npu/graph_runner/npu_cudagraph_backend.py", line 92, in capture_one
+    forward_fn()
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 1222, in run_once
+    out = forward(
+          ^^^^^^^^
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.py", line 3050, in forward
+    hidden_states = self.model(
+                    ^^^^^^^^^^^
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.py", line 2812, in forward
+    hidden_states, residual, topk_indices = layer(
+                                            ^^^^^^
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/models/deepseek_v2.py", line 2465, in forward
+    hidden_states, residual = self.layer_communicator.prepare_mlp(
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/layers/communicator.py", line 874, in prepare_mlp
+    return self._communicate_with_all_reduce_and_layer_norm_fn(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/layers/communicator.py", line 1281, in _gather_hidden_states_and_residual
+    dp_gather_partial(hidden_states, local_hidden_states, forward_batch)
+  File "/sgl-workspace/sglang/python/sglang/srt/layers/dp_attention.py", line 870, in dp_gather_partial
+    _dp_gather(global_tokens, local_tokens, forward_batch, is_partial=True)
+  File "/sgl-workspace/sglang/python/sglang/srt/layers/dp_attention.py", line 856, in _dp_gather
+    _dp_gather_via_all_gather(
+  File "/sgl-workspace/sglang/python/sglang/srt/layers/dp_attention.py", line 601, in _dp_gather_via_all_gather
+    get_tp_group().all_gather_into_tensor(global_tokens, scattered_local_tokens)
+  File "/sgl-workspace/sglang/python/sglang/srt/distributed/parallel_state.py", line 1273, in all_gather_into_tensor
+    self._all_gather_into_tensor(output, input)
+  File "/sgl-workspace/sglang/python/sglang/srt/distributed/parallel_state.py", line 1248, in _all_gather_into_tensor
+    torch.distributed.all_gather_into_tensor(
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/distributed/c10d_logger.py", line 83, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py", line 4125, in all_gather_into_tensor
+    work = group._allgather_base(output_tensor, input_tensor, opts)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: The Inner error is reported as above. The process exits for this inner error, and the current working operator name is HcclReduceScatter.
+Since the operator is called asynchronously, the stacktrace may be inaccurate. If you want to get the accurate stacktrace, please set the environment variable ASCEND_LAUNCH_BLOCKING=1.
+Note: ASCEND_LAUNCH_BLOCKING=1 will force ops to run in synchronous mode, resulting in performance degradation. Please unset ASCEND_LAUNCH_BLOCKING in time after debugging.
+[ERROR] 2026-09-14-11:37:56 (PID:68070, Device:2, RankID:-1) ERR00100 PTA call acl api failed.
+EZ9999: Inner Error!
+EZ9999[PID: 68070] 2026-09-14-11:37:53.907.975 (EZ9999):  The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 0, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xefff7fff104e880b,0x9c201a0f800ffdf, mte error info: 0xf3ffffe900051abc, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+TraceBack (most recent call last):
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 1, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xffaff7ff0f68880b,0x9c201a07800ffbd, mte error info: 0x62ff695f0003de58, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 3, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfefdbfee1bee880b,0x9c201a07800fff6, mte error info: 0x5ff2fefe0007affe, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 4, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfffffffb1f74880b,0x9c201a0f800ffff, mte error info: 0xff7dfffd0003eda9, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 5, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfbbfffff0f60880b,0x9c201a0f800ffff, mte error info: 0x52b19fe30007f270, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 6, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x7fffffff1f46880b,0x9c201a0f8009fff, mte error info: 0x43bf77ee0006aedf, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 8, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xffffbfdf0df0880b,0x9c201a0f800feff, mte error info: 0xf395678e0005eef4, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 9, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x7c35fdff079c880b,0x9c201a0e800fff5, mte error info: 0x73ef9cde0006e7fd, vec error info: 0, cube error info: 0, l1 error info: 0xbf9e001e6ef3, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 18, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x7ef5cd7519be880b,0x9c201a0e800ffff, mte error info: 0x8d7f1ddd0007a9a0, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 19, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x77ff7ffd15fe880b,0x9c201a0f800f3f7, mte error info: 0xfed047a0005c26e, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 20, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x7fbf7eff1d9e880b,0x9c201a0e800feb7, mte error info: 0xe4b277590005d74d, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 21, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfff7ffcf1ffe880b,0x9c201a0f800ffff, mte error info: 0xffcf7eeb0007ffff, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 22, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfeffb6af1f78880b,0x9c201a0e000beff, mte error info: 0x9ffefbe00006fb3b, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 23, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xe7f576ef1b90880b,0x9c201a038009bff, mte error info: 0xadbff35d0007f8db, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 24, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xeffffff90e94880b,0x9c201a0b8001f7f, mte error info: 0xbfaf416700072ae4, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 25, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfffbffff1c68880b,0x9c201a0f800f3fd, mte error info: 0x3ac7a4fe0006ffed, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       An error occurred in the kernel task, retCode=0x26, [aicore exception].[FUNC:PreCheckTaskErr][FILE:davinci_kernel_task.cc][LINE:1262]
+       Failed to check task send status, stream_id=54, retCode=0x7150026.[FUNC:StreamLaunchKernelV2][FILE:aix_starsv2.cc][LINE:443]
+       rtsLaunchKernelWithHostArgs execution failed, reason=aicore exception[FUNC:FuncErrorReason][FILE:error_message_manage.cc][LINE:69]
+
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 5795, in run_scheduler_process
+    scheduler = Scheduler(
+                ^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 573, in __init__
+    self.init_model_worker()
+  File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 1107, in init_model_worker
+    self.init_all_cuda_graphs()
+  File "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py", line 1090, in init_all_cuda_graphs
+    self.tp_worker.init_cuda_graphs()
+  File "/sgl-workspace/sglang/python/sglang/srt/managers/tp_worker.py", line 443, in init_cuda_graphs
+    self.model_runner.init_cuda_graphs(
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner.py", line 1084, in init_cuda_graphs
+    capture = capture_cuda_graphs(
+              ^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py", line 269, in capture_cuda_graphs
+    decode = capture_decode_graph(model_runner=model_runner)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py", line 588, in capture_decode_graph
+    runner = graph_runners[model_runner.device](model_runner)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/hardware_backend/npu/graph_runner/npu_graph_runner.py", line 103, in __init__
+    super().__init__(
+  File "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py", line 488, in __init__
+    raise Exception(
+Exception: Capture cuda graph failed: The Inner error is reported as above. The process exits for this inner error, and the current working operator name is HcclReduceScatter.
+Since the operator is called asynchronously, the stacktrace may be inaccurate. If you want to get the accurate stacktrace, please set the environment variable ASCEND_LAUNCH_BLOCKING=1.
+Note: ASCEND_LAUNCH_BLOCKING=1 will force ops to run in synchronous mode, resulting in performance degradation. Please unset ASCEND_LAUNCH_BLOCKING in time after debugging.
+[ERROR] 2026-09-14-11:37:56 (PID:68070, Device:2, RankID:-1) ERR00100 PTA call acl api failed.
+EZ9999: Inner Error!
+EZ9999[PID: 68070] 2026-09-14-11:37:53.907.975 (EZ9999):  The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 0, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xefff7fff104e880b,0x9c201a0f800ffdf, mte error info: 0xf3ffffe900051abc, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+TraceBack (most recent call last):
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 1, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xffaff7ff0f68880b,0x9c201a07800ffbd, mte error info: 0x62ff695f0003de58, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 3, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfefdbfee1bee880b,0x9c201a07800fff6, mte error info: 0x5ff2fefe0007affe, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 4, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfffffffb1f74880b,0x9c201a0f800ffff, mte error info: 0xff7dfffd0003eda9, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 5, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfbbfffff0f60880b,0x9c201a0f800ffff, mte error info: 0x52b19fe30007f270, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 6, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x7fffffff1f46880b,0x9c201a0f8009fff, mte error info: 0x43bf77ee0006aedf, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 8, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xffffbfdf0df0880b,0x9c201a0f800feff, mte error info: 0xf395678e0005eef4, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 9, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x7c35fdff079c880b,0x9c201a0e800fff5, mte error info: 0x73ef9cde0006e7fd, vec error info: 0, cube error info: 0, l1 error info: 0xbf9e001e6ef3, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 18, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x7ef5cd7519be880b,0x9c201a0e800ffff, mte error info: 0x8d7f1ddd0007a9a0, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 19, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x77ff7ffd15fe880b,0x9c201a0f800f3f7, mte error info: 0xfed047a0005c26e, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 20, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0x7fbf7eff1d9e880b,0x9c201a0e800feb7, mte error info: 0xe4b277590005d74d, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 21, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfff7ffcf1ffe880b,0x9c201a0f800ffff, mte error info: 0xffcf7eeb0007ffff, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 22, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfeffb6af1f78880b,0x9c201a0e000beff, mte error info: 0x9ffefbe00006fb3b, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 23, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xe7f576ef1b90880b,0x9c201a038009bff, mte error info: 0xadbff35d0007f8db, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 24, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xeffffff90e94880b,0x9c201a0b8001f7f, mte error info: 0xbfaf416700072ae4, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       The error from device(chipId:0, dieId:0), serial number is 12, there is an aicore error exception, core id is 25, error code = 259, dump info: pc start: 0x12057f7a2000, current: 0x12057f7a207c, sc error info: 0xffffffffffff, su error info: 0xfffbffff1c68880b,0x9c201a0f800f3fd, mte error info: 0x3ac7a4fe0006ffed, vec error info: 0, cube error info: 0, l1 error info: 0x6cef00070000, aic error mask: 0x395856, para base: 0x12004da04c20, mte error: 0, aic cond: 0.
+The extend info: errcode:(259) errorStr: The scalar instruction is abnormal. Possible cause: The parameter violates the instruction constraints, the binary version does not match, or the instructinon is overwirtten. subErrType: 0x4.
+For details, see the troubleshooting document on the Ascend official website. Search for the keyword "AI Core Error".[FUNC:ProcessDavidStarsCoreErrorInfo][FILE:device_error_proc_c.cc][LINE:716]
+       An error occurred in the kernel task, retCode=0x26, [aicore exception].[FUNC:PreCheckTaskErr][FILE:davinci_kernel_task.cc][LINE:1262]
+       Failed to check task send status, stream_id=54, retCode=0x7150026.[FUNC:StreamLaunchKernelV2][FILE:aix_starsv2.cc][LINE:443]
+       rtsLaunchKernelWithHostArgs execution failed, reason=aicore exception[FUNC:FuncErrorReason][FILE:error_message_manage.cc][LINE:69]
+
+Possible solutions:
+1. set --mem-fraction-static to a smaller value (e.g., 0.8 or 0.7)
+2. set --cuda-graph-max-bs-decode to a smaller value (e.g., 16)
+3. disable decode CUDA graph by --cuda-graph-backend-decode=disabled. (Not recommended. Huge performance loss)
+Open an issue on GitHub https://github.com/sgl-project/sglang/issues/new/choose 
+
+
+[2026-09-14 11:38:06] kill_process_tree called: parent_pid=67575, include_parent=False, pid=67575
+Error in sys.excepthook:
+Traceback (most recent call last):
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/utils/_error_code.py", line 121, in _excepthook
+    self._origin_excepthook(exc_type, exc, *args)
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/utils/_error_code.py", line 121, in _excepthook
+    self._origin_excepthook(exc_type, exc, *args)
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/utils/_error_code.py", line 121, in _excepthook
+    self._origin_excepthook(exc_type, exc, *args)
+  [Previous line repeated 997 more times]
+RecursionError: maximum recursion depth exceeded
+
+Original exception was:
+Traceback (most recent call last):
+  File "/sgl-workspace/sglang/python/sglang/srt/entrypoints/engine.py", line 1820, in _wait_for_scheduler_ready
+    data = scheduler_pipe_readers[i].recv()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/python3.12.13/lib/python3.12/multiprocessing/connection.py", line 250, in recv
+    buf = self._recv_bytes()
+          ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/python3.12.13/lib/python3.12/multiprocessing/connection.py", line 430, in _recv_bytes
+    buf = self._recv(4)
+          ^^^^^^^^^^^^^
+  File "/usr/local/python3.12.13/lib/python3.12/multiprocessing/connection.py", line 399, in _recv
+    raise EOFError
+EOFError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/sgl-workspace/sglang/python/sglang/launch_server.py", line 76, in <module>
+    run_server(server_args)
+  File "/sgl-workspace/sglang/python/sglang/launch_server.py", line 59, in run_server
+    launch_server(server_args)
+  File "/sgl-workspace/sglang/python/sglang/srt/entrypoints/http_server.py", line 2825, in launch_server
+    ) = Engine._launch_subprocesses(
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/entrypoints/engine.py", line 1234, in _launch_subprocesses
+    scheduler_init_result.wait_for_ready()
+  File "/sgl-workspace/sglang/python/sglang/srt/entrypoints/engine.py", line 938, in wait_for_ready
+    infos = _wait_for_scheduler_ready(scheduler_pipe_readers, scheduler_procs)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sgl-workspace/sglang/python/sglang/srt/entrypoints/engine.py", line 1822, in _wait_for_scheduler_ready
+    raise _scheduler_died_error(i, scheduler_procs[i])
+RuntimeError: Rank 0 scheduler died during initialization (exit code: -3). If exit code is -9 (SIGKILL), a common cause is the OS OOM killer. Run `dmesg -T | grep -i oom` to check.
+[ERROR] 2026-09-14-11:38:07 (PID:67575, Device:-1, RankID:-1) ERR99999 UNKNOWN applicaiton exception
+root@localhost:/home/y00951466# 

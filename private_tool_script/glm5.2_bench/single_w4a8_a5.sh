@@ -25,13 +25,13 @@ export SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT=600
 export SGLANG_ENABLE_SPEC_V2=1
 export SGLANG_ENABLE_OVERLAP_PLAN_STREAM=1
 # export SGLANG_NPU_USE_MULTI_STREAM=1
-export HCCL_BUFFSIZE=1000
+export HCCL_BUFFSIZE=600
 export HCCL_OP_EXPANSION_MODE=AIV
 export HCCL_SOCKET_IFNAME=lo
 export GLOO_SOCKET_IFNAME=lo
 export TRANSFORMERS_VERBOSITY=error
 
-MODEL_PATH=/home/weights/GLM-5.2-W4A8C8-A5-0731
+MODEL_PATH=/mnt/share/GLM-5.2-w4a8c8
 export SGLANG_NPU_PROFILING=0
 export SGLANG_NPU_PROFILING_BS=16
 # export PYTHONPATH=/home/y00951466/sglang/python:$PYTHONPATH/
@@ -43,7 +43,9 @@ export DEEPEP_NORMAL_COMBINE_ENABLE_LONG_SEQ=1
 # export ASCEND_SLOG_PRINT_TO_STDOUT=1 #日志打屏, 可选
 # export ASCEND_GLOBAL_LOG_LEVEL=3 #日志级别常用 1 INFO级别; 3 ERROR级别
 
-# export DEEP_NORMAL_MODE_USE_INT8_QUANT=1
+export DEEP_NORMAL_MODE_USE_INT8_QUANT=1
+
+SGLANG_STARTUP_MEMORY_PROFILE_DIR=/home/y00951466/sglang-my/private_tool_script/memory_profiler \
 python3 -m sglang.launch_server \
         --model-path $MODEL_PATH \
         --attention-backend ascend \
