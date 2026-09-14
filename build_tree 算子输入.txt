@@ -1,0 +1,13 @@
+[build_tree][rank=0] topk=1, spec_steps=4, num_verify_tokens=5, tree_mask_mode=0, seq_lens_sum=6
+[build_tree][rank=0] parent_list: shape=(1, 4), dtype=torch.int64, device=npu:0, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=0] parent_list.values=[[-1, 0, 1, 2]]
+[build_tree][rank=0] top_scores_index: shape=(1, 4), dtype=torch.int64, device=npu:0, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=0] top_scores_index.values=[[0, 1, 2, 3]]
+[build_tree][rank=0] seq_lens: shape=(1,), dtype=torch.int64, device=npu:0, stride=(1,), contiguous=True, numel=1
+[build_tree][rank=0] seq_lens.values=[6]
+[build_tree][rank=0] tree_mask: shape=(55,), dtype=torch.bool, device=npu:0, stride=(1,), contiguous=True, numel=55
+[build_tree][rank=0] tree_mask.head=[True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True]
+[build_tree][rank=0] positions: shape=(5,), dtype=torch.int64, device=npu:0, stride=(1,), contiguous=True, numel=5
+[build_tree][rank=0] retrieve_index: shape=(1, 5), dtype=torch.int64, device=npu:0, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=0] retrieve_next_token: shape=(1, 5), dtype=torch.int64, device=npu:0, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=0] retrieve_next_sibling: shape=(1, 5), dtype=torch.int64, device=npu:0, stride=(5, 1), contiguous=True, numel=5

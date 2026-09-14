@@ -32,8 +32,8 @@ retrieve_index = torch.empty((1, 5), dtype=torch.int64, device=device)
 retrieve_next_token = torch.empty((1, 5), dtype=torch.int64, device=device)
 retrieve_next_sibling = torch.empty((1, 5), dtype=torch.int64, device=device)
 
-torch.npu.synchronize()
-print("before build_tree", flush=True)
+# torch.npu.synchronize()
+# print("before build_tree", flush=True)
 
 torch.ops.npu.build_tree_kernel_efficient(
     parent_list,
@@ -50,14 +50,14 @@ torch.ops.npu.build_tree_kernel_efficient(
     0,  # tree_mask_mode
 )
 
-torch.npu.synchronize()
-print("after build_tree", flush=True)
+# torch.npu.synchronize()
+# print("after build_tree", flush=True)
 
-for name, tensor in [
-    ("tree_mask", tree_mask),
-    ("positions", positions),
-    ("retrieve_index", retrieve_index),
-    ("retrieve_next_token", retrieve_next_token),
-    ("retrieve_next_sibling", retrieve_next_sibling),
-]:
-    print(name, tensor.cpu().tolist(), flush=True)
+# for name, tensor in [
+#     ("tree_mask", tree_mask),
+#     ("positions", positions),
+#     ("retrieve_index", retrieve_index),
+#     ("retrieve_next_token", retrieve_next_token),
+#     ("retrieve_next_sibling", retrieve_next_sibling),
+# ]:
+#     print(name, tensor.cpu().tolist(), flush=True)
