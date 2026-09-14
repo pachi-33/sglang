@@ -573,14 +573,36 @@ class Scheduler(
         maybe_revert_pr_fix()
 
         self.init_startup_memory_profiler()
-        print('[Memory Profiler] START...')
+        startup_memory_profiler_active = self.startup_memory_profiler.active
+        if startup_memory_profiler_active:
+            logger.warning("[Memory Profiler] START...")
+
         # Launch a model worker and draft model worker if using speculative decoding
-        with self.startup_memory_profiler.record_phase("model_worker_initialization"):
-            self.init_model_worker()
+        try:
+            with self.startup_memory_profiler.record_phase(
+                "model_worker_initialization"
+            ):
+                self.init_model_worker()
+        except Exception:
+            if startup_memory_profiler_active:
+                logger.exception(
+                    "[Memory Profiler] Model worker initialization failed; "
+                    "exporting the partial profile"
+                )
+            try:
+                self.startup_memory_profiler.stop(
+                    reason="model_worker_initialization_failed"
+                )
+            except Exception:
+                logger.exception(
+                    "[Memory Profiler] Failed to export the partial profile"
+                )
+            raise
         self.startup_memory_profiler.checkpoint(
             "model_worker_initialized", synchronize=True
         )
-        print('[Memory Profiler] END...')
+        if startup_memory_profiler_active:
+            logger.warning("[Memory Profiler] END...")
 
         if (t := envs.SGLANG_TEST_STUCK_SCHEDULER_INIT.get()) > 0:
             time.sleep(t)

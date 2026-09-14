@@ -140,6 +140,20 @@ def test_startup_memory_profiler_exports_after_finished_warmup(
     assert len(list(tmp_path.glob("*.operators.txt"))) == 1
 
 
+def test_startup_memory_profiler_exports_after_model_worker_failure(
+    tmp_path, monkeypatch
+):
+    profiler, _, torch_profiler = _make_profiler(tmp_path, monkeypatch)
+
+    assert profiler.stop(reason="model_worker_initialization_failed") is True
+    assert not profiler.active
+    assert torch_profiler.stopped
+
+    summary_path = next(tmp_path.glob("*.summary.json"))
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["stop_reason"] == "model_worker_initialization_failed"
+
+
 def test_startup_memory_profiler_is_noop_without_output_dir(monkeypatch):
     monkeypatch.setattr(
         torch.profiler,
