@@ -261,6 +261,10 @@ from sglang.srt.managers.scheduler_components.pool_stats_observer import (
 from sglang.srt.managers.scheduler_components.profiler_manager import (
     SchedulerProfilerManager,
 )
+from sglang.srt.managers.scheduler_components.startup_memory_profiler import (
+    StartupMemoryProfiler,
+    profile_startup_warmup_batch,
+)
 from sglang.srt.managers.scheduler_components.recv_skipper import (
     SchedulerRecvSkipper,
 )
@@ -568,39 +572,47 @@ class Scheduler(
         # so patching them afterwards is a no-op.
         maybe_revert_pr_fix()
 
+        self.init_startup_memory_profiler()
+
         # Launch a model worker and draft model worker if using speculative decoding
-        self.init_model_worker()
+        with self.startup_memory_profiler.record_phase("model_worker_initialization"):
+            self.init_model_worker()
+        self.startup_memory_profiler.checkpoint(
+            "model_worker_initialized", synchronize=True
+        )
 
         if (t := envs.SGLANG_TEST_STUCK_SCHEDULER_INIT.get()) > 0:
             time.sleep(t)
 
         # Init cache and memory pool
-        result = kv_cache_builder.build_kv_cache(
-            server_args=self.server_args,
-            model_config=self.model_config,
-            tp_worker=self.tp_worker,
-            page_size=self.page_size,
-            spec_algorithm=self.spec_algorithm,
-            attn_tp_cpu_group=self.attn_tp_cpu_group,
-            tp_cpu_group=self.tp_cpu_group,
-            attn_cp_cpu_group=self.attn_cp_cpu_group,
-            enable_metrics=get_observability().enable_metrics,
-            enable_kv_cache_events=bool(
-                get_observability().kv_events_config
-                and self.ps.pp_rank == 0
-                and self.ps.attn_tp_rank == 0
-                and self.ps.attn_cp_rank == 0
-            ),
-            ps=self.ps,
-            tp_group=self.tp_group,
-            pp_group=self.pp_group,
-            enable_hierarchical_cache=self.enable_hierarchical_cache,
-            hicache_draft_plan=(
-                self.draft_worker.hicache_draft_plan
-                if self.draft_worker is not None
-                else None
-            ),
-        )
+        with self.startup_memory_profiler.record_phase("kv_cache_build"):
+            result = kv_cache_builder.build_kv_cache(
+                server_args=self.server_args,
+                model_config=self.model_config,
+                tp_worker=self.tp_worker,
+                page_size=self.page_size,
+                spec_algorithm=self.spec_algorithm,
+                attn_tp_cpu_group=self.attn_tp_cpu_group,
+                tp_cpu_group=self.tp_cpu_group,
+                attn_cp_cpu_group=self.attn_cp_cpu_group,
+                enable_metrics=get_observability().enable_metrics,
+                enable_kv_cache_events=bool(
+                    get_observability().kv_events_config
+                    and self.ps.pp_rank == 0
+                    and self.ps.attn_tp_rank == 0
+                    and self.ps.attn_cp_rank == 0
+                ),
+                ps=self.ps,
+                tp_group=self.tp_group,
+                pp_group=self.pp_group,
+                enable_hierarchical_cache=self.enable_hierarchical_cache,
+                hicache_draft_plan=(
+                    self.draft_worker.hicache_draft_plan
+                    if self.draft_worker is not None
+                    else None
+                ),
+            )
+        self.startup_memory_profiler.checkpoint("kv_cache_built", synchronize=True)
         self.is_hybrid_swa = result.is_hybrid_swa
         self.is_hybrid_ssm = result.is_hybrid_ssm
         self.sliding_window_size = result.sliding_window_size
@@ -723,6 +735,9 @@ class Scheduler(
 
         self.is_initializing = False
         self.init_startup_timing_summary()
+        self.startup_memory_profiler.checkpoint(
+            "scheduler_initialized", synchronize=True
+        )
 
     def init_startup_timing_begin(self) -> None:
         self.scheduler_startup_begin = time.perf_counter()
@@ -1093,27 +1108,49 @@ class Scheduler(
 
     def init_model_worker(self):
         # Load model weights.
-        self.init_tp_model_worker()
+        with self.startup_memory_profiler.record_phase("target_model_worker_init"):
+            self.init_tp_model_worker()
+        self.startup_memory_profiler.checkpoint(
+            "target_model_worker_initialized", synchronize=True
+        )
         if get_model().is_startup_weight_load_overlap:
             self.tp_worker.start_startup_weight_load()
-        self.maybe_init_draft_worker()
+        with self.startup_memory_profiler.record_phase("draft_model_worker_init"):
+            self.maybe_init_draft_worker()
+        self.startup_memory_profiler.checkpoint(
+            "draft_model_worker_initialized", synchronize=True
+        )
 
         # Prepare KV cache pools for all workers
         tic = time.perf_counter()
-        self.init_memory_pools()
+        with self.startup_memory_profiler.record_phase("memory_pool_init"):
+            self.init_memory_pools()
         self.kv_cache_allocation_time = time.perf_counter() - tic
+        self.startup_memory_profiler.checkpoint(
+            "memory_pools_initialized", synchronize=True
+        )
 
-        self.init_all_attention_backends()
-        self.init_all_cuda_graphs()
+        with self.startup_memory_profiler.record_phase("attention_backend_init"):
+            self.init_all_attention_backends()
+        self.startup_memory_profiler.checkpoint(
+            "attention_backends_initialized", synchronize=True
+        )
+        with self.startup_memory_profiler.record_phase("graph_capture"):
+            self.init_all_cuda_graphs()
+        self.startup_memory_profiler.checkpoint("graphs_captured", synchronize=True)
 
         model_runner = self.tp_worker.model_runner
-        with torch.get_device_module(model_runner.device).stream(
-            model_runner.forward_stream
-        ):
-            if self.draft_worker is None:
-                model_runner.prewarm_sampling()
-            else:
-                self.draft_worker.prewarm_sampling()
+        with self.startup_memory_profiler.record_phase("sampling_prewarm"):
+            with torch.get_device_module(model_runner.device).stream(
+                model_runner.forward_stream
+            ):
+                if self.draft_worker is None:
+                    model_runner.prewarm_sampling()
+                else:
+                    self.draft_worker.prewarm_sampling()
+        self.startup_memory_profiler.checkpoint(
+            "sampling_prewarmed", synchronize=True
+        )
         if model_runner.token_to_kv_pool.post_capture_active:
             tic = time.perf_counter()
             model_runner.post_capture_resize_kv_pool(
@@ -1126,7 +1163,13 @@ class Scheduler(
             self.kv_cache_allocation_time += time.perf_counter() - tic
 
         if get_model().is_startup_weight_load_overlap:
-            self.tp_worker.finalize_startup_weight_load()
+            with self.startup_memory_profiler.record_phase(
+                "startup_weight_load_finalize"
+            ):
+                self.tp_worker.finalize_startup_weight_load()
+            self.startup_memory_profiler.checkpoint(
+                "startup_weight_load_finalized", synchronize=True
+            )
 
         # Adaptive/speculative graphs and post-capture KV sizing can consume
         # the headroom seen by the initial DeepGEMM layout budget. Refresh it
@@ -1850,6 +1893,12 @@ class Scheduler(
         Sets up the schedule stream and dispatches to the appropriate event loop.
         The event loop blocks until shutdown.
         """
+        self.startup_memory_profiler.checkpoint(
+            "event_loop_started", synchronize=True
+        )
+        if get_serving().skip_server_warmup or get_exec().moe.is_ep_scale_joiner:
+            self.startup_memory_profiler.stop(reason="server_warmup_skipped")
+
         # Engine init (graph capture, warmups) is done; from here on any
         # Triton kernel device-load is a lazy first-use at serving time.
         triton_load_watch.install()
@@ -2309,6 +2358,18 @@ class Scheduler(
                 raise TypeError(
                     f"Unsupported tokenized request type: {type(tokenized_req).__name__}"
                 )
+
+    def init_startup_memory_profiler(self) -> None:
+        self.startup_memory_profiler = StartupMemoryProfiler.maybe_start(
+            output_dir=envs.SGLANG_STARTUP_MEMORY_PROFILE_DIR.get(),
+            device_type=get_device().device,
+            device_index=self.ps.gpu_id,
+            tp_rank=self.ps.tp_rank,
+            pp_rank=self.ps.pp_rank,
+            dp_rank=self.ps.dp_rank,
+            attn_tp_rank=self.ps.attn_tp_rank,
+            attn_cp_rank=self.ps.attn_cp_rank,
+        )
 
     def init_profiler(self) -> None:
         self.profiler_manager = SchedulerProfilerManager(
@@ -4319,6 +4380,7 @@ class Scheduler(
                 batch.sampling_info = sched_sampling_info
 
     @scheduler_stage_method(SCHEDULER_STAGE_RUN_BATCH)
+    @profile_startup_warmup_batch
     def run_batch(
         self,
         batch: ScheduleBatch,
@@ -4710,6 +4772,8 @@ class Scheduler(
         self._maybe_clear_mm_inputs(batch)
         self.maybe_send_health_check_signal()
         self.metrics_reporter.update_device_timer()
+
+        self.startup_memory_profiler.maybe_stop_after_batch(batch)
 
     def _record_step_counters(
         self, batch: ScheduleBatch, result: GenerationBatchResult

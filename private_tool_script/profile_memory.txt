@@ -1,0 +1,4 @@
+SGLANG_STARTUP_MEMORY_PROFILE_DIR=/tmp/sglang-memory-profile \
+python3 -m sglang.launch_server \
+  --model-path /path/to/model \
+  ...其他启动参数

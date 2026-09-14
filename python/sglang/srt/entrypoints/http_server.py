@@ -156,6 +156,9 @@ from sglang.srt.managers.multi_tokenizer_mixin import (
     read_from_shared_memory,
     write_data_for_multi_tokenizer,
 )
+from sglang.srt.managers.scheduler_components.startup_memory_profiler import (
+    STARTUP_WARMUP_RID_PREFIX,
+)
 from sglang.srt.managers.tokenizer_manager import ServerStatus, TokenizerManager
 from sglang.srt.observability.func_timer import enable_func_timer
 from sglang.srt.observability.trace import (
@@ -2181,6 +2184,7 @@ async def _send_disaggregation_warmup_requests(
             "bootstrap_room": dp_rank,
             "input_ids": [10, 11, 12, 13],
             "routed_dp_rank": dp_rank,
+            "rid": f"{STARTUP_WARMUP_RID_PREFIX}-dp{dp_rank}",
         }
         async with session.post(
             url + "/generate", json=json_data, ssl=ssl_context
@@ -2316,6 +2320,10 @@ def _execute_server_warmup(server_args: ServerArgs):
             get_observability().debug_tensor_dump_input_file
         ).tolist()
         json_data["sampling_params"]["max_new_tokens"] = 0
+
+    # Let each scheduler stop an opt-in startup memory profile only after this
+    # internal request (including all decode steps) has completed.
+    json_data["rid"] = STARTUP_WARMUP_RID_PREFIX
 
     # Send a warmup request
     warmup_timeout = envs.SGLANG_WARMUP_TIMEOUT.get()
