@@ -6,6 +6,7 @@ import os
 import time
 from contextlib import nullcontext
 from functools import wraps
+from html import escape
 from pathlib import Path
 from typing import Any, ContextManager, Optional
 
@@ -212,20 +213,76 @@ class StartupMemoryProfiler:
         self.stop(reason="first_server_warmup_completed")
         return True
 
-    def stop(self, *, reason: str) -> bool:
+    def stop(self, *, reason: str, synchronize: bool = True) -> bool:
         if not self.active:
             return False
 
-        self.checkpoint(reason, synchronize=True)
         profiler = self.profiler
+
+        # Persist the checkpoints collected so far before touching the device or
+        # asking the backend profiler to flush. After a fatal device error (for
+        # example, a graph-capture failure), either operation may block inside
+        # the runtime. These files therefore remain useful even if stop() never
+        # returns.
+        pre_stop_exports = self._export_checkpoint_timeline()
+        summary_path = self._write_summary(
+            reason=reason,
+            exported=pre_stop_exports,
+            profiler_state="profiler_stop_pending",
+        )
+        logger.warning(
+            "[Memory Profiler] Pre-stop artifacts written for %s: %s",
+            reason,
+            summary_path,
+        )
+
+        logger.warning(
+            "[Memory Profiler] Capturing final checkpoint for %s "
+            "(synchronize=%s)",
+            reason,
+            synchronize,
+        )
+        self.checkpoint(reason, synchronize=synchronize)
+        pre_stop_exports = self._export_checkpoint_timeline()
+        self._write_summary(
+            reason=reason,
+            exported=pre_stop_exports,
+            profiler_state="profiler_stop_pending",
+        )
+
         self.profiler = None
+        profiler_stopped = False
+        logger.warning(
+            "[Memory Profiler] Final checkpoint captured; stopping PyTorch "
+            "profiler for %s",
+            reason,
+        )
         try:
             profiler.stop()
+            profiler_stopped = True
         except Exception as exc:
             self.export_errors.append(f"profiler stop: {exc!r}")
             logger.exception("Failed to stop startup memory profiler")
+        else:
+            logger.warning(
+                "[Memory Profiler] PyTorch profiler stopped; exporting detailed "
+                "artifacts for %s",
+                reason,
+            )
 
-        self._export(profiler, reason=reason)
+        profiler_state = (
+            "profiler_stopped" if profiler_stopped else "profiler_stop_failed"
+        )
+        self._write_summary(
+            reason=reason,
+            exported=pre_stop_exports,
+            profiler_state=profiler_state,
+        )
+        self._export(
+            profiler,
+            reason=reason,
+            profiler_state=profiler_state,
+        )
         return True
 
     def _stem(self) -> str:
@@ -235,10 +292,181 @@ class StartupMemoryProfiler:
             f"-attp{self.attn_tp_rank}-attcp{self.attn_cp_rank}-pid{os.getpid()}"
         )
 
-    def _export(self, profiler: Any, *, reason: str) -> None:
+    @staticmethod
+    def _format_bytes(value: Optional[int]) -> str:
+        if value is None:
+            return "-"
+        gib = value / (1024**3)
+        return f"{gib:.3f} GiB"
+
+    def _export_checkpoint_timeline(self) -> dict[str, str]:
+        """Write a backend-independent checkpoint memory chart.
+
+        Unlike ``export_memory_timeline``, this does not need the PyTorch
+        profiler to be stopped. It is the fallback artifact for fatal device
+        errors that prevent torch_npu/CANN from flushing the detailed trace.
+        """
+
+        assert self.output_dir is not None
+        path = self.output_dir / f"{self._stem()}.checkpoints.html"
+        fields = (
+            ("Allocated", "memory_allocated_bytes", "allocated"),
+            ("Reserved", "memory_reserved_bytes", "reserved"),
+            ("Peak allocated", "max_memory_allocated_bytes", "peak-allocated"),
+            ("Peak reserved", "max_memory_reserved_bytes", "peak-reserved"),
+            ("Device used", "device_used_bytes", "device-used"),
+        )
+        all_values = [
+            int(checkpoint[key])
+            for checkpoint in self.checkpoints
+            for _, key, _ in fields
+            if key in checkpoint
+        ]
+        global_scale = max(1, max(all_values, default=0))
+        rows = []
+        for checkpoint in self.checkpoints:
+            elapsed = checkpoint.get("elapsed_s")
+            elapsed_text = "-" if elapsed is None else f"{elapsed:.3f}"
+            total = checkpoint.get("device_total_bytes")
+            scale = max(1, int(total)) if total else global_scale
+            cells = []
+            for _, key, css_class in fields:
+                value = checkpoint.get(key)
+                width = 0.0 if value is None else min(100.0, value / scale * 100.0)
+                cells.append(
+                    f'<td><div class="number">{self._format_bytes(value)}</div>'
+                    f'<div class="bar"><span class="{css_class}" '
+                    f'style="width:{width:.3f}%"></span></div></td>'
+                )
+            rows.append(
+                "<tr>"
+                f"<th>{escape(str(checkpoint.get('name', '-')))}</th>"
+                f"<td>{elapsed_text}</td>"
+                + "".join(cells)
+                + f"<td>{self._format_bytes(checkpoint.get('device_free_bytes'))}</td>"
+                + f"<td>{self._format_bytes(total)}</td>"
+                + "</tr>"
+            )
+
+        headers = "".join(f"<th>{label}</th>" for label, _, _ in fields)
+        document = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SGLang startup memory checkpoints</title>
+<style>
+body {{ font: 14px system-ui, sans-serif; margin: 24px; color: #17202a; }}
+h1 {{ margin-bottom: 4px; }}
+p {{ color: #566573; }}
+table {{ border-collapse: collapse; width: 100%; min-width: 1200px; }}
+th, td {{ border: 1px solid #d5d8dc; padding: 8px; text-align: left; }}
+thead th {{ background: #f4f6f7; position: sticky; top: 0; }}
+tbody th {{ white-space: nowrap; }}
+.number {{ white-space: nowrap; font-variant-numeric: tabular-nums; }}
+.bar {{ background: #edf1f2; height: 7px; margin-top: 5px; width: 120px; }}
+.bar span {{ display: block; height: 100%; min-width: 1px; }}
+.allocated {{ background: #27ae60; }}
+.reserved {{ background: #f39c12; }}
+.peak-allocated {{ background: #16a085; }}
+.peak-reserved {{ background: #d35400; }}
+.device-used {{ background: #2980b9; }}
+</style>
+</head>
+<body>
+<h1>SGLang startup memory checkpoints</h1>
+<p>Device: {escape(self.device)}. Bars are scaled to device total memory when
+available, otherwise to the largest recorded value. This file is written before
+the backend profiler is stopped, so it survives fatal device errors.</p>
+<table>
+<thead><tr>
+<th>Checkpoint</th><th>Elapsed (s)</th>{headers}
+<th>Device free</th><th>Device total</th>
+</tr></thead>
+<tbody>{''.join(rows)}</tbody>
+</table>
+</body>
+</html>
+"""
+        try:
+            path.write_text(document, encoding="utf-8")
+        except Exception as exc:
+            self.export_errors.append(f"checkpoint_timeline: {exc!r}")
+            logger.exception("Failed to export checkpoint timeline to %s", path)
+            return {}
+        return {"checkpoint_timeline": str(path)}
+
+    def _summary(
+        self,
+        *,
+        reason: str,
+        exported: dict[str, str],
+        profiler_state: str,
+    ) -> dict[str, Any]:
+        return {
+            "device": self.device,
+            "ranks": {
+                "tp": self.tp_rank,
+                "pp": self.pp_rank,
+                "dp": self.dp_rank,
+                "attention_tp": self.attn_tp_rank,
+                "attention_cp": self.attn_cp_rank,
+            },
+            "pid": os.getpid(),
+            "started_at_unix_s": self.started_wall_time,
+            "duration_s": (
+                None
+                if self.started_monotonic is None
+                else time.perf_counter() - self.started_monotonic
+            ),
+            "stop_reason": reason,
+            "profiler_state": profiler_state,
+            "profiler_options": {
+                "profile_memory": True,
+                "record_shapes": True,
+                "with_stack": True,
+                "with_modules": True,
+            },
+            "checkpoints": self.checkpoints,
+            "exports": exported,
+            "errors": self.export_errors,
+        }
+
+    def _write_summary(
+        self,
+        *,
+        reason: str,
+        exported: dict[str, str],
+        profiler_state: str,
+    ) -> Optional[Path]:
+        assert self.output_dir is not None
+        summary_path = self.output_dir / f"{self._stem()}.summary.json"
+        try:
+            summary_path.write_text(
+                json.dumps(
+                    self._summary(
+                        reason=reason,
+                        exported=exported,
+                        profiler_state=profiler_state,
+                    ),
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            logger.exception(
+                "Failed to export startup memory summary to %s", summary_path
+            )
+            return None
+        return summary_path
+
+    def _export(
+        self, profiler: Any, *, reason: str, profiler_state: str
+    ) -> None:
         assert self.output_dir is not None
         stem = self._stem()
-        exported: dict[str, str] = {}
+        exported = self._export_checkpoint_timeline()
 
         timeline_outputs = {
             "memory_timeline_html": self.output_dir / f"{stem}.memory.html",
@@ -272,47 +500,19 @@ class StartupMemoryProfiler:
             self.export_errors.append(f"operator_table: {exc!r}")
             logger.exception("Failed to export operator table to %s", operator_path)
 
-        summary_path = self.output_dir / f"{stem}.summary.json"
-        summary = {
-            "device": self.device,
-            "ranks": {
-                "tp": self.tp_rank,
-                "pp": self.pp_rank,
-                "dp": self.dp_rank,
-                "attention_tp": self.attn_tp_rank,
-                "attention_cp": self.attn_cp_rank,
-            },
-            "pid": os.getpid(),
-            "started_at_unix_s": self.started_wall_time,
-            "duration_s": (
-                None
-                if self.started_monotonic is None
-                else time.perf_counter() - self.started_monotonic
-            ),
-            "stop_reason": reason,
-            "profiler_options": {
-                "profile_memory": True,
-                "record_shapes": True,
-                "with_stack": True,
-                "with_modules": True,
-            },
-            "checkpoints": self.checkpoints,
-            "exports": exported,
-            "errors": self.export_errors,
-        }
-        try:
-            summary_path.write_text(
-                json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
-            )
-        except Exception:
-            logger.exception(
-                "Failed to export startup memory summary to %s", summary_path
-            )
+        summary_path = self._write_summary(
+            reason=reason,
+            exported=exported,
+            profiler_state=profiler_state,
+        )
+        if summary_path is None:
             return
 
-        logger.info(
-            "Startup memory profile stopped (%s). Summary: %s; timeline: %s",
+        logger.warning(
+            "[Memory Profiler] STOP (%s). Summary: %s; checkpoints: %s; "
+            "timeline: %s",
             reason,
             summary_path,
-            timeline_outputs["memory_timeline_html"],
+            exported.get("checkpoint_timeline", "not exported"),
+            exported.get("memory_timeline_html", "not exported"),
         )

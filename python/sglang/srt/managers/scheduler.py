@@ -591,7 +591,8 @@ class Scheduler(
                 )
             try:
                 self.startup_memory_profiler.stop(
-                    reason="model_worker_initialization_failed"
+                    reason="model_worker_initialization_failed",
+                    synchronize=False,
                 )
             except Exception:
                 logger.exception(

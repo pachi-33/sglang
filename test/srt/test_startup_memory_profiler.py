@@ -51,11 +51,14 @@ class _FakeProfiler:
         self.kwargs = kwargs
         self.started = False
         self.stopped = False
+        self.before_stop = None
 
     def start(self):
         self.started = True
 
     def stop(self):
+        if self.before_stop is not None:
+            self.before_stop()
         self.stopped = True
 
     def export_memory_timeline(self, path, device):
@@ -129,6 +132,7 @@ def test_startup_memory_profiler_exports_after_finished_warmup(
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["device"] == "npu:2"
     assert summary["stop_reason"] == "first_server_warmup_completed"
+    assert summary["profiler_state"] == "profiler_stopped"
     assert summary["checkpoints"][-1]["memory_allocated_bytes"] == 102
     assert summary["checkpoints"][-1]["device_used_bytes"] == 500
     assert not summary["errors"]
@@ -138,20 +142,42 @@ def test_startup_memory_profiler_exports_after_finished_warmup(
     assert len(list(tmp_path.glob("*.memory.raw.json.gz"))) == 1
     assert len(list(tmp_path.glob("*.trace.json"))) == 1
     assert len(list(tmp_path.glob("*.operators.txt"))) == 1
+    assert len(list(tmp_path.glob("*.checkpoints.html"))) == 1
 
 
 def test_startup_memory_profiler_exports_after_model_worker_failure(
     tmp_path, monkeypatch
 ):
-    profiler, _, torch_profiler = _make_profiler(tmp_path, monkeypatch)
+    profiler, device_module, torch_profiler = _make_profiler(tmp_path, monkeypatch)
+    synchronize_calls_before_stop = device_module.synchronize_calls
 
-    assert profiler.stop(reason="model_worker_initialization_failed") is True
+    def assert_pre_stop_artifacts_exist():
+        summary = json.loads(
+            next(tmp_path.glob("*.summary.json")).read_text(encoding="utf-8")
+        )
+        assert summary["profiler_state"] == "profiler_stop_pending"
+        assert len(list(tmp_path.glob("*.checkpoints.html"))) == 1
+
+    torch_profiler.before_stop = assert_pre_stop_artifacts_exist
+
+    assert (
+        profiler.stop(
+            reason="model_worker_initialization_failed", synchronize=False
+        )
+        is True
+    )
     assert not profiler.active
     assert torch_profiler.stopped
+    assert device_module.synchronize_calls == synchronize_calls_before_stop
 
     summary_path = next(tmp_path.glob("*.summary.json"))
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["stop_reason"] == "model_worker_initialization_failed"
+    assert summary["profiler_state"] == "profiler_stopped"
+    assert summary["checkpoints"][-1]["name"] == (
+        "model_worker_initialization_failed"
+    )
+    assert len(list(tmp_path.glob("*.checkpoints.html"))) == 1
 
 
 def test_startup_memory_profiler_is_noop_without_output_dir(monkeypatch):
