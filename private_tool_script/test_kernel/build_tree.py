@@ -1,13 +1,6 @@
 import torch
 import torch_npu
-import sgl_kernel_npu  # noqa: F401  # 加载 libsgl_kernel_npu.so 并注册 torch.ops.npu.*
-
-if not hasattr(torch.ops.npu, "build_tree_kernel_efficient"):
-    raise RuntimeError(
-        "sgl_kernel_npu 已导入，但 torch.ops.npu.build_tree_kernel_efficient "
-        "仍未注册；请确认当前 Python 环境安装的是包含 build_tree 的 "
-        "sgl_kernel_npu，并检查其 lib/libsgl_kernel_npu.so。"
-    )
+import sgl_kernel_npu
 
 torch.npu.set_device(0)
 device = "npu:0"
@@ -61,6 +54,4 @@ for name, tensor in [
     print(name, tensor.cpu().tolist(), flush=True)
 
 
-
-# cd /Users/yaobao/Desktop/Workspace-Ascend/sglang/private_tool_script/test_kernel
 # ASCEND_LAUNCH_BLOCKING=1 python3 build_tree.py

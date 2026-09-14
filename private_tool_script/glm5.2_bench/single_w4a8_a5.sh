@@ -17,7 +17,7 @@ source /usr/local/Ascend/ascend-toolkit/set_env.sh
 source /usr/local/Ascend/nnal/atb/set_env.sh
 
 
-export ASCEND_LAUNCH_BLOCKING=1
+# export ASCEND_LAUNCH_BLOCKING=1
 
 
 export STREAMS_PER_DEVICE=32
@@ -34,7 +34,8 @@ export TRANSFORMERS_VERBOSITY=error
 MODEL_PATH=/home/weights/GLM-5.2-W4A8C8-A5-0731
 export SGLANG_NPU_PROFILING=0
 export SGLANG_NPU_PROFILING_BS=16
-export PYTHONPATH=/home/y00951466/sglang/python:$PYTHONPATH/
+# export PYTHONPATH=/home/y00951466/sglang/python:$PYTHONPATH/
+export PYTHONPATH=/home/y00951466/sglang-a5-optim/python:$PYTHONPATH/
 export DEEPEP_NORMAL_LONG_SEQ_ROUND=72
 export DEEPEP_NORMAL_LONG_SEQ_PER_ROUND_TOKENS=1024
 export DEEPEP_NORMAL_COMBINE_ENABLE_LONG_SEQ=1
