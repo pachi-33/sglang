@@ -1,0 +1,189 @@
+performance
+vm.swappiness = 0
+kernel.numa_balancing = 0
+kernel.sched_migration_cost_ns = 50000
+[Gloo] Rank 0 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 4 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 1 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 2 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 3 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 6 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 5 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 7 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 0 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 2 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 3 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 1 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 4 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 5 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 6 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 7 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 2 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 1 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 3 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 0 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 1 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 3 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 2 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 1 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 3 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 2 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 4 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 5 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 6 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 7 is connected to 7 peer ranks. Expected number of connected peer ranks is : 7
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[2026-09-14 03:52:14] INFO:     127.0.0.1:57042 - "GET /model_info HTTP/1.1" 200 OK
+================= [DEBUG] 决定是否打印profiling=================================
+[build_tree][rank=4] topk=1, spec_steps=4, num_verify_tokens=5, tree_mask_mode=0, seq_lens_sum=6
+================= [DEBUG] 决定是否打印profiling=================================
+[build_tree][rank=6] topk=1, spec_steps=4, num_verify_tokens=5, tree_mask_mode=0, seq_lens_sum=6
+[build_tree][rank=4] parent_list: shape=(1, 4), dtype=torch.int64, device=npu:4, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=6] parent_list: shape=(1, 4), dtype=torch.int64, device=npu:6, stride=(4, 1), contiguous=True, numel=4
+================= [DEBUG] 决定是否打印profiling=================================
+[build_tree][rank=5] topk=1, spec_steps=4, num_verify_tokens=5, tree_mask_mode=0, seq_lens_sum=6
+================= [DEBUG] 决定是否打印profiling=================================
+[build_tree][rank=2] topk=1, spec_steps=4, num_verify_tokens=5, tree_mask_mode=0, seq_lens_sum=6
+================= [DEBUG] 决定是否打印profiling=================================
+[build_tree][rank=3] topk=1, spec_steps=4, num_verify_tokens=5, tree_mask_mode=0, seq_lens_sum=6
+================= [DEBUG] 决定是否打印profiling=================================
+[build_tree][rank=1] topk=1, spec_steps=4, num_verify_tokens=5, tree_mask_mode=0, seq_lens_sum=6
+================= [DEBUG] 决定是否打印profiling=================================
+[build_tree][rank=7] topk=1, spec_steps=4, num_verify_tokens=5, tree_mask_mode=0, seq_lens_sum=6
+================= [DEBUG] 决定是否打印profiling=================================
+[build_tree][rank=0] topk=1, spec_steps=4, num_verify_tokens=5, tree_mask_mode=0, seq_lens_sum=6
+[build_tree][rank=5] parent_list: shape=(1, 4), dtype=torch.int64, device=npu:5, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=4] parent_list.values=[[-1, 0, 1, 2]]
+[build_tree][rank=2] parent_list: shape=(1, 4), dtype=torch.int64, device=npu:2, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=6] parent_list.values=[[-1, 0, 1, 2]]
+[build_tree][rank=3] parent_list: shape=(1, 4), dtype=torch.int64, device=npu:3, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=1] parent_list: shape=(1, 4), dtype=torch.int64, device=npu:1, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=7] parent_list: shape=(1, 4), dtype=torch.int64, device=npu:7, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=4] top_scores_index: shape=(1, 4), dtype=torch.int64, device=npu:4, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=0] parent_list: shape=(1, 4), dtype=torch.int64, device=npu:0, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=6] top_scores_index: shape=(1, 4), dtype=torch.int64, device=npu:6, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=5] parent_list.values=[[-1, 0, 1, 2]]
+[build_tree][rank=4] top_scores_index.values=[[0, 1, 2, 3]]
+[build_tree][rank=2] parent_list.values=[[-1, 0, 1, 2]]
+[build_tree][rank=6] top_scores_index.values=[[0, 1, 2, 3]]
+[build_tree][rank=4] seq_lens: shape=(1,), dtype=torch.int64, device=npu:4, stride=(1,), contiguous=True, numel=1
+[build_tree][rank=5] top_scores_index: shape=(1, 4), dtype=torch.int64, device=npu:5, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=6] seq_lens: shape=(1,), dtype=torch.int64, device=npu:6, stride=(1,), contiguous=True, numel=1
+[build_tree][rank=2] top_scores_index: shape=(1, 4), dtype=torch.int64, device=npu:2, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=3] parent_list.values=[[-1, 0, 1, 2]]
+[build_tree][rank=1] parent_list.values=[[-1, 0, 1, 2]]
+[build_tree][rank=7] parent_list.values=[[-1, 0, 1, 2]]
+[build_tree][rank=0] parent_list.values=[[-1, 0, 1, 2]]
+[build_tree][rank=4] seq_lens.values=[6]
+[build_tree][rank=7] top_scores_index: shape=(1, 4), dtype=torch.int64, device=npu:7, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=3] top_scores_index: shape=(1, 4), dtype=torch.int64, device=npu:3, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=1] top_scores_index: shape=(1, 4), dtype=torch.int64, device=npu:1, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=5] top_scores_index.values=[[0, 1, 2, 3]]
+[build_tree][rank=6] seq_lens.values=[6]
+[build_tree][rank=0] top_scores_index: shape=(1, 4), dtype=torch.int64, device=npu:0, stride=(4, 1), contiguous=True, numel=4
+[build_tree][rank=2] top_scores_index.values=[[0, 1, 2, 3]]
+[build_tree][rank=4] tree_mask: shape=(55,), dtype=torch.bool, device=npu:4, stride=(1,), contiguous=True, numel=55
+[build_tree][rank=5] seq_lens: shape=(1,), dtype=torch.int64, device=npu:5, stride=(1,), contiguous=True, numel=1
+[build_tree][rank=6] tree_mask: shape=(55,), dtype=torch.bool, device=npu:6, stride=(1,), contiguous=True, numel=55
+[build_tree][rank=7] top_scores_index.values=[[0, 1, 2, 3]]
+[build_tree][rank=2] seq_lens: shape=(1,), dtype=torch.int64, device=npu:2, stride=(1,), contiguous=True, numel=1
+[build_tree][rank=3] top_scores_index.values=[[0, 1, 2, 3]]
+[build_tree][rank=1] top_scores_index.values=[[0, 1, 2, 3]]
+[build_tree][rank=7] seq_lens: shape=(1,), dtype=torch.int64, device=npu:7, stride=(1,), contiguous=True, numel=1
+[build_tree][rank=0] top_scores_index.values=[[0, 1, 2, 3]]
+[build_tree][rank=5] seq_lens.values=[6]
+[build_tree][rank=3] seq_lens: shape=(1,), dtype=torch.int64, device=npu:3, stride=(1,), contiguous=True, numel=1
+[build_tree][rank=1] seq_lens: shape=(1,), dtype=torch.int64, device=npu:1, stride=(1,), contiguous=True, numel=1
+[build_tree][rank=0] seq_lens: shape=(1,), dtype=torch.int64, device=npu:0, stride=(1,), contiguous=True, numel=1
+[build_tree][rank=4] tree_mask.head=[True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True]
+[build_tree][rank=5] tree_mask: shape=(55,), dtype=torch.bool, device=npu:5, stride=(1,), contiguous=True, numel=55
+[build_tree][rank=2] seq_lens.values=[6]
+[build_tree][rank=6] tree_mask.head=[True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True]
+[build_tree][rank=7] seq_lens.values=[6]
+[build_tree][rank=3] seq_lens.values=[6]
+[build_tree][rank=1] seq_lens.values=[6]
+[build_tree][rank=4] positions: shape=(5,), dtype=torch.int64, device=npu:4, stride=(1,), contiguous=True, numel=5
+[build_tree][rank=2] tree_mask: shape=(55,), dtype=torch.bool, device=npu:2, stride=(1,), contiguous=True, numel=55
+[build_tree][rank=6] positions: shape=(5,), dtype=torch.int64, device=npu:6, stride=(1,), contiguous=True, numel=5
+[build_tree][rank=0] seq_lens.values=[6]
+[build_tree][rank=7] tree_mask: shape=(55,), dtype=torch.bool, device=npu:7, stride=(1,), contiguous=True, numel=55
+[build_tree][rank=3] tree_mask: shape=(55,), dtype=torch.bool, device=npu:3, stride=(1,), contiguous=True, numel=55
+[build_tree][rank=1] tree_mask: shape=(55,), dtype=torch.bool, device=npu:1, stride=(1,), contiguous=True, numel=55
+[build_tree][rank=4] retrieve_index: shape=(1, 5), dtype=torch.int64, device=npu:4, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=5] tree_mask.head=[True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True]
+[build_tree][rank=6] retrieve_index: shape=(1, 5), dtype=torch.int64, device=npu:6, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=0] tree_mask: shape=(55,), dtype=torch.bool, device=npu:0, stride=(1,), contiguous=True, numel=55
+[build_tree][rank=4] retrieve_next_token: shape=(1, 5), dtype=torch.int64, device=npu:4, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=5] positions: shape=(5,), dtype=torch.int64, device=npu:5, stride=(1,), contiguous=True, numel=5
+[build_tree][rank=6] retrieve_next_token: shape=(1, 5), dtype=torch.int64, device=npu:6, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=2] tree_mask.head=[True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True]
+[build_tree][rank=6] retrieve_next_sibling: shape=(1, 5), dtype=torch.int64, device=npu:6, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=4] retrieve_next_sibling: shape=(1, 5), dtype=torch.int64, device=npu:4, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=5] retrieve_index: shape=(1, 5), dtype=torch.int64, device=npu:5, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=7] tree_mask.head=[True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True]
+[build_tree][rank=3] tree_mask.head=[True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True]
+[build_tree][rank=1] tree_mask.head=[True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True]
+[build_tree][rank=2] positions: shape=(5,), dtype=torch.int64, device=npu:2, stride=(1,), contiguous=True, numel=5
+[build_tree][rank=5] retrieve_next_token: shape=(1, 5), dtype=torch.int64, device=npu:5, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=7] positions: shape=(5,), dtype=torch.int64, device=npu:7, stride=(1,), contiguous=True, numel=5
+[build_tree][rank=0] tree_mask.head=[True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True]
+[build_tree][rank=3] positions: shape=(5,), dtype=torch.int64, device=npu:3, stride=(1,), contiguous=True, numel=5
+[build_tree][rank=1] positions: shape=(5,), dtype=torch.int64, device=npu:1, stride=(1,), contiguous=True, numel=5
+[build_tree][rank=2] retrieve_index: shape=(1, 5), dtype=torch.int64, device=npu:2, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=5] retrieve_next_sibling: shape=(1, 5), dtype=torch.int64, device=npu:5, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=7] retrieve_index: shape=(1, 5), dtype=torch.int64, device=npu:7, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=0] positions: shape=(5,), dtype=torch.int64, device=npu:0, stride=(1,), contiguous=True, numel=5
+[build_tree][rank=3] retrieve_index: shape=(1, 5), dtype=torch.int64, device=npu:3, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=1] retrieve_index: shape=(1, 5), dtype=torch.int64, device=npu:1, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=2] retrieve_next_token: shape=(1, 5), dtype=torch.int64, device=npu:2, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=7] retrieve_next_token: shape=(1, 5), dtype=torch.int64, device=npu:7, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=0] retrieve_index: shape=(1, 5), dtype=torch.int64, device=npu:0, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=3] retrieve_next_token: shape=(1, 5), dtype=torch.int64, device=npu:3, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=1] retrieve_next_token: shape=(1, 5), dtype=torch.int64, device=npu:1, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=2] retrieve_next_sibling: shape=(1, 5), dtype=torch.int64, device=npu:2, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=7] retrieve_next_sibling: shape=(1, 5), dtype=torch.int64, device=npu:7, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=0] retrieve_next_token: shape=(1, 5), dtype=torch.int64, device=npu:0, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=3] retrieve_next_sibling: shape=(1, 5), dtype=torch.int64, device=npu:3, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=1] retrieve_next_sibling: shape=(1, 5), dtype=torch.int64, device=npu:1, stride=(5, 1), contiguous=True, numel=5
+[build_tree][rank=0] retrieve_next_sibling: shape=(1, 5), dtype=torch.int64, device=npu:0, stride=(5, 1), contiguous=True, numel=5
