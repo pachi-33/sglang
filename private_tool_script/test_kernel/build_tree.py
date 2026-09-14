@@ -25,15 +25,13 @@ tree_mask = torch.ones(
     (55,), dtype=torch.bool, device=device
 )
 
-# 以下假定它们是纯输出缓冲区。
-# 如果源码要求调用前初始化，应改成与原调用端完全一致。
 positions = torch.empty((5,), dtype=torch.int64, device=device)
-retrieve_index = torch.empty((1, 5), dtype=torch.int64, device=device)
-retrieve_next_token = torch.empty((1, 5), dtype=torch.int64, device=device)
-retrieve_next_sibling = torch.empty((1, 5), dtype=torch.int64, device=device)
+# 与推理代码一致：三个 retrieve 输出来自同一个连续 buffer。
+retrieve_buf = torch.full((3, 1, 5), -1, dtype=torch.int64, device=device)
+retrieve_index, retrieve_next_token, retrieve_next_sibling = retrieve_buf
 
-# torch.npu.synchronize()
-# print("before build_tree", flush=True)
+torch.npu.synchronize()
+print("before build_tree", flush=True)
 
 torch.ops.npu.build_tree_kernel_efficient(
     parent_list,
@@ -44,20 +42,25 @@ torch.ops.npu.build_tree_kernel_efficient(
     retrieve_index,
     retrieve_next_token,
     retrieve_next_sibling,
-    1, # topk
+    1,  # topk
     4,  # spec_steps
     5,  # num_verify_tokens
     0,  # tree_mask_mode
 )
 
-# torch.npu.synchronize()
-# print("after build_tree", flush=True)
+torch.npu.synchronize()
+print("after build_tree", flush=True)
 
-# for name, tensor in [
-#     ("tree_mask", tree_mask),
-#     ("positions", positions),
-#     ("retrieve_index", retrieve_index),
-#     ("retrieve_next_token", retrieve_next_token),
-#     ("retrieve_next_sibling", retrieve_next_sibling),
-# ]:
-#     print(name, tensor.cpu().tolist(), flush=True)
+for name, tensor in [
+    ("tree_mask", tree_mask),
+    ("positions", positions),
+    ("retrieve_index", retrieve_index),
+    ("retrieve_next_token", retrieve_next_token),
+    ("retrieve_next_sibling", retrieve_next_sibling),
+]:
+    print(name, tensor.cpu().tolist(), flush=True)
+
+
+
+# cd /Users/yaobao/Desktop/Workspace-Ascend/sglang/private_tool_script/test_kernel
+# ASCEND_LAUNCH_BLOCKING=1 python3 build_tree.py
