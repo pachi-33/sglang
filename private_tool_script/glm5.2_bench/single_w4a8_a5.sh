@@ -19,6 +19,7 @@ source /usr/local/Ascend/nnal/atb/set_env.sh
 
 # export ASCEND_LAUNCH_BLOCKING=1
 
+export SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK=1024
 
 export STREAMS_PER_DEVICE=32
 export SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT=600
@@ -29,9 +30,10 @@ export HCCL_BUFFSIZE=600
 export HCCL_OP_EXPANSION_MODE=AIV
 export HCCL_SOCKET_IFNAME=lo
 export GLOO_SOCKET_IFNAME=lo
+export HCCL_IF_BASE_PORT=50000
 export TRANSFORMERS_VERBOSITY=error
 
-MODEL_PATH=/mnt/share/GLM-5.2-w4a8c8
+MODEL_PATH=/home/weights/GLM-5.2-W4A8C8-A5-0731
 export SGLANG_NPU_PROFILING=0
 export SGLANG_NPU_PROFILING_BS=16
 export PYTHONPATH=/home/y00951466/sglang-my/python:$PYTHONPATH/
@@ -43,9 +45,9 @@ export DEEPEP_NORMAL_COMBINE_ENABLE_LONG_SEQ=1
 # export ASCEND_SLOG_PRINT_TO_STDOUT=1 #日志打屏, 可选
 # export ASCEND_GLOBAL_LOG_LEVEL=3 #日志级别常用 1 INFO级别; 3 ERROR级别
 
-export DEEP_NORMAL_MODE_USE_INT8_QUANT=1
+# export DEEP_NORMAL_MODE_USE_INT8_QUANT=1
 
-SGLANG_STARTUP_MEMORY_PROFILE_DIR=/home/y00951466/sglang-my/private_tool_script/memory_profiler \
+# SGLANG_STARTUP_MEMORY_PROFILE_DIR=/home/y00951466/sglang-my/private_tool_script/memory_profiler \
 python3 -m sglang.launch_server \
         --model-path $MODEL_PATH \
         --attention-backend ascend \
@@ -67,8 +69,8 @@ python3 -m sglang.launch_server \
         --quantization modelslim \
         --moe-a2a-backend deepep --deepep-mode auto \
         --load-balance-method round_robin \
-        --device npu --host 127.0.0.1 --port 8818 \
-	--speculative-algorithm NEXTN --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5
+        --device npu --host 127.0.0.1 --port 8818
+	# --speculative-algorithm NEXTN --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5
 	# --speculative-draft-model-quantization unquant
 
 

@@ -17,7 +17,7 @@ set -euo pipefail
 # and SLOs need them. The generated *.summary.json and terminal output contain
 # aggregate statistics only and do not print individual request records.
 
-SGLANG_ROOT="${SGLANG_ROOT:-/home/y00951466/sglang-my}"
+SGLANG_ROOT="${SGLANG_ROOT:-/home/y00951466/sglang-a5-optim}"
 # MODEL="${MODEL:-/home/weights/GLM-5.2-w4a8}"
 MODEL="${MODEL:-/home/weights/GLM-5.2-W4A8C8-A5-0731}"
 
@@ -26,14 +26,14 @@ PORT="${PORT:-8818}"
 BASE_URL="http://${HOST}:${PORT}"
 
 INPUT_LEN="${INPUT_LEN:-65536}" # 16K 16384; 64k 65536; 128K 131072
-OUTPUT_LEN="${OUTPUT_LEN:-4096}" # 1K
+OUTPUT_LEN="${OUTPUT_LEN:-4096}" # 1K 1024; 4K 4096
 NUM_REQUESTS="${NUM_REQUESTS:-24}"
 MAX_CONCURRENCY="${MAX_CONCURRENCY:-24}"
 REQUEST_RATE="${REQUEST_RATE:-inf}"
 PAGE_SIZE="${PAGE_SIZE:-auto}" #2
 # Backward-compatible precedence:
 # TARGET_KV_HIT_PERCENT > PREFIX_PERCENT > CACHE_MODE > default 90.
-TARGET_KV_HIT_PERCENT=95
+TARGET_KV_HIT_PERCENT=90
 SEED="${SEED:-42}"
 RESULT_DIR="${RESULT_DIR:-./benchmark_results/cache}"
 
