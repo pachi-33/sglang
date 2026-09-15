@@ -19,14 +19,14 @@ source /usr/local/Ascend/nnal/atb/set_env.sh
 
 # export ASCEND_LAUNCH_BLOCKING=1
 
-export SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK=1024
+# export SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK=1024
 
 export STREAMS_PER_DEVICE=32
 export SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT=600
 export SGLANG_ENABLE_SPEC_V2=1
 export SGLANG_ENABLE_OVERLAP_PLAN_STREAM=1
 # export SGLANG_NPU_USE_MULTI_STREAM=1
-export HCCL_BUFFSIZE=600
+export HCCL_BUFFSIZE=1024
 export HCCL_OP_EXPANSION_MODE=AIV
 export HCCL_SOCKET_IFNAME=lo
 export GLOO_SOCKET_IFNAME=lo
@@ -36,8 +36,8 @@ export TRANSFORMERS_VERBOSITY=error
 MODEL_PATH=/home/weights/GLM-5.2-W4A8C8-A5-0731
 export SGLANG_NPU_PROFILING=0
 export SGLANG_NPU_PROFILING_BS=16
-export PYTHONPATH=/home/y00951466/sglang-my/python:$PYTHONPATH/
-# export PYTHONPATH=/home/y00951466/sglang-a5-optim/python:$PYTHONPATH/
+# export PYTHONPATH=/home/y00951466/sglang-my/python:$PYTHONPATH/
+export PYTHONPATH=/home/y00951466/sglang-a5-optim/python:$PYTHONPATH/
 export DEEPEP_NORMAL_LONG_SEQ_ROUND=72
 export DEEPEP_NORMAL_LONG_SEQ_PER_ROUND_TOKENS=1024
 export DEEPEP_NORMAL_COMBINE_ENABLE_LONG_SEQ=1
@@ -53,25 +53,24 @@ python3 -m sglang.launch_server \
         --attention-backend ascend \
         --device npu \
         --tp-size 8 \
-        --nnodes 1 \
-        --dp-size 2 \
-	--enable-dp-attention \
-        --chunked-prefill-size 2048 \
-        --max-prefill-tokens 32768 \
+        --chunked-prefill-size 32768 \
         --trust-remote-code \
         --mem-fraction-static 0.85 \
         --served-model-name GLM-5.2-w4a8 \
         --enable-prefill-delayer \
+        --dp-size 2 \
+	--enable-dp-attention \
         --prefill-delayer-max-delay-passes 100 \
-        --cuda-graph-bs-decode 8 \
-        --cuda-graph-bs-prefill 8 \
-        --max-running-requests 128 \
+        --max-running-requests 24 \
         --quantization modelslim \
         --moe-a2a-backend deepep --deepep-mode auto \
         --load-balance-method round_robin \
-        --device npu --host 127.0.0.1 --port 8818
-	# --speculative-algorithm NEXTN --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5
+        --device npu --host 127.0.0.1 --port 8818 \
+	--speculative-algorithm NEXTN --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5
 	# --speculative-draft-model-quantization unquant
+        # --cuda-graph-bs-decode 8 \
+        # --cuda-graph-bs-prefill 8 \
+        # --max-prefill-tokens 32768 \
 
 
 # python -m sglang.bench_serving \
