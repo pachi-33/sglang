@@ -5,7 +5,7 @@ sysctl -w vm.swappiness=0
 sysctl -w kernel.numa_balancing=0
 sysctl -w kernel.sched_migration_cost_ns=50000
 # bind cpu
-export SGLANG_SET_CPU_AFFINITY=1
+# export SGLANG_SET_CPU_AFFINITY=1
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 unset https_proxy
 unset http_proxy

@@ -17,7 +17,7 @@ set -euo pipefail
 # and SLOs need them. The generated *.summary.json and terminal output contain
 # aggregate statistics only and do not print individual request records.
 
-SGLANG_ROOT="${SGLANG_ROOT:-/home/y00951466/sglang}"
+SGLANG_ROOT="${SGLANG_ROOT:-/home/y00951466/sglang-my}"
 # MODEL="${MODEL:-/home/weights/GLM-5.2-w4a8}"
 MODEL="${MODEL:-/home/weights/GLM-5.2-W4A8C8-A5-0731}"
 
