@@ -57,10 +57,8 @@ python3 -m sglang.launch_server \
         --trust-remote-code \
         --mem-fraction-static 0.85 \
         --served-model-name GLM-5.2-w4a8 \
-        --enable-prefill-delayer \
         --dp-size 2 \
 	--enable-dp-attention \
-        --prefill-delayer-max-delay-passes 100 \
         --max-running-requests 24 \
         --quantization modelslim \
         --moe-a2a-backend deepep --deepep-mode auto \
@@ -71,6 +69,8 @@ python3 -m sglang.launch_server \
         # --cuda-graph-bs-decode 8 \
         # --cuda-graph-bs-prefill 8 \
         # --max-prefill-tokens 32768 \
+        # --enable-prefill-delayer \
+        # --prefill-delayer-max-delay-passes 100 \
 
 
 # python -m sglang.bench_serving \
