@@ -474,6 +474,25 @@ class AWQMoEMethod(FusedMoEMethodBase):
         if self.quant_config.weight_bits != 4:
             raise ValueError("AWQMoEMethod only supports 4bit now.")
 
+    def get_expert_offload_spec(self):
+        """Declare the existing expert-major AWQ tensors for generic offload."""
+        from sglang.srt.layers.moe.expert_offload import (
+            ExpertOffloadSpec,
+            ExpertOffloadTensorSpec,
+        )
+
+        return ExpertOffloadSpec(
+            tensors=(
+                ExpertOffloadTensorSpec("w13_qweight", ("w1", "w3"), 0),
+                ExpertOffloadTensorSpec("w13_scales", ("w1", "w3"), 0),
+                ExpertOffloadTensorSpec("w13_qzeros", ("w1", "w3"), 0),
+                ExpertOffloadTensorSpec("w2_qweight", ("w2",), 0),
+                ExpertOffloadTensorSpec("w2_scales", ("w2",), 0),
+                ExpertOffloadTensorSpec("w2_qzeros", ("w2",), 0),
+            ),
+            supports_slot_remap=True,
+        )
+
     def create_weights(
         self,
         layer: torch.nn.Module,

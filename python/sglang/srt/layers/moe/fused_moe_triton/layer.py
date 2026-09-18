@@ -3,6 +3,7 @@
 # Adapted from https://github.com/vllm-project/vllm/blob/a6221a144af772fd1a68fe7e627935dc53e81738/vllm/model_executor/layers/fused_moe/layer.py
 
 import logging
+from contextlib import nullcontext
 from enum import Enum
 from functools import cached_property
 from typing import Dict, List, Optional, Tuple
@@ -28,6 +29,10 @@ from sglang.srt.layers.moe import (
     get_deepep_mode,
     get_moe_a2a_backend,
     get_moe_runner_backend,
+)
+from sglang.srt.layers.moe.expert_offload import (
+    OffloadedFusedMoEMethod,
+    get_active_expert_offload_context,
 )
 from sglang.srt.layers.moe.kt_ep_wrapper import (
     KTEPWrapperMethod,
@@ -99,7 +104,17 @@ _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
 _deferred_finalize_info_logged = False
 
 
+def _unwrap_expert_offload_method(quant_method):
+    """Expose the baseline method for loader decisions, not its residency wrapper."""
+    if isinstance(quant_method, OffloadedFusedMoEMethod):
+        return quant_method.inner
+    return quant_method
+
+
 def _fuses_routed_scaling_factor_in_topk(quant_method) -> bool:
+    # The offload wrapper is intentionally transparent to method-specific
+    # policy checks; only its loading residency differs from the inner method.
+    quant_method = _unwrap_expert_offload_method(quant_method)
     return (
         getattr(quant_method, "fuse_routed_scaling_factor_in_topk", False)
         or (
@@ -482,6 +497,17 @@ class FusedMoE(torch.nn.Module):
                 f"(moe_runner_backend={get_exec().moe.moe_runner_backend}, "
                 f"quant_method={type(self.quant_method).__name__})."
             )
+
+        # The context is opt-in and capability-driven.  It wraps only methods
+        # that explicitly guarantee an expert-major post-load layout, and it
+        # does so immediately before parameter creation fixes their device.
+        expert_offload_context = get_active_expert_offload_context()
+        if expert_offload_context is not None:
+            if self._has_fused_shared or self.is_shared_fused_moe:
+                raise RuntimeError(
+                    "CPU expert offload does not support fused or shared experts"
+                )
+            self.quant_method = expert_offload_context.wrap(self.quant_method)
 
         self.quant_method.create_weights(
             layer=self,
@@ -1065,12 +1091,10 @@ class FusedMoE(torch.nn.Module):
             if expert_id < 0 or expert_id >= self.num_local_experts:
                 return
 
-        if isinstance(
-            self.quant_method,
-            KTEPWrapperMethod,
-        ):
-            if self.quant_method.num_gpu_experts != -1:
-                if expert_id >= self.quant_method.num_gpu_experts:
+        quant_method = _unwrap_expert_offload_method(self.quant_method)
+        if isinstance(quant_method, KTEPWrapperMethod):
+            if quant_method.num_gpu_experts != -1:
+                if expert_id >= quant_method.num_gpu_experts:
                     return
 
         self._weight_loader_impl(
@@ -1147,7 +1171,7 @@ class FusedMoE(torch.nn.Module):
         # compressed-tensors checkpoints with packed weights are stored flipped
         # TODO (mgoin): check self.quant_method.quant_config.quant_format
         # against known CompressionFormat enum values that have this quality
-        method = self.quant_method
+        method = _unwrap_expert_offload_method(self.quant_method)
         if self.scheme is not None:
             method = self.scheme
         if method.__class__.__name__ == "KTEPWrapperMethod":
@@ -1385,7 +1409,7 @@ class FusedMoE(torch.nn.Module):
 
         # Mirror _weight_loader_impl: the trtllm bf16 prep reshapes expert weights
         # into block layout; hot weight updates must restore canonical shapes first.
-        method = self.quant_method
+        method = _unwrap_expert_offload_method(self.quant_method)
         if isinstance(method, KTEPWrapperMethod):
             method = method.gpu_method
         if isinstance(method, UnquantizedFusedMoEMethod):
@@ -1414,7 +1438,7 @@ class FusedMoE(torch.nn.Module):
         # compressed-tensors checkpoints with packed weights are stored flipped
         # TODO: check self.quant_method.quant_config.quant_format
         # against known CompressionFormat enum values that have this quality
-        method = self.quant_method
+        method = _unwrap_expert_offload_method(self.quant_method)
         if self.scheme is not None:
             method = self.scheme
         if isinstance(method, Fp8MoEMethod) and (
@@ -1535,9 +1559,102 @@ class FusedMoE(torch.nn.Module):
             dwdp_mgr = get_global_dwdp_manager()
             dwdp_mgr.wait_prefetch(self.layer_id)
 
+        # CPU expert offload is the only implementation currently exposing
+        # these optional counters.  Keep ordinary FusedMoE paths unchanged.
+        stats_backend = getattr(
+            getattr(self.quant_method, "context", None), "backend", None
+        )
+        record_moe_call = getattr(stats_backend, "record_moe_call", None)
+        record_microbatch = getattr(stats_backend, "record_microbatch", None)
+        if callable(record_moe_call):
+            record_moe_call()
+
+        microbatch_planner = getattr(
+            self.quant_method, "plan_prefill_microbatches", None
+        )
+        if (
+            callable(microbatch_planner)
+            and TopKOutputChecker.format_is_standard(topk_output)
+            and hidden_states.shape[0] > 0
+        ):
+            plan = microbatch_planner(topk_output)
+            # Third-party methods used the original list return type before
+            # CPU offload introduced a plan object, so accept both forms.
+            token_ranges = getattr(plan, "ranges", plan)
+            planned_ids_cpu = getattr(plan, "ids_cpu", None)
+            planned_ids_scope = getattr(self.quant_method, "planned_ids", None)
+            if len(token_ranges) > 1 or planned_ids_cpu is not None:
+                output_chunks = []
+                for start, end in token_ranges:
+                    # Scope the slice over dispatch *and* execution.  The
+                    # wrapper consumes it only in apply(), but this lifetime
+                    # makes the exception boundary explicit and prevents a
+                    # failed block from leaving IDs for a later request.
+                    scope = (
+                        planned_ids_scope(planned_ids_cpu[start:end])
+                        if callable(planned_ids_scope) and planned_ids_cpu is not None
+                        else nullcontext()
+                    )
+                    with scope:
+                        if callable(record_microbatch):
+                            record_microbatch()
+                        chunk_topk = topk_output._replace(
+                            topk_weights=topk_output.topk_weights[start:end],
+                            topk_ids=topk_output.topk_ids[start:end],
+                            router_logits=(
+                                topk_output.router_logits[start:end]
+                                if topk_output.router_logits is not None
+                                else None
+                            ),
+                        )
+                        dispatch_output = self.dispatcher.dispatch(
+                            hidden_states=hidden_states[start:end],
+                            topk_output=chunk_topk,
+                        )
+                        if (
+                            pre_quant_input is not None
+                            and dispatch_output.format.is_standard()
+                            and dispatch_output.hidden_states_scale is None
+                        ):
+                            if (
+                                pre_quant_input[0].shape[0] != hidden_states.shape[0]
+                                or pre_quant_input[1].shape[0] != hidden_states.shape[0]
+                            ):
+                                raise ValueError(
+                                    "pre_quant_input must have the token dimension first"
+                                )
+                            dispatch_output = dispatch_output._replace(
+                                hidden_states_pre_quant=(
+                                    pre_quant_input[0][start:end].contiguous(),
+                                    pre_quant_input[1][start:end].contiguous(),
+                                )
+                            )
+                        combine_input = self.run_moe_core(
+                            dispatch_output=dispatch_output
+                        )
+                        with use_symmetric_memory(
+                            get_tp_group(), disabled=not is_allocation_symmetric()
+                        ):
+                            chunk = self.dispatcher.combine(combine_input=combine_input)
+                        output_chunks.append(
+                            chunk[..., :origin_hidden_states_dim].contiguous()
+                        )
+                final_hidden_states = torch.cat(output_chunks, dim=0)
+                if self._dwdp_bound:
+                    dwdp_mgr.record_compute_and_prefetch_next(self.layer_id)
+                if self.reduce_results and (
+                    self.moe_tp_size > 1 or self.moe_ep_size > 1
+                ):
+                    final_hidden_states = tensor_model_parallel_all_reduce(
+                        final_hidden_states
+                    )
+                return final_hidden_states
+
         dispatch_output = self.dispatcher.dispatch(
             hidden_states=hidden_states, topk_output=topk_output
         )
+        if callable(record_microbatch):
+            record_microbatch()
         if (
             pre_quant_input is not None
             and dispatch_output.format.is_standard()

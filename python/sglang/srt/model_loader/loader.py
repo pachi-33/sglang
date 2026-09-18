@@ -147,15 +147,29 @@ logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def device_loading_context(module: torch.nn.Module, target_device: torch.device):
+def device_loading_context(
+    module: torch.nn.Module,
+    target_device: torch.device,
+    *,
+    pin_memory: bool | None = None,
+):
+    """Stage a module for post-load processing.
+
+    ``None`` preserves the historical policy.  Callers that own a CPU source
+    cache may explicitly opt out of pinned restoration without changing any
+    existing loader path.
+    """
     if target_device.type == "cpu":
         yield module
         return
 
+    if pin_memory is None:
+        pin_memory = target_device.type != "cpu" and is_pin_memory_available()
+
     with stage_module_for_post_load(
         module,
         target_device,
-        pin_memory=target_device.type != "cpu" and is_pin_memory_available(),
+        pin_memory=pin_memory,
     ):
         yield module
 
@@ -995,7 +1009,17 @@ class DefaultModelLoader(BaseModelLoader):
     @staticmethod
     def load_weights_and_postprocess(model, weights, target_device):
         DefaultModelLoader.load_weights_only(model, weights, target_device)
+        DefaultModelLoader.finalize_weight_loading(model)
         DefaultModelLoader.postprocess_weights(model, target_device)
+
+    @staticmethod
+    def finalize_weight_loading(model):
+        """Run optional load-completeness checks without replacing model loaders."""
+        for _, module in model.named_modules():
+            quant_method = getattr(module, "quant_method", None)
+            finalize = getattr(quant_method, "finalize_weight_loading", None)
+            if callable(finalize):
+                finalize(module)
 
     @staticmethod
     def load_weights_only(model, weights, target_device):
@@ -1064,8 +1088,20 @@ class DefaultModelLoader(BaseModelLoader):
                 # to be on the global target device. This scope is for the
                 # case where cpu offloading is used, where we will move the
                 # parameters onto device for processing and back off after.
-                with device_loading_context(module, target_device):
+                # CPU-resident expert sources bypass generic pinning here;
+                # their backend applies its configured source-memory policy
+                # after device-staged post-load transforms are restored.
+                # Other methods retain the historical automatic policy.
+                pin_memory = getattr(quant_method, "post_load_pin_memory", None)
+                with device_loading_context(
+                    module, target_device, pin_memory=pin_memory
+                ):
                     quant_method.process_weights_after_loading(module)
+                # Device staging has exited here.  CPU-resident source capture
+                # must never observe the temporary CUDA post-load layout.
+                finalize = getattr(quant_method, "finalize_post_load", None)
+                if callable(finalize):
+                    finalize(module)
 
 
 class LayeredModelLoader(DefaultModelLoader):

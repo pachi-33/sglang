@@ -136,6 +136,24 @@ class FusedMoEMethodBase(QuantizeMethodBase):
             f"{type(self).__name__} does not expose quant info for {runner_backend.value!r}"
         )
 
+    def get_expert_offload_spec(self):
+        """Return an optional expert-major CPU-offload capability declaration.
+
+        ``None`` is deliberately the safe default: a method must opt in only
+        when its post-load tensors can be sliced independently by expert.
+        The concrete contract lives with the generic MoE offload wrapper to
+        avoid making every quantization method depend on that experimental API.
+        """
+        return None
+
+    def finalize_weight_loading(self, layer: torch.nn.Module) -> None:
+        """Optional hook after the model's unmodified ``load_weights`` call."""
+        return
+
+    def finalize_post_load(self, layer: torch.nn.Module) -> None:
+        """Optional hook after device-staged post-load processing is restored."""
+        return
+
 
 class QuantizationConfig(ABC):
     """Base class for quantization configs."""

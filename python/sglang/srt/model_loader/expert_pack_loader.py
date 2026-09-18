@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""SSD expert-pack loader for deepseek-v4-flash and text-only kimi-k3.
+"""ExpertPack loader for SSD packages and CPU-resident HF MoE experts.
 
-Only these two language-model paths are currently supported. The multimodal
-kimi-k3 model is outside the scope of this loader.
+SSD packages currently support deepseek-v4-flash and text-only kimi-k3.  The
+``cpu_memory`` source backend instead reuses the standard HF checkpoint loader
+for capability-declared routed MoE methods; the multimodal kimi-k3 path remains
+outside this loader's scope.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Generator, Tuple
 
@@ -18,6 +21,7 @@ import torch
 from torch import nn
 
 from sglang.kernels.ops.moe.expert_pack_mxfp4 import prewarm_mxfp4_extension
+from sglang.srt.configs.load_config import LoadFormat
 from sglang.srt.layers.moe.expert_pack import (
     ExpertPackStore,
     KimiGGMLExpertPackStore,
@@ -37,6 +41,8 @@ from sglang.srt.model_loader.expert_pack_config import (
 from sglang.srt.model_loader.kimi_k3_gguf import kimi_k3_nonexpert_weights_iterator
 from sglang.srt.model_loader.loader import (
     BaseModelLoader,
+    DefaultModelLoader,
+    _get_quantization_config,
     _initialize_model,
     device_loading_context,
 )
@@ -143,6 +149,19 @@ class ExpertPackModelLoader(BaseModelLoader):
     def __init__(self, load_config) -> None:
         super().__init__(load_config)
         config = dict(load_config.model_loader_extra_config or {})
+        self.source_backend = config.get("source_backend", "ssd")
+        if self.source_backend == "cpu_memory":
+            if not isinstance(config.get("pin_host_experts", False), bool):
+                raise ValueError("cpu_memory pin_host_experts must be a boolean")
+            self.config = config
+            self.pack_path = None
+            self.manifest_path = None
+            self.source_path = None
+            return
+        if self.source_backend != "ssd":
+            raise ValueError(
+                f"unsupported expert_pack source_backend={self.source_backend!r}"
+            )
         pack_path = config.get("pack_path") or os.getenv("SGLANG_EXPERT_PACK_PATH")
         if not pack_path:
             raise ValueError(
@@ -166,6 +185,8 @@ class ExpertPackModelLoader(BaseModelLoader):
             )
 
     def load_model(self, *, model_config, device_config) -> nn.Module:
+        if self.source_backend == "cpu_memory":
+            return self._load_cpu_memory_model(model_config, device_config)
         hf_config = model_config.hf_config
         model_kind, model_errors = validate_expert_pack_model_config(hf_config)
         if model_errors:
@@ -317,4 +338,73 @@ class ExpertPackModelLoader(BaseModelLoader):
             store.pack_sha256,
             dense_bytes,
         )
+        return model.eval()
+
+    def _load_cpu_memory_model(self, model_config, device_config) -> nn.Module:
+        """Use the normal checkpoint loader; expert residency is the only change."""
+        from sglang.srt.layers.moe.expert_offload import ExpertOffloadContext
+
+        target_device = torch.device(device_config.device)
+        if target_device.type != "cuda":
+            raise ValueError("cpu_memory expert_pack requires a CUDA target device")
+        # The argument hook normally establishes these restrictions.  Repeat
+        # the safety-critical subset at load time so programmatic loader use
+        # cannot accidentally enable unsupported distributed or graph paths.
+        parallel = get_parallel()
+        exec_config = get_exec()
+        if (
+            parallel.tp_size != 1
+            or parallel.moe_dp_size != 1
+            or parallel.moe_ep_size != 1
+            or not exec_config.graph.disable_cuda_graph
+            or not exec_config.moe.disable_shared_experts_fusion
+        ):
+            raise RuntimeError(
+                "cpu_memory expert_pack ServerArgs invariants were not applied "
+                "before model load"
+            )
+        cpu_config = {}
+        for name, default, minimum in (
+            ("cache_vram_mib", 1024, 1),
+            ("cache_vram_reserve_mib", 1536, 0),
+            ("stage_slots", 16, 1),
+            ("stats_flush_interval", 1, 0),
+        ):
+            value = int(self.config.get(name, default))
+            if value < minimum:
+                raise ValueError(f"cpu_memory {name} must be >= {minimum}")
+            cpu_config[name] = value
+        pin_host_experts = self.config.get("pin_host_experts", False)
+        context = ExpertOffloadContext(pin_host_experts=pin_host_experts)
+        quant_config = _get_quantization_config(model_config, self.load_config)
+        iterator_config = {
+            name: self.config[name]
+            for name in ("enable_multithread_load", "num_threads")
+            if name in self.config
+        }
+        baseline_config = replace(
+            self.load_config,
+            load_format=LoadFormat.AUTO,
+            model_loader_extra_config=iterator_config,
+        )
+        baseline = DefaultModelLoader(baseline_config)
+        with set_default_torch_dtype(model_config.dtype), context:
+            with target_device:
+                model = _initialize_model(model_config, self.load_config, quant_config)
+            DefaultModelLoader.load_weights_and_postprocess(
+                model, baseline._get_all_weights(model_config, model), target_device
+            )
+        context.backend.initialize_cuda(
+            target_device=target_device,
+            cache_vram_mib=cpu_config["cache_vram_mib"],
+            cache_vram_reserve_mib=cpu_config["cache_vram_reserve_mib"],
+            stage_slots=cpu_config["stage_slots"],
+        )
+        context.bind_runtime_model(model)
+        model.cpu_memory_expert_backend = context.backend
+        model.cpu_memory_expert_context = context
+        stats_path = self.config.get("stats_path")
+        context.backend.configure_stats(stats_path, cpu_config["stats_flush_interval"])
+        if stats_path:
+            context.backend.flush_stats(stats_path)
         return model.eval()
