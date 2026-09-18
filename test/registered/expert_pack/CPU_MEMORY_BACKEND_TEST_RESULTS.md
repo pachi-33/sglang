@@ -245,6 +245,109 @@ GPU cache slots and 201,326,592 bytes for staging. The final four-request
 serving result is the more stable headline measurement; the small sweep should
 still be treated as directional rather than a statistically rigorous study.
 
+### Narrow CPU/GPU profiling
+
+The recommended 3584 MiB configuration was also profiled with one complete
+request. The throughput and latency reported by profiler-enabled requests are
+not benchmark results: trace collection and export perturb execution. The
+analysis below uses the activity spans inside the traces.
+
+Capturing an entire request with both CPU and GPU activities exceeded profiler
+memory while exporting and the scheduler was killed with exit code -9. No
+trace was produced by that failed attempt. The successful runs instead used
+`--profile-by-stage --profile-num-steps 1`, which captures one prefill step and
+one decode step, and collected GPU and CPU activities separately:
+
+```bash
+# Common serving arguments are identical to the benchmark command above.
+# GPU activity trace:
+... -m sglang.benchmark.serving \
+  --backend sglang \
+  --base-url http://127.0.0.1:31000 \
+  --dataset-name random \
+  --model /home/yaozhenyang/huggingface/Qwen3.6-35B-A3B-AWQ \
+  --tokenizer /home/yaozhenyang/huggingface/Qwen3.6-35B-A3B-AWQ \
+  --num-prompts 1 \
+  --random-input-len 128 \
+  --random-output-len 64 \
+  --random-range-ratio 1 \
+  --max-concurrency 1 \
+  --request-rate inf \
+  --warmup-requests 1 \
+  --profile \
+  --profile-activities GPU \
+  --profile-by-stage \
+  --profile-num-steps 1 \
+  --profile-output-dir /tmp/cpu-expert-bench/profile3584-narrow \
+  --profile-prefix cpu-expert-3584-narrow
+
+# CPU activity trace: use the same arguments and replace GPU/output settings:
+... --profile-activities CPU \
+  --profile-output-dir /tmp/cpu-expert-bench/profile3584-cpu-narrow \
+  --profile-prefix cpu-expert-3584-cpu-narrow
+```
+
+The GPU prefill trace covered 128 new tokens. The later CPU prefill trace saw
+64 new and 64 prefix-cached tokens, so only its qualitative call-path evidence
+is used. Decode remains one token per step in both traces.
+
+| GPU trace phase | Trace span | Pinned H2D | H2D activity | Kernel activity | No kernel/copy activity |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Prefill, 128 new tokens | 2371.28 ms | 14887.69 MiB / 43288 copies | 662.52 ms (27.94%) | 70.46 ms (2.97%) | 1638.13 ms (69.08%) |
+| Decode, one token | 66.95 ms | 113.46 MiB / 271 copies | 4.92 ms (7.35%) | 11.51 ms (17.19%) | 50.45 ms (75.36%) |
+
+Pinned H2D achieved 23.56 GB/s in prefill and 24.10 GB/s in decode. The PCIe
+copy engine is therefore transferring efficiently when active. H2D and kernels
+were almost completely serialized: the union of all GPU kernel/copy intervals
+was 733.15 ms in prefill and 16.50 ms in decode, almost exactly the sum of the
+two activity classes.
+
+Within the decode kernel time, dense GEMV kernels accounted for 8.84 ms and
+AWQ Marlin MoE kernels for 1.39 ms. The MoE kernel itself is not the primary
+decode bottleneck at this cache size. The larger issue is the approximately
+50.45 ms per decode step during which the GPU executes neither a kernel nor a
+copy.
+
+The CPU trace directly identifies the offload control path as hot. Although
+CPU profiling inflated the decode step to 108.88 ms and nested durations must
+not be added together, it recorded:
+
+- 40 calls to `expert_offload.py:apply`, totaling 54.80 ms;
+- 40 cache `acquire` calls, totaling 30.13 ms;
+- 50 `_load_expert` calls, totaling 22.58 ms;
+- 50 pinned staging calls, totaling 16.94 ms.
+
+For the partially prefix-cached prefill step, the CPU trace recorded 129
+offload/apply microbatches and 2564 `_load_expert` calls. This confirms that
+contiguous token microbatching and per-expert admission generate substantial
+Python, event, and copy-launch overhead.
+
+The profiling evidence points to the following optimization order:
+
+1. Remove the per-layer logical-ID GPU-to-CPU-to-GPU round trip on cache hits.
+   A GPU-resident logical-to-slot table could remap hits without host
+   intervention and return only misses to the CPU policy.
+2. Reduce prefill fragmentation. The current contiguous-range planner must
+   repeatedly dispatch small MoE microbatches when the selected-expert union
+   exceeds the 53-54 slots available per layer. An expert-major or grouped
+   prefill path could reuse each admitted expert across more tokens.
+3. Coalesce AWQ expert payload transfers. Thousands of small copies achieve
+   good aggregate bandwidth but consume CPU launch/event work. A contiguous
+   expert payload or batched copy path would reduce copy count.
+4. Overlap transfers with useful work. The current dependency chain makes
+   copies and MoE kernels nearly serial. Computing cache-hit experts while
+   misses arrive, or accurate next-layer/token prefetch, could hide part of the
+   H2D time.
+5. After reducing control-plane gaps, tune the batch-one dense GEMV/GDN path.
+   Dense GEMV already dominates measured decode kernel time, while Marlin MoE
+   is comparatively small.
+
+The successful compressed traces were retained under
+`/tmp/cpu-expert-bench/profile3584-narrow/` and
+`/tmp/cpu-expert-bench/profile3584-cpu-narrow/` during this run. They are not
+committed because profiler traces are machine-specific and substantially
+larger than the textual summary.
+
 ### Known limitations and warnings
 
 - This is a single-GPU, single-concurrency serving test. TP, EP, concurrent
