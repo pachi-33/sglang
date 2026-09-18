@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +86,44 @@ def handle_expert_pack(server_args: Any) -> None:
     if not isinstance(loader_config, dict):
         errors.append("--model-loader-extra-config must be a JSON object")
         loader_config = {}
+
+    if loader_config.get("source_backend", "ssd") == "cpu_memory":
+        if cfg.cpu_offload_gb > 0:
+            errors.append(
+                "cpu_memory expert_pack is incompatible with --cpu-offload-gb"
+            )
+        device = getattr(cfg, "device", None)
+        if device is not None and not re.fullmatch(r"cuda(?::\d+)?", str(device)):
+            errors.append(
+                "cpu_memory expert_pack requires a CUDA device (cuda or cuda:N)"
+            )
+        if getattr(cfg, "moe_runner_backend", "auto") != "auto":
+            errors.append(
+                "cpu_memory expert_pack requires --moe-runner-backend auto; "
+                "the cache owns physical expert-slot remapping"
+            )
+        if getattr(cfg, "moe_a2a_backend", "none") != "none":
+            errors.append("cpu_memory expert_pack requires --moe-a2a-backend none")
+        if (
+            cfg.enable_eplb
+            or cfg.init_expert_location != "trivial"
+            or cfg.ep_num_redundant_experts
+        ):
+            errors.append("cpu_memory expert_pack is incompatible with EPLB settings")
+        if cfg.enable_lora or cfg.lora_paths:
+            errors.append("cpu_memory expert_pack is incompatible with MoE LoRA")
+        if errors:
+            details = "\n".join(f"- {error}" for error in errors)
+            raise ValueError(f"Invalid expert_pack configuration:\n{details}")
+        declare_resolution(
+            server_args,
+            "handle_expert_pack",
+            disable_cuda_graph=True,
+            disable_shared_experts_fusion=True,
+            max_running_requests=1,
+        )
+        logger.info("cpu_memory expert_pack selected: CUDA graph disabled.")
+        return
 
     # A raw GGUF path is the public input form.  Preparation is performed once
     # here, before model-config parsing and before the loader is constructed.

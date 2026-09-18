@@ -645,6 +645,21 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, BaseFusedOp):
         # interleave gate/up for the fused swiglu up-GEMM epilogue.
         self.w13_swiglu_interleaved = False
 
+    def get_expert_offload_spec(self):
+        """Declare the format-neutral FP expert tensors for generic offload."""
+        from sglang.srt.layers.moe.expert_offload import (
+            ExpertOffloadSpec,
+            ExpertOffloadTensorSpec,
+        )
+
+        return ExpertOffloadSpec(
+            tensors=(
+                ExpertOffloadTensorSpec("w13_weight", ("w1", "w3"), 0),
+                ExpertOffloadTensorSpec("w2_weight", ("w2",), 0),
+            ),
+            supports_slot_remap=True,
+        )
+
     def create_weights(
         self,
         layer: torch.nn.Module,
