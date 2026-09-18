@@ -1088,8 +1088,10 @@ class DefaultModelLoader(BaseModelLoader):
                 # to be on the global target device. This scope is for the
                 # case where cpu offloading is used, where we will move the
                 # parameters onto device for processing and back off after.
-                # CPU-resident expert sources stay pageable.  Other methods
-                # retain the historical automatic pin-memory policy.
+                # CPU-resident expert sources bypass generic pinning here;
+                # their backend applies its configured source-memory policy
+                # after device-staged post-load transforms are restored.
+                # Other methods retain the historical automatic policy.
                 pin_memory = getattr(quant_method, "post_load_pin_memory", None)
                 with device_loading_context(
                     module, target_device, pin_memory=pin_memory

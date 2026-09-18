@@ -27,7 +27,7 @@ class EventLike(Protocol):
 
 @dataclass(frozen=True)
 class HostExpertLayer:
-    """Strongly owned, pageable final-layout expert tensors for one MoE layer."""
+    """Strongly owned final-layout CPU expert tensors for one MoE layer."""
 
     layer_id: int
     top_k: int
@@ -36,6 +36,7 @@ class HostExpertLayer:
     expert_tensor_bytes: int
     staging_payload_bytes: int
     total_bytes: int
+    pinned_bytes: int
     staging_layout: Mapping[str, tuple[int, int]]
 
     @classmethod
@@ -53,11 +54,12 @@ class HostExpertLayer:
             raise ValueError("a host expert layer needs at least one tensor")
         payload_bytes = 0
         tensor_bytes = 0
+        pinned_bytes = 0
         retained: dict[str, torch.Tensor] = {}
         staging_layout: dict[str, tuple[int, int]] = {}
         for name, tensor in tensors.items():
-            if tensor.device.type != "cpu" or tensor.is_pinned():
-                raise ValueError(f"source {name!r} must be pageable CPU memory")
+            if tensor.device.type != "cpu":
+                raise ValueError(f"source {name!r} must be CPU memory")
             if tensor.ndim == 0 or tensor.shape[0] != num_experts:
                 raise ValueError(f"source {name!r} is not expert-major")
             if not tensor.is_contiguous():
@@ -65,6 +67,8 @@ class HostExpertLayer:
             retained[name] = tensor
             byte_count = tensor[0].numel() * tensor.element_size()
             tensor_bytes += byte_count
+            if tensor.is_pinned():
+                pinned_bytes += byte_count * num_experts
             alignment = max(16, tensor.element_size())
             payload_bytes = _align_up(payload_bytes, alignment)
             staging_layout[name] = (payload_bytes, byte_count)
@@ -78,12 +82,19 @@ class HostExpertLayer:
             expert_tensor_bytes=tensor_bytes,
             staging_payload_bytes=payload_bytes,
             total_bytes=tensor_bytes * num_experts,
+            pinned_bytes=pinned_bytes,
             staging_layout=staging_layout,
         )
 
 
 def _align_up(value: int, alignment: int) -> int:
     return (value + alignment - 1) // alignment * alignment
+
+
+def _is_direct_h2d_source(tensor: torch.Tensor) -> bool:
+    # PyTorch reports zero-byte CPU tensors as unpinned even after
+    # ``pin_memory``.  They carry no payload to stage or protect for DMA.
+    return tensor.is_pinned() or tensor.numel() == 0
 
 
 @dataclass
@@ -104,9 +115,10 @@ class _PendingTiming:
 class PinnedStagingRing:
     """Fixed-size pageable-to-pinned staging ring shared by all cache pools.
 
-    The ring is the only host memory pinned by this backend.  Before a slot is
-    overwritten on CPU, its previous H2D event is synchronized: asynchronous
-    DMA may still read the pinned bytes even after enqueueing completed.
+    Pageable sources use the ring.  Already-pinned sources bypass it and are
+    copied directly to the GPU cache.  Before a slot is overwritten on CPU,
+    its previous H2D event is synchronized: asynchronous DMA may still read
+    the pinned bytes even after enqueueing completed.
     """
 
     def __init__(
@@ -145,27 +157,38 @@ class PinnedStagingRing:
 
     def stage(
         self, host_layer: HostExpertLayer, expert_id: int
-    ) -> tuple[_StagingSlot, dict[str, torch.Tensor]]:
+    ) -> tuple[_StagingSlot | None, dict[str, torch.Tensor]]:
         if self._closed:
             raise RuntimeError("staging ring is closed")
         if not 0 <= expert_id < host_layer.num_experts:
             raise IndexError(
                 f"expert {expert_id} is outside layer {host_layer.layer_id}"
             )
-        slot = self._slots[self._next_slot]
-        self._next_slot = (self._next_slot + 1) % len(self._slots)
-        if slot.h2d_done is not None:
-            # This is a host-side wait, not a stream wait: CPU is about to
-            # overwrite the source buffer of the prior nonblocking H2D.
-            wait_start_ns = time.perf_counter_ns()
-            slot.h2d_done.synchronize()
-            if self._staging_wait_callback is not None:
-                self._staging_wait_callback(time.perf_counter_ns() - wait_start_ns)
-            slot.h2d_done = None
+        needs_staging = any(
+            not _is_direct_h2d_source(source) for source in host_layer.tensors.values()
+        )
+        slot = None
+        if needs_staging:
+            slot = self._slots[self._next_slot]
+            self._next_slot = (self._next_slot + 1) % len(self._slots)
+            if slot.h2d_done is not None:
+                # This is a host-side wait, not a stream wait: CPU is about to
+                # overwrite the source buffer of the prior nonblocking H2D.
+                wait_start_ns = time.perf_counter_ns()
+                slot.h2d_done.synchronize()
+                if self._staging_wait_callback is not None:
+                    self._staging_wait_callback(time.perf_counter_ns() - wait_start_ns)
+                slot.h2d_done = None
 
         views: dict[str, torch.Tensor] = {}
         for name, source in host_layer.tensors.items():
             expert = source[expert_id]
+            if _is_direct_h2d_source(source):
+                # The immutable, strongly-owned source outlives every H2D, so
+                # it needs neither a staging copy nor a buffer-reuse event.
+                views[name] = expert
+                continue
+            assert slot is not None
             offset, byte_count = host_layer.staging_layout[name]
             end = offset + byte_count
             if end > self.max_expert_payload_bytes:
@@ -362,7 +385,8 @@ class ExpertCachePool:
                 ready.record(transfer_stream)
                 # The H2D event is separate from ``ready`` because its purpose
                 # is host-buffer reuse; ready gates cache-data consumption.
-                self.staging_ring.mark_h2d_submitted(staging_slot, transfer_stream)
+                if staging_slot is not None:
+                    self.staging_ring.mark_h2d_submitted(staging_slot, transfer_stream)
                 if timing_start is not None:
                     timing_end = self._timing_event_factory()
                     timing_end.record(transfer_stream)
@@ -537,7 +561,8 @@ class ExpertCachePool:
 class CpuMemoryExpertBackend:
     """Own host expert sources, shared staging, independent per-layer pools."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, pin_host_experts: bool = False) -> None:
+        self.pin_host_experts = pin_host_experts
         self.host_layers: dict[int, HostExpertLayer] = {}
         self.pools: dict[int, ExpertCachePool] = {}
         self.staging_ring: PinnedStagingRing | None = None
@@ -607,7 +632,7 @@ class CpuMemoryExpertBackend:
         cache_vram_reserve_mib: int,
         stage_slots: int,
     ) -> Mapping[int, ExpertCachePool]:
-        """Create CUDA cache storage and the dedicated pageable-source stream."""
+        """Create CUDA cache storage and its dedicated transfer stream."""
         device = torch.device(target_device)
         if device.type != "cuda":
             raise ValueError("CPU-memory expert cache requires a CUDA target device")
@@ -747,6 +772,9 @@ class CpuMemoryExpertBackend:
                 "host_expert_bytes": sum(
                     layer.total_bytes for layer in self.host_layers.values()
                 ),
+                "pinned_host_expert_bytes": sum(
+                    layer.pinned_bytes for layer in self.host_layers.values()
+                ),
                 "cache_allocated_bytes": allocated_cache_bytes,
                 "staging_allocated_bytes": (
                     self.staging_ring.allocated_bytes
@@ -763,6 +791,14 @@ class CpuMemoryExpertBackend:
                     "expert_tensor_bytes": layer.expert_tensor_bytes,
                     "staging_payload_bytes": layer.staging_payload_bytes,
                     "total_bytes": layer.total_bytes,
+                    "pinned_bytes": layer.pinned_bytes,
+                    "source_memory": (
+                        "pinned"
+                        if layer.pinned_bytes == layer.total_bytes
+                        else "pageable"
+                        if layer.pinned_bytes == 0
+                        else "mixed"
+                    ),
                 }
                 for layer_id, layer in self.host_layers.items()
             },

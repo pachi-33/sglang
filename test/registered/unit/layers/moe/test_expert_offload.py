@@ -95,11 +95,11 @@ class _ToyModel(nn.Module):
 
 
 class TestExpertOffload(unittest.TestCase):
-    def _create_method(self):
+    def _create_method(self, *, pin_host_experts=False):
         layer = _ToyLayer()
         layer.register_buffer("side_scale", torch.ones(2, 1))
         inner = _ToyMethod()
-        context = ExpertOffloadContext()
+        context = ExpertOffloadContext(pin_host_experts=pin_host_experts)
         method = OffloadedFusedMoEMethod(inner, context)
 
         def original_loader(param, loaded, weight_name, shard_id, expert_id):
@@ -167,6 +167,25 @@ class TestExpertOffload(unittest.TestCase):
             layer.w13_weight,
         )
         self.assertTrue(torch.equal(layer.w2_weight[1], torch.full((2, 2), 4.0)))
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
+    def test_pin_host_experts_replaces_storage_but_preserves_parameters(self):
+        layer, inner, method = self._create_method(pin_host_experts=True)
+        self._load_complete_weights(layer, inner)
+        original_w13 = layer.w13_weight
+        original_w2 = layer.w2_weight
+
+        method.finalize_weight_loading(layer)
+        method.process_weights_after_loading(layer)
+        method.finalize_post_load(layer)
+
+        self.assertIs(layer.w13_weight, original_w13)
+        self.assertIs(layer.w2_weight, original_w2)
+        self.assertTrue(layer.w13_weight.is_pinned())
+        self.assertTrue(layer.w2_weight.is_pinned())
+        self.assertTrue(layer.side_scale.is_pinned())
+        host = method.context.backend.host_layers[0]
+        self.assertEqual(host.pinned_bytes, host.total_bytes)
 
     def test_rejects_incomplete_shard_coverage(self):
         layer, inner, method = self._create_method()

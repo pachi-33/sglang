@@ -148,7 +148,8 @@ class TestCpuMemoryExpertPackPublicConfig(unittest.TestCase):
                 captured["stats_flush"] = path
 
         class FakeContext:
-            def __init__(self):
+            def __init__(self, **kwargs):
+                captured["context_config"] = kwargs
                 self.backend = FakeBackend()
 
             def __enter__(self):
@@ -164,6 +165,7 @@ class TestCpuMemoryExpertPackPublicConfig(unittest.TestCase):
             load_format=LoadFormat.EXPERT_PACK,
             model_loader_extra_config={
                 "source_backend": "cpu_memory",
+                "pin_host_experts": True,
                 "cache_vram_mib": 64,
                 "cache_vram_reserve_mib": 32,
                 "stage_slots": 2,
@@ -214,6 +216,19 @@ class TestCpuMemoryExpertPackPublicConfig(unittest.TestCase):
         self.assertEqual(
             captured["stats_config"], ("/tmp/cpu-memory-test-stats.json", 0)
         )
+        self.assertEqual(captured["context_config"], {"pin_host_experts": True})
+
+    def test_cpu_memory_rejects_non_boolean_pinned_host_expert_config(self):
+        with self.assertRaisesRegex(ValueError, "must be a boolean"):
+            ExpertPackModelLoader(
+                LoadConfig(
+                    load_format=LoadFormat.EXPERT_PACK,
+                    model_loader_extra_config={
+                        "source_backend": "cpu_memory",
+                        "pin_host_experts": "yes",
+                    },
+                )
+            )
 
     def test_cpu_memory_loader_rechecks_hook_invariants(self):
         loader = ExpertPackModelLoader(

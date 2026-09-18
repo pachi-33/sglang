@@ -151,6 +151,8 @@ class ExpertPackModelLoader(BaseModelLoader):
         config = dict(load_config.model_loader_extra_config or {})
         self.source_backend = config.get("source_backend", "ssd")
         if self.source_backend == "cpu_memory":
+            if not isinstance(config.get("pin_host_experts", False), bool):
+                raise ValueError("cpu_memory pin_host_experts must be a boolean")
             self.config = config
             self.pack_path = None
             self.manifest_path = None
@@ -372,7 +374,8 @@ class ExpertPackModelLoader(BaseModelLoader):
             if value < minimum:
                 raise ValueError(f"cpu_memory {name} must be >= {minimum}")
             cpu_config[name] = value
-        context = ExpertOffloadContext()
+        pin_host_experts = self.config.get("pin_host_experts", False)
+        context = ExpertOffloadContext(pin_host_experts=pin_host_experts)
         quant_config = _get_quantization_config(model_config, self.load_config)
         iterator_config = {
             name: self.config[name]

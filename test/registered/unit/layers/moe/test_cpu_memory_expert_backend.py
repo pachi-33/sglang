@@ -99,6 +99,26 @@ class TestCpuMemoryExpertBackend(unittest.TestCase):
         self.assertEqual(previous_event.synchronize_calls, 1)
         torch.testing.assert_close(staged["weights"], host.tensors["weights"][1])
 
+    def test_zero_byte_source_does_not_force_staging(self):
+        host = HostExpertLayer.from_tensors(
+            layer_id=0,
+            top_k=1,
+            num_experts=2,
+            tensors={"empty": torch.empty(2, 0)},
+        )
+        ring = PinnedStagingRing(
+            1,
+            max(1, host.staging_payload_bytes),
+            event_factory=_FakeEvent,
+            buffer_factory=_cpu_buffer,
+            require_pinned=False,
+        )
+
+        slot, staged = ring.stage(host, 0)
+
+        self.assertIsNone(slot)
+        self.assertEqual(staged["empty"].numel(), 0)
+
     def test_leases_deduplicate_wait_and_protect_active_victims(self):
         events = _Events()
         host = _host_layer()
@@ -379,6 +399,27 @@ class TestCpuMemoryExpertBackend(unittest.TestCase):
         replacement = pool.acquire([0], transfer, torch.cuda.current_stream())
         replacement.release_after(torch.cuda.current_stream())
         pool.close()
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
+    def test_cuda_pinned_source_bypasses_staging_ring(self):
+        weights = torch.tensor([[1.0], [2.0]]).pin_memory()
+        host = HostExpertLayer.from_tensors(
+            layer_id=0,
+            top_k=1,
+            num_experts=2,
+            tensors={"w": weights},
+        )
+        ring = PinnedStagingRing(
+            1, host.staging_payload_bytes, event_factory=torch.cuda.Event
+        )
+
+        slot, staged = ring.stage(host, 1)
+
+        self.assertIsNone(slot)
+        self.assertTrue(staged["w"].is_pinned())
+        self.assertEqual(staged["w"].data_ptr(), weights[1].data_ptr())
+        self.assertEqual(host.pinned_bytes, host.total_bytes)
+        ring.close()
 
     @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
     def test_cuda_unquantized_final_layout_cache_matches_baseline_across_microbatches(

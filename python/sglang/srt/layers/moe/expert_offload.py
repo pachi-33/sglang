@@ -170,7 +170,9 @@ class OffloadedFusedMoEMethod(torch.nn.Module, FusedMoEMethodBase):
     A cache backend may later provide physical slot tensors to ``inner.apply``.
     """
 
-    # Expert sources are pageable; only a runtime staging ring may be pinned.
+    # Disable the generic post-load pinning path.  The CPU expert backend may
+    # explicitly replace final expert tensors with pinned storage after the
+    # device-staged transforms have completed.
     post_load_pin_memory = False
 
     def __init__(self, inner: FusedMoEMethodBase, context: ExpertOffloadContext):
@@ -298,7 +300,7 @@ class OffloadedFusedMoEMethod(torch.nn.Module, FusedMoEMethodBase):
                 raise RuntimeError(
                     f"expert offload source {name!r} remained on {tensor.device}"
                 )
-            if tensor.is_pinned():
+            if tensor.is_pinned() and not self.context.backend.pin_host_experts:
                 raise RuntimeError(
                     f"expert offload source {name!r} must be pageable CPU memory"
                 )
@@ -309,6 +311,25 @@ class OffloadedFusedMoEMethod(torch.nn.Module, FusedMoEMethodBase):
                 )
             if not tensor.is_contiguous():
                 raise RuntimeError(f"expert offload source {name!r} is not contiguous")
+            if (
+                self.context.backend.pin_host_experts
+                and tensor.numel() > 0
+                and not tensor.is_pinned()
+            ):
+                try:
+                    # Preserve the registered Parameter/buffer object so the
+                    # model and coverage bookkeeping keep their identities.
+                    # Replacing one storage at a time bounds transient RAM to
+                    # the size of the largest individual expert tensor.
+                    tensor.data = tensor.detach().pin_memory()
+                except RuntimeError as error:
+                    raise RuntimeError(
+                        f"failed to pin expert offload source {name!r}"
+                    ) from error
+                if not tensor.is_pinned():
+                    raise RuntimeError(
+                        f"expert offload source {name!r} did not become pinned"
+                    )
             sources[name] = tensor
         self.source_tensors = sources
         self.layer_id = layer.layer_id
@@ -448,9 +469,20 @@ _ACTIVE_EXPERT_OFFLOAD_CONTEXT: ContextVar[ExpertOffloadContext | None] = Contex
 class ExpertOffloadContext:
     """Opt-in construction scope for generic CPU-resident expert sources."""
 
-    def __init__(self, backend: CpuMemoryExpertBackend | None = None) -> None:
+    def __init__(
+        self,
+        backend: CpuMemoryExpertBackend | None = None,
+        *,
+        pin_host_experts: bool = False,
+    ) -> None:
+        if backend is not None and pin_host_experts:
+            raise ValueError(
+                "pin_host_experts must be configured on an injected backend"
+            )
         self.methods: list[OffloadedFusedMoEMethod] = []
-        self.backend = backend or CpuMemoryExpertBackend()
+        self.backend = backend or CpuMemoryExpertBackend(
+            pin_host_experts=pin_host_experts
+        )
         self._token: Token | None = None
 
     def __enter__(self) -> ExpertOffloadContext:

@@ -365,3 +365,112 @@ larger than the textual summary.
 - The temporary SGLang services were stopped after the run. A final
   `nvidia-smi --query-compute-apps=...` returned no process, and port 31000 had
   no listener.
+
+## 2026-09-18 all-pinned host-expert experiment
+
+This experiment tests whether keeping the complete final-layout expert payload
+in CUDA pinned host memory removes enough pageable-to-pinned staging work to
+reduce the large GPU-idle gaps measured above. It uses the same model, 3584 MiB
+GPU cache, request shape, concurrency, and benchmark seed as the four-request
+pageable-source baseline.
+
+### Experimental implementation
+
+The opt-in loader setting was:
+
+```json
+{"source_backend":"cpu_memory","pin_host_experts":true,"cache_vram_mib":3584,"cache_vram_reserve_mib":256,"stage_slots":32,"stats_flush_interval":2000,"stats_path":"/tmp/cpu-expert-pinned-bench/cache3584-pinned-stats.json"}
+```
+
+After each layer's device-staged AWQ post-load transform, every nonempty expert
+tensor was copied to pinned storage and its registered Parameter/buffer object
+was kept while replacing its storage. This bounds transient host memory to one
+tensor rather than duplicating the complete 16.70 GiB payload. Cache misses
+then copy the immutable pinned expert slices directly to GPU cache slots. The
+pageable staging ring remains the default when `pin_host_experts` is false.
+
+AWQ Marlin has zero-byte `w13_g_idx_sort_indices` and
+`w2_g_idx_sort_indices` placeholders. PyTorch reports an empty tensor as
+unpinned even after `pin_memory()`. The first startup attempt exposed this edge
+case and stopped before serving; empty tensors were then correctly treated as
+having no payload to stage or protect for DMA. The failed attempt is retained
+here because it was part of the experiment.
+
+Before the model run, a 1 GiB CUDA pinned allocation succeeded in 0.43 seconds
+despite the process reporting an 8 MiB `RLIMIT_MEMLOCK`. The running backend
+reported all 40 layers as `source_memory=pinned` and the following allocation
+totals:
+
+| Allocation | Bytes | GiB |
+| --- | ---: | ---: |
+| Host expert payload | 17,927,503,872 | 16.70 |
+| Pinned host expert payload | 17,927,503,872 | 16.70 |
+| GPU expert cache | 3,757,068,288 | 3.50 |
+| Pinned staging ring | 201,326,592 | 0.19 |
+
+### Matched serving benchmark
+
+The server and benchmark commands were the recommended commands above with
+`"pin_host_experts":true`, `/tmp/cpu-expert-pinned-bench/` output paths, and
+otherwise identical arguments. The measured workload remained four requests,
+one warmup request, 128 input tokens, 64 output tokens, and concurrency one.
+
+| Metric | Pageable source | All-pinned source | Change |
+| --- | ---: | ---: | ---: |
+| Benchmark duration | 23.20 s | 15.47 s | -33.3% |
+| Output throughput | 11.04 tok/s | 16.55 tok/s | +49.9% |
+| Total throughput | 33.11 tok/s | 49.64 tok/s | +49.9% |
+| Mean E2E | 5796.5 ms | 3864.5 ms | -33.3% |
+| Mean TTFT | 2053.1 ms | 987.4 ms | -51.9% |
+| Mean TPOT / ITL | 59.42 ms | 45.67 ms | -23.1% |
+
+All four measured requests completed and generated 64 tokens. Peak GPU tensor
+allocation remained effectively unchanged at 9.97 GiB. During the later
+profile runs the observed available host RAM reached 7.2 GiB, and swap use
+temporarily rose from approximately 7.4 GiB to 9.2 GiB while the service was
+alive. This memory pressure is the principal cost of the result.
+
+### Matched narrow profiling
+
+The GPU and CPU commands were the narrow profiling commands above with pinned
+output directories and prefixes. Profiler latency is not a serving benchmark.
+The decode traces are directly comparable: both contain 40 MoE applies and 50
+expert misses. Transfer byte counts differ slightly with the routed experts.
+
+| Decode GPU trace | Pageable source | All-pinned source |
+| --- | ---: | ---: |
+| GPU activity span | 66.55 ms | 54.97 ms |
+| Pinned H2D | 113.46 MiB / 271 copies | 115.02 MiB / 277 copies |
+| H2D activity | 4.94 ms | 5.13 ms |
+| Kernel activity | 11.51 ms | 11.47 ms |
+| No kernel/copy activity | 50.05 ms (75.2%) | 38.32 ms (69.7%) |
+
+| Decode CPU trace | Calls | Pageable source | All-pinned source | Change |
+| --- | ---: | ---: | ---: | ---: |
+| `expert_offload.apply` | 40 | 54.80 ms | 40.03 ms | -27.0% |
+| `ExpertCachePool.acquire` | 40 | 30.13 ms | 15.30 ms | -49.2% |
+| `_load_expert` | 50 | 22.58 ms | 8.07 ms | -64.3% |
+| `PinnedStagingRing.stage` | 50 | 16.94 ms | 3.12 ms | -81.6% |
+
+The CPU prefill traces also had nearly identical work counts (129 applies and
+2564 versus 2565 misses). Their cumulative `stage` time fell from 726.31 ms to
+144.87 ms, while cumulative `apply` time fell from 1281.41 ms to 686.07 ms.
+The separate GPU prefill traces are not used for a direct comparison because
+the pinned run profiled a 64-new/64-prefix-cached step, whereas the earlier GPU
+baseline profiled 128 new tokens.
+
+### Conclusion
+
+Pinning the complete host expert payload is effective on this machine. It
+removes most pageable staging work and improves the matched headline output
+throughput by 49.9%. It does not remove PCIe traffic: decode H2D and kernel
+times are essentially unchanged. Even after pinning, approximately 38.3 ms of
+the 55.0 ms decode GPU span contains neither a kernel nor a copy. The remaining
+bottleneck is therefore the serial host-side routing, logical-to-slot remap,
+cache-policy/event bookkeeping, and many small copy launches, not PCIe payload
+bandwidth alone.
+
+The raw benchmark, stats, and compressed traces were retained under
+`/tmp/cpu-expert-pinned-bench/` for this run. After profiling, the service was
+stopped; the GPU had no compute process, port 31000 had no listener, and
+available host RAM returned to approximately 29 GiB.
