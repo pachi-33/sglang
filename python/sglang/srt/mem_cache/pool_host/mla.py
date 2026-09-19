@@ -130,7 +130,7 @@ class MLATokenToKVPoolHost(HiSparseHostPoolMixin, HostKVCache):
             dtype=torch.uint64,
             device=self.device_pool.device,
         )
-        if self.mtp_draft_device_pools:
+        if self.mtp_draft_device_pools and not _is_npu:
             device_pools = (self.device_pool, *self.mtp_draft_device_pools)
             self.packed_device_data_ptrs = torch.cat(
                 [pool.data_ptrs for pool in device_pools]
@@ -138,6 +138,9 @@ class MLATokenToKVPoolHost(HiSparseHostPoolMixin, HostKVCache):
             self.packed_device_kv_buffers = [
                 buffer for pool in device_pools for buffer in pool.kv_buffer
             ]
+        else:
+            self.packed_device_data_ptrs = None
+            self.packed_device_kv_buffers = None
         self._init_write_back_staging_buffers()
 
     def get_contiguous_buf_infos(self):

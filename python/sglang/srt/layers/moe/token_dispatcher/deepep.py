@@ -78,6 +78,7 @@ _DEEPEP_DTYPE_FLAGS = {
     DispatcherOutputDtype.NVFP4: (False, True, False, False),
     DispatcherOutputDtype.MXFP8: (True, False, True, False),
     DispatcherOutputDtype.MXFP4: (True, False, True, True),
+    # DispatcherOutputDtype.MXFP4: (False, False, False, True),
 }
 
 

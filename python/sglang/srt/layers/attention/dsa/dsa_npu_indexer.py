@@ -606,7 +606,7 @@ class DSANPUIndexerMixin:
         actual_seq_lengths_q_prev = torch.cumsum(actual_seq_lengths_q_prev, dim=0)
         actual_seq_lengths_q_next = torch.cumsum(actual_seq_lengths_q_next, dim=0)
 
-        actual_seq_lengths_kv_next[-1] = actual_seq_lengths_kv_next[0]
+        # actual_seq_lengths_kv_next[-1] = actual_seq_lengths_kv_next[0]
 
         if use_quant_lightning_indexer:
             q_prev, q_prev_scale = _quantize_npu_indexer_activation(
@@ -617,6 +617,7 @@ class DSANPUIndexerMixin:
             past_key_states_scale = get_token_to_kv_pool().get_index_k_scale_buffer(
                 layer_id
             )
+            # topk_indices_prev = torch.ops.npu.npu_quant_lightning_indexer(
             topk_indices_prev = torch_npu.npu_quant_lightning_indexer(
                 query=q_prev,
                 key=past_key_states,
@@ -642,6 +643,7 @@ class DSANPUIndexerMixin:
                 self._npu_hadamard_128,
                 get_token_to_kv_pool().dtype,
             )
+            # topk_indices_next = torch.ops.npu.npu_quant_lightning_indexer(
             topk_indices_next = torch_npu.npu_quant_lightning_indexer(
                 query=q_next,
                 key=past_key_states,

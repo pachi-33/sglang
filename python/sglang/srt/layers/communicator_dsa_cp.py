@@ -18,6 +18,10 @@ from typing import Callable, Optional
 
 import torch
 
+from sglang.srt.distributed.device_communicators.pynccl_allocator import (
+    use_symmetric_memory,
+)
+
 from sglang.srt.layers.attention.dsa.utils import (
     dsa_use_prefill_cp,
     is_dsa_enable_prefill_cp,
@@ -34,7 +38,7 @@ from sglang.srt.layers.communicator import (
 from sglang.srt.layers.dp_attention import (
     attn_cp_all_gather_into_tensor,
     attn_cp_reduce_scatter_tensor,
-    get_local_dp_buffer,
+    is_allocation_symmetric,
 )
 from sglang.srt.layers.utils.cp_utils import mla_use_prefill_cp
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
@@ -69,25 +73,33 @@ def maybe_prefetch_next_full_attention_kv(
 
 
 def dsa_cp_gather_hidden_states(hidden_states: torch.Tensor):
-    attn_dp_size = get_parallel().attn_dp_size
-    attn_tp_size = get_parallel().attn_tp_size
-    assert attn_dp_size == 1 and attn_tp_size == 1
-    hidden_states, local_hidden_states = (
-        get_local_dp_buffer(get_parallel().attn_cp_group),
-        hidden_states,
+    parallel = get_parallel()
+    assert parallel.attn_dp_size == 1
+    # CP collectives size their output from the actual rank-local tensor.
+    # DP buffer lengths are not refreshed when MLP sync is disabled.
+    with use_symmetric_memory(
+        parallel.attn_cp_group, disabled=not is_allocation_symmetric()
+    ):
+        gathered_hidden_states = hidden_states.new_empty(
+            (hidden_states.shape[0] * parallel.attn_cp_size, *hidden_states.shape[1:])
+        )
+    attn_cp_all_gather_into_tensor(
+        gathered_hidden_states, hidden_states.contiguous()
     )
-    attn_cp_all_gather_into_tensor(hidden_states, local_hidden_states)
-    return hidden_states
+    return gathered_hidden_states
 
 
 def dsa_cp_reduce_scatter_hidden_states(hidden_states: torch.Tensor):
-    attn_dp_size = get_parallel().attn_dp_size
-    attn_tp_size = get_parallel().attn_tp_size
-    assert attn_dp_size == 1 and attn_tp_size == 1
-    cp_size = get_parallel().attn_cp_size
-    cp_rank = get_parallel().attn_cp_rank
+    parallel = get_parallel()
+    assert parallel.attn_dp_size == 1
+    # A FULL MLP partitions its weights over global TP. Sum the attention-TP
+    # contributions first; CP reduce-scatter then sums the other dimension.
+    if parallel.attn_tp_size > 1 and hidden_states.shape[0] != 0:
+        hidden_states = parallel.attn_tp_group.all_reduce(hidden_states)
     input_hidden_states = hidden_states
-    hidden_states = hidden_states.tensor_split(cp_size)[cp_rank]
+    hidden_states = hidden_states.tensor_split(parallel.attn_cp_size)[
+        parallel.attn_cp_rank
+    ]
     attn_cp_reduce_scatter_tensor(hidden_states, input_hidden_states)
     return hidden_states
 
