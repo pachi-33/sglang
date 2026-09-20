@@ -37,6 +37,7 @@ from sglang.srt.model_executor.forward_batch_info import (
     get_required_capture_hidden_mode,
     get_server_return_hidden_states_mode,
 )
+from sglang.srt.moe_trace.recorder import get_global_moe_trace_recorder
 from sglang.srt.runtime_context import (
     get_disagg,
     get_exec,
@@ -112,6 +113,18 @@ class SchedulerBatchResultProcessor:
     output_streamer: SchedulerOutputStreamer
     beam_coordinator: BeamCoordinator
     abort_request: Callable
+
+    @staticmethod
+    def _submit_moe_trace(result: GenerationBatchResult) -> None:
+        payload = result.moe_trace_output
+        if payload is None:
+            return
+        result.moe_trace_output = None
+        recorder = get_global_moe_trace_recorder()
+        if recorder is None:
+            payload.release()
+            raise RuntimeError("MoE trace payload produced without an active recorder")
+        recorder.submit(payload)
 
     def process_batch_result_prebuilt(self, batch: ScheduleBatch):
         assert self.disaggregation_mode == DisaggregationMode.DECODE
@@ -265,6 +278,10 @@ class SchedulerBatchResultProcessor:
         if self.is_generation:
             if result.copy_done is not None:
                 result.copy_done.synchronize()
+            if result.moe_trace_output is not None:
+                result.moe_trace_output.release()
+                result.moe_trace_output = None
+                raise RuntimeError("MoE trace unexpectedly captured a prefill batch")
             auxiliary_output_starts = self.snapshot_auxiliary_output_starts(
                 batch, result
             )
@@ -912,6 +929,9 @@ class SchedulerBatchResultProcessor:
     ):
         if result.copy_done is not None:
             result.copy_done.synchronize()
+        trace_recorder = get_global_moe_trace_recorder()
+        if trace_recorder is not None:
+            trace_recorder.flush_pending_finalizations()
 
         self.output_streamer._stream_output_generation(
             batch.reqs, batch.return_logprob, is_idle_batch=True
@@ -924,6 +944,7 @@ class SchedulerBatchResultProcessor:
     ):
         if result.copy_done is not None:
             result.copy_done.synchronize()
+        self._submit_moe_trace(result)
         auxiliary_output_starts = self.snapshot_auxiliary_output_starts(batch, result)
         auxiliary_output = result.auxiliary_host_output
         if result.routed_experts_output is not None:
@@ -1056,6 +1077,14 @@ class SchedulerBatchResultProcessor:
                     # here; spec already advanced it in _resolve_spec_v2_tokens.
                     self._accept_grammar_tokens(req, next_token_id)
                 req.grammar.finished = req.finished()
+
+        trace_recorder = get_global_moe_trace_recorder()
+        if trace_recorder is not None:
+            for req in batch.reqs:
+                if req.finished():
+                    trace_recorder.finalize_request(
+                        req.rid, defer=self.enable_overlap or self.enable_overlap_mlx
+                    )
 
         if auxiliary_output is not None:
             self.consume_auxiliary_output(

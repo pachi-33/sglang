@@ -357,6 +357,7 @@ class BypassedTopKOutput(NamedTuple):
     topk_config: TopKConfig
     num_token_non_padded: Optional[torch.Tensor] = None
     expert_location_dispatch_info: Optional[ExpertLocationDispatchInfo] = None
+    trace_module: Optional[torch.nn.Module] = None
 
     @property
     def format(self) -> TopKOutputFormat:
@@ -372,6 +373,7 @@ class BypassedTopKOutput(NamedTuple):
             layer_id=layer_id,
             num_token_non_padded=self.num_token_non_padded,
             expert_location_dispatch_info=self.expert_location_dispatch_info,
+            trace_module=self.trace_module,
         )
 
 
@@ -592,6 +594,18 @@ class TopK(BaseFusedOp):
         assert TopKOutputChecker.format_is_standard(topk_output)
         return self.waterfill_balancer.expand_topk(topk_output, num_tokens)
 
+    def _capture_router_input(self, hidden_states: torch.Tensor) -> None:
+        """Emit the activation immediately before the gate projection.
+
+        ``BaseFusedOp`` selects exactly one concrete ``forward_*`` method, so
+        each entry below calls this once without relying on dispatch internals.
+        """
+        if getattr(self, "_moe_trace_site_id", None) is None:
+            return
+        from sglang.srt.moe_trace.recorder import capture_router_input
+
+        capture_router_input(self, hidden_states)
+
     def forward_musa(self, *args, **kwargs) -> TopKOutput:
         # MUSA follows the CUDA path explicitly: select_experts branches on
         # _is_musa internally (hardware_backend.musa topk kernels), so the
@@ -613,6 +627,7 @@ class TopK(BaseFusedOp):
         expert_location_dispatch_info: Optional[ExpertLocationDispatchInfo] = None,
         dynamic_expert_bias: Optional[torch.Tensor] = None,
     ) -> TopKOutput:
+        self._capture_router_input(hidden_states)
         self.topk_config.torch_native = True
         topk_output = select_experts(
             hidden_states=hidden_states,
@@ -622,6 +637,7 @@ class TopK(BaseFusedOp):
             num_token_non_padded=num_token_non_padded,
             expert_location_dispatch_info=expert_location_dispatch_info,
             dynamic_expert_bias=dynamic_expert_bias,
+            trace_module=self,
         )
         return self._apply_waterfill(topk_output, hidden_states.shape[0])
 
@@ -634,6 +650,7 @@ class TopK(BaseFusedOp):
         expert_location_dispatch_info: Optional[ExpertLocationDispatchInfo] = None,
         dynamic_expert_bias: Optional[torch.Tensor] = None,
     ) -> TopKOutput:
+        self._capture_router_input(hidden_states)
         if dynamic_expert_bias is not None:
             output_format = TopKOutputFormat.STANDARD
         elif self.topk_config.output_format is not None:
@@ -686,6 +703,7 @@ class TopK(BaseFusedOp):
                 topk_config=self.topk_config,
                 num_token_non_padded=num_token_non_padded,
                 expert_location_dispatch_info=expert_location_dispatch_info,
+                trace_module=self,
             )
         else:
             self.topk_config.torch_native = False
@@ -700,6 +718,7 @@ class TopK(BaseFusedOp):
                     num_token_non_padded=num_token_non_padded,
                     expert_location_dispatch_info=expert_location_dispatch_info,
                     dynamic_expert_bias=dynamic_expert_bias,
+                    trace_module=self,
                 )
         return self._apply_waterfill(topk_output, hidden_states.shape[0])
 
@@ -712,6 +731,7 @@ class TopK(BaseFusedOp):
         expert_location_dispatch_info: Optional[ExpertLocationDispatchInfo] = None,
         dynamic_expert_bias: Optional[torch.Tensor] = None,
     ) -> TopKOutput:
+        self._capture_router_input(hidden_states)
         topk_output = select_experts(
             hidden_states=hidden_states,
             layer_id=self.layer_id,
@@ -720,6 +740,7 @@ class TopK(BaseFusedOp):
             num_token_non_padded=num_token_non_padded,
             expert_location_dispatch_info=expert_location_dispatch_info,
             dynamic_expert_bias=dynamic_expert_bias,
+            trace_module=self,
         )
         return self._apply_waterfill(topk_output, hidden_states.shape[0])
 
@@ -732,6 +753,7 @@ class TopK(BaseFusedOp):
         expert_location_dispatch_info: Optional[ExpertLocationDispatchInfo] = None,
         dynamic_expert_bias: Optional[torch.Tensor] = None,
     ) -> TopKOutput:
+        self._capture_router_input(hidden_states)
         if dynamic_expert_bias is not None:
             self.topk_config.torch_native = False
             return select_experts(
@@ -742,6 +764,7 @@ class TopK(BaseFusedOp):
                 num_token_non_padded=num_token_non_padded,
                 expert_location_dispatch_info=expert_location_dispatch_info,
                 dynamic_expert_bias=dynamic_expert_bias,
+                trace_module=self,
             )
 
         from sglang.srt.hardware_backend.npu.moe.topk import fused_topk_npu
@@ -808,6 +831,7 @@ class TopK(BaseFusedOp):
         num_token_non_padded: Optional[torch.Tensor] = None,
         expert_location_dispatch_info: Optional[ExpertLocationDispatchInfo] = None,
     ) -> TopKOutput:
+        self._capture_router_input(hidden_states)
         self.topk_config.torch_native = True
         # [NOTE] XPU device support for topk kernels
         #   - support 'topk_softmax' and 'topk_sigmoid'
@@ -823,6 +847,7 @@ class TopK(BaseFusedOp):
             topk_config=self.topk_config,
             num_token_non_padded=num_token_non_padded,
             expert_location_dispatch_info=expert_location_dispatch_info,
+            trace_module=self,
         )
 
 
@@ -2194,6 +2219,7 @@ def _post_process_topk_ids(
     num_token_non_padded: Optional[torch.Tensor] = None,
     expert_location_dispatch_info: Optional[ExpertLocationDispatchInfo] = None,
     padded_rows_masked: bool = False,
+    trace_module: Optional[torch.nn.Module] = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     num_fused_shared_experts = topk_config.num_fused_shared_experts
     use_per_rank_shared_slots = has_per_rank_fused_shared_slots(
@@ -2202,6 +2228,21 @@ def _post_process_topk_ids(
     fused_shared_experts_scaling_factor = (
         topk_config.fused_shared_experts_scaling_factor
     )
+    if (
+        trace_module is not None
+        and getattr(trace_module, "_moe_trace_site_id", None) is not None
+    ):
+        # The result here has its final selection, normalization and routed
+        # scaling, but is still expressed in global logical expert IDs.  EPLB
+        # remapping and shared-expert append happen below.
+        routed_width = topk_ids.shape[-1] - num_fused_shared_experts
+        from sglang.srt.moe_trace.recorder import capture_route
+
+        capture_route(
+            trace_module,
+            topk_ids[:, :routed_width],
+            topk_weights[:, :routed_width],
+        )
     capture_routed_experts_if_allowed(topk_config, layer_id, topk_ids)
     recorder_topk_ids = None
     _fold_pad_into_append = False
@@ -2393,6 +2434,7 @@ def select_experts(
     num_token_non_padded: Optional[torch.Tensor] = None,
     expert_location_dispatch_info: Optional[ExpertLocationDispatchInfo] = None,
     dynamic_expert_bias: Optional[torch.Tensor] = None,
+    trace_module: Optional[torch.nn.Module] = None,
 ) -> StandardTopKOutput:
     top_k = topk_config.top_k
     use_grouped_topk = topk_config.use_grouped_topk
@@ -2672,6 +2714,7 @@ def select_experts(
         layer_id=layer_id,
         expert_location_dispatch_info=expert_location_dispatch_info,
         padded_rows_masked=padded_rows_masked,
+        trace_module=trace_module,
     )
 
     get_global_expert_distribution_recorder().on_select_experts(
@@ -2715,12 +2758,20 @@ def build_precomputed_topk_output(
     topk_ids: torch.Tensor,
     topk_config: TopKConfig,
     layer_id: int,
+    trace_module: Optional[torch.nn.Module] = None,
 ) -> StandardTopKOutput:
     """Wrap a router's own (weights, ids) as a STANDARD top-k output, running the
     capture hook and the expert-distribution recorder that select_experts would.
 
     Only valid when :func:`precomputed_topk_postprocess_is_noop` holds.
     """
+    if (
+        trace_module is not None
+        and getattr(trace_module, "_moe_trace_site_id", None) is not None
+    ):
+        from sglang.srt.moe_trace.recorder import capture_route
+
+        capture_route(trace_module, topk_ids, topk_weights)
     capture_routed_experts_if_allowed(topk_config, layer_id, topk_ids)
     get_global_expert_distribution_recorder().on_select_experts(topk_ids=topk_ids)
     # router_logits is only read by the BYPASSED formats and by the

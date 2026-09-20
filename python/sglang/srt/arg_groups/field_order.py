@@ -506,5 +506,12 @@ POSITIONAL_FIELD_ORDER = (
     "weight_cache_timeout",
     "forward_hooks",
     "msprobe_dump_config",
+    "moe_trace_output_dir",
+    "moe_trace_expert_routes",
+    "moe_trace_router_inputs",
+    "moe_trace_max_decode_tokens",
+    "moe_trace_activation_group_size",
+    "moe_trace_queue_depth",
+    "moe_trace_overflow_policy",
 )
 # fmt: on

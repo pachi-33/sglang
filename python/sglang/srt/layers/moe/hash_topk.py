@@ -228,6 +228,13 @@ class HashTopK(nn.Module):
         assert input_ids.shape[0] == hidden_states.shape[0] == router_logits.shape[0], (
             f"{input_ids.shape=} {hidden_states.shape=} {router_logits.shape=}"
         )
+        # HashTopK is a standalone router, so mirror the public TopK tap at
+        # the actual gate input before choosing a backend.
+        trace_enabled = getattr(self, "_moe_trace_site_id", None) is not None
+        if trace_enabled:
+            from sglang.srt.moe_trace.recorder import capture_router_input
+
+            capture_router_input(self, hidden_states)
 
         if _is_xpu:
             topk_weights, topk_ids = self._forward_xpu(router_logits, input_ids)
@@ -249,6 +256,19 @@ class HashTopK(nn.Module):
 
         if self.apply_routed_scaling_factor_on_output:
             topk_weights = topk_weights * self.routed_scaling_factor
+
+        # The hash router has completed its scoring/renormalization/scaling,
+        # but IDs are still logical and no per-rank shared slots have been
+        # remapped.  Do not expose fused shared-expert columns as routes.
+        routed_width = topk_ids.shape[-1] - self.num_fused_shared_experts
+        if trace_enabled:
+            from sglang.srt.moe_trace.recorder import capture_route
+
+            capture_route(
+                self,
+                topk_ids[:, :routed_width],
+                topk_weights[:, :routed_width],
+            )
 
         num_fused_shared_experts = self.num_fused_shared_experts
         log2phy_prob = None

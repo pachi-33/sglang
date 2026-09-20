@@ -403,11 +403,22 @@ class InklingGate(nn.Module):
         self,
         x: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        # Inkling owns its gate projection rather than using public TopK.
+        # Record the true pre-projection activation here.
+        trace_enabled = getattr(self, "_moe_trace_site_id", None) is not None
+        if trace_enabled:
+            from sglang.srt.moe_trace.recorder import capture_router_input
+
+            capture_router_input(self, x)
         # R3 (rollout routing replay) needs the plain [T, K] topk indices captured on
         # the standard path; the fused kernel's packed output never exposes them, so
         # bypass the fused shortcut whenever an experts capturer is active.
         if (
-            get_global_experts_capturer() is None
+            # The fused gate can return only packed IDs.  A registered trace
+            # site needs rank-ordered logical IDs and weights, so use the
+            # standard path while tracing; unregistered models keep the exact
+            # fast path and allocation behavior.
+            not trace_enabled and get_global_experts_capturer() is None
             and envs.SGLANG_OPT_USE_FUSED_GATE_TOPK.get()
             and self.n_total_experts == _INKLING_FUSED_GATE_OUT_FEATURES
             and self.gate_activation == "sigmoid"
@@ -484,6 +495,12 @@ class InklingGate(nn.Module):
                 routed_weights = routed_weights * self.route_scale
             shared_gammas = None
 
+        # This is after Inkling's normalization and route scale, before the
+        # routed values are consumed or any shared-expert work begins.
+        if trace_enabled:
+            from sglang.srt.moe_trace.recorder import capture_route
+
+            capture_route(self, topk_indices, routed_weights)
         return routed_weights, topk_indices, shared_gammas, None
 
 

@@ -682,6 +682,7 @@ class TpModelWorker(BaseTpWorker):
                 expert_distribution_metrics=out.expert_distribution_metrics,
                 routed_experts_output=out.routed_experts_output,
                 indexer_topk_output=out.indexer_topk_output,
+                moe_trace_output=out.moe_trace_output,
             )
 
             capture_pre_sample_logits(batch, forward_batch, logits_output)

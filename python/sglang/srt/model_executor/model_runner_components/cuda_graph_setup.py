@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import defaultdict
+from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, Optional
 
 import msgspec
@@ -281,11 +282,11 @@ def capture_cuda_graphs(
     )
     if capture_decode_cuda_graph:
         if model_runner.device in ("cuda", "musa", "cpu", "npu", "xpu"):
-            decode = capture_decode_graph(model_runner=model_runner)
+            decode = capture_decode_graph_with_moe_trace(model_runner=model_runner)
         elif (
             current_platform.is_out_of_tree() and current_platform.support_cuda_graph()
         ):
-            decode = capture_decode_graph(model_runner=model_runner)
+            decode = capture_decode_graph_with_moe_trace(model_runner=model_runner)
     else:
         decode = GraphCapture(
             runner=eager_runner,
@@ -616,3 +617,17 @@ def capture_decode_graph(*, model_runner: ModelRunner) -> GraphCapture:
         memory_usage_gb=memory_usage_gb,
         capture_time=capture_time,
     )
+
+
+def capture_decode_graph_with_moe_trace(*, model_runner: ModelRunner) -> GraphCapture:
+    """Capture decode graphs with trace writes enabled when configured.
+
+    This is deliberately decode-specific: prefill graph capture must not pay
+    for trace packing because prefill rows are never persisted.
+    """
+    from sglang.srt.moe_trace.recorder import get_global_moe_trace_recorder
+
+    recorder = get_global_moe_trace_recorder()
+    scope = recorder.capture_scope() if recorder is not None else nullcontext()
+    with scope:
+        return capture_decode_graph(model_runner=model_runner)

@@ -295,6 +295,7 @@ from sglang.srt.mem_cache.common import (
 from sglang.srt.model_executor.forward_batch_info import PPProxyTensors
 from sglang.srt.model_executor.runner_utils.pool import prewarm_graph_pool_borrow
 from sglang.srt.model_loader.utils import get_resolved_model_impl
+from sglang.srt.moe_trace.recorder import destroy_global_moe_trace_recorder
 from sglang.srt.multiplex.multiplexing_mixin import SchedulerMultiplexMixin
 from sglang.srt.observability.metrics_collector import SchedulerMetricsCollector
 from sglang.srt.observability.req_time_stats import (
@@ -1875,6 +1876,7 @@ class Scheduler(
             self.decode_offload_manager.release_host_resources()
         destroy_global_experts_capturer()
         destroy_global_indexer_capturer()
+        destroy_global_moe_trace_recorder()
 
         rank_consensus_checker.shutdown()
 
@@ -4685,11 +4687,12 @@ class Scheduler(
         result: GenerationBatchResult,
     ) -> None:
         logits_output = result.logits_output
-        if (
-            logits_output is None
-            or logits_output.auxiliary_device_output is None
-            or result.auxiliary_host_output is not None
-        ):
+        needs_auxiliary_copy = bool(
+            logits_output is not None
+            and logits_output.auxiliary_device_output is not None
+            and result.auxiliary_host_output is None
+        )
+        if not needs_auxiliary_copy and result.moe_trace_output is None:
             return
         # PP transports the device output to the first rank before copying it.
         if get_parallel().pp_size > 1:

@@ -936,6 +936,13 @@ class KimiK3MoE(nn.Module):
             return None
         from sglang.kernels.ops.moe import moe_front
 
+        # This fused path bypasses TopK.forward. Preserve the same semantic
+        # activation tap at the input consumed by the fused gate projection.
+        if getattr(self.topk, "_moe_trace_site_id", None) is not None:
+            from sglang.srt.moe_trace.recorder import capture_router_input
+
+            capture_router_input(self.topk, hidden_states)
+
         cfg = self.topk.topk_config
         bias = self.gate.e_score_correction_bias
         if (
@@ -968,7 +975,12 @@ class KimiK3MoE(nn.Module):
                 self.layer_idx,
                 hidden_states.shape[0],
             )
-        return build_precomputed_topk_output(w, i, cfg, self.layer_idx), routed
+        return (
+            build_precomputed_topk_output(
+                w, i, cfg, self.layer_idx, trace_module=self.topk
+            ),
+            routed,
+        )
 
     def _ep_front_overlap(self, hidden_states: torch.Tensor):
         """Overlap the exact fp32 gate+top-k with the latent down projection.

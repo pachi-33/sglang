@@ -380,4 +380,8 @@ def run_resolution_pipeline(server_args: Any) -> None:
     run_hook(validate_deepep_v2_speculative_draft, server_args)
     run_hook(validate_deepep_v2_dispatch_token_budget, server_args)
 
+    from sglang.srt.moe_trace.config import validate_moe_trace_server_args
+
+    run_hook(validate_moe_trace_server_args, server_args)
+
     server_args._resolution_finished = True

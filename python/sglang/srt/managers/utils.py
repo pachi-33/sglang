@@ -18,6 +18,7 @@ from sglang.srt.layers.logits_processor import (
 from sglang.srt.managers import io_struct
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.model_executor.forward_batch_info import PPProxyTensors
+from sglang.srt.moe_trace.types import MoeTraceBatchOutput
 from sglang.srt.runtime_context import get_spec, max_speculative_num_draft_tokens
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang.srt.state_capturer.base import TopkCaptureOutput
@@ -143,6 +144,7 @@ class GenerationBatchResult:
     # Routed experts: pending async D2H for overlap scheduling
     routed_experts_output: Optional[TopkCaptureOutput] = None
     indexer_topk_output: Optional[TopkCaptureOutput] = None
+    moe_trace_output: Optional[MoeTraceBatchOutput] = None
 
     # metrics
     expert_distribution_metrics: Optional[ExpertDistributionMetrics] = None
@@ -219,6 +221,7 @@ class GenerationBatchResult:
             sampling_mask_output,
             self.routed_experts_output,
             self.indexer_topk_output,
+            self.moe_trace_output,
             self.expert_distribution_metrics,
         ):
             if holder is not None:

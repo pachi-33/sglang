@@ -233,6 +233,41 @@ class Observability(msgspec.Struct):
     ] = None
 
     # -------------------------------------------------------------------------
+    # Decode-time MoE traces
+    # -------------------------------------------------------------------------
+    moe_trace_output_dir: A[
+        Optional[str],
+        "Directory for per-request decode-time MoE traces. Tracing is disabled when unset.",
+    ] = None
+    moe_trace_expert_routes: A[
+        bool,
+        "Trace logical expert IDs and final routing weights for standard decode steps.",
+    ] = False
+    moe_trace_router_inputs: A[
+        bool,
+        "Trace the hidden states immediately before MoE gate projections, packed as groupwise int4.",
+    ] = False
+    moe_trace_max_decode_tokens: A[
+        int,
+        "Maximum traced decode rows per request; zero means unlimited.",
+    ] = 0
+    moe_trace_activation_group_size: A[
+        int,
+        "Group size for symmetric int4 router-input quantization.",
+    ] = 128
+    moe_trace_queue_depth: A[
+        int,
+        "Maximum number of host trace batches queued for asynchronous writing.",
+    ] = 2
+    moe_trace_overflow_policy: A[
+        str,
+        Arg(
+            help="Behavior when the MoE trace writer queue is full.",
+            choices=["block", "drop"],
+        ),
+    ] = "block"
+
+    # -------------------------------------------------------------------------
     # Custom hooks, probe, and plugins
     # -------------------------------------------------------------------------
     forward_hooks: A[
