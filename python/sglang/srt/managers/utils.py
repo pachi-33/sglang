@@ -51,7 +51,10 @@ def _async_d2h(t: torch.Tensor) -> torch.Tensor:
     to pageable host memory blocks the caller until done) and record_stream keeps
     the source alive until the copy stream drains, so the caching allocator can't
     recycle it early. Non-CUDA falls back to a plain copy."""
-    if not t.is_cuda:
+    # ``is_cuda`` may be aliased by non-CUDA device integrations (for example,
+    # torch_npu). Use the actual device type so only CUDA/HIP tensors take the
+    # CUDA pinned-memory and stream path.
+    if t.device.type != "cuda":
         return t.to("cpu", non_blocking=True)
     cpu_t = torch.empty(t.shape, dtype=t.dtype, pin_memory=True)
     cpu_t.copy_(t, non_blocking=True)

@@ -241,11 +241,11 @@ class Observability(msgspec.Struct):
     ] = None
     moe_trace_expert_routes: A[
         bool,
-        "Trace logical expert IDs and final routing weights for standard decode steps.",
+        "Trace logical expert IDs and final routing weights for standard decode steps. Supported on CUDA and NPU (TP-only).",
     ] = False
     moe_trace_router_inputs: A[
         bool,
-        "Trace the hidden states immediately before MoE gate projections, packed as groupwise int4.",
+        "Trace the hidden states immediately before MoE gate projections, packed as groupwise int4. Supported on CUDA only.",
     ] = False
     moe_trace_max_decode_tokens: A[
         int,

@@ -753,7 +753,6 @@ class TopK(BaseFusedOp):
         expert_location_dispatch_info: Optional[ExpertLocationDispatchInfo] = None,
         dynamic_expert_bias: Optional[torch.Tensor] = None,
     ) -> TopKOutput:
-        self._capture_router_input(hidden_states)
         if dynamic_expert_bias is not None:
             self.topk_config.torch_native = False
             return select_experts(
@@ -776,6 +775,7 @@ class TopK(BaseFusedOp):
             num_token_non_padded=num_token_non_padded,
             expert_location_dispatch_info=expert_location_dispatch_info,
             layer_id=self.layer_id,
+            trace_module=self,
         )
 
     def empty_topk_output(
