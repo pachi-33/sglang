@@ -118,7 +118,7 @@ from sglang.srt.model_executor.model_runner_components.attention_backend_setup i
 )
 from sglang.srt.model_executor.model_runner_components.cuda_graph_setup import (
     capture_cuda_graphs,
-    capture_decode_graph,
+    capture_decode_graph_with_moe_trace,
     capture_prefill_graph,
 )
 from sglang.srt.model_executor.model_runner_components.kv_pool_runtime import (
@@ -171,6 +171,14 @@ from sglang.srt.model_executor.runner import (
     EagerRunner,
     get_batch_sizes_to_capture,
 )
+from sglang.srt.moe_trace.config import MoeTraceConfig
+from sglang.srt.moe_trace.recorder import (
+    MoeTraceRecorder,
+    get_global_moe_trace_recorder,
+    set_global_moe_trace_recorder,
+)
+from sglang.srt.moe_trace.registry import register_moe_trace_sites
+from sglang.srt.moe_trace.types import MoeTraceBatchOutput
 from sglang.srt.platforms import current_platform
 from sglang.srt.runtime_context import (
     assert_published,
@@ -279,6 +287,7 @@ class ModelRunnerOutput:
     expert_distribution_metrics: Optional[ExpertDistributionMetrics] = None
     routed_experts_output: Optional[TopkCaptureOutput] = None
     indexer_topk_output: Optional[TopkCaptureOutput] = None
+    moe_trace_output: Optional[MoeTraceBatchOutput] = None
 
 
 def resolve_draft_attention_backend(
@@ -695,6 +704,29 @@ class ModelRunner:
         self.maybe_init_lora_manager()
         self.maybe_enable_batch_invariant_mode()
         self.configure_kv_cache_dtype()
+        self.init_moe_trace_sites()
+
+    def init_moe_trace_sites(self) -> None:
+        """Discover every routed-MoE site before any CUDA graph is captured."""
+        self.moe_trace_config = (
+            None
+            if self.is_draft_worker
+            else MoeTraceConfig.from_observability(get_observability())
+        )
+        self.moe_trace_sites = []
+        if self.moe_trace_config is None:
+            return
+        self.moe_trace_sites = register_moe_trace_sites(
+            self.model,
+            require_activations=self.moe_trace_config.router_inputs,
+            require_routes=self.moe_trace_config.expert_routes,
+            strict=True,
+        )
+        if not self.moe_trace_sites:
+            raise ValueError(
+                "MoE tracing was enabled, but the loaded model has no supported "
+                "routed-MoE sites"
+            )
 
     def init_memory_saver_adapter(self):
         self.memory_saver_adapter = TorchMemorySaverAdapter.create(
@@ -944,6 +976,7 @@ class ModelRunner:
 
         self.init_routed_experts_capturer()
         self.init_indexer_capturer()
+        self.init_moe_trace_recorder()
 
         self.graph_shared_output = None
         # Set once real decode CUDA graphs are captured (makes on-flip role-switch
@@ -951,6 +984,20 @@ class ModelRunner:
         self.decode_cuda_graph_captured = False
         # Captured decode bs; exposed via /get_server_info for role-switch queries.
         self.decode_cuda_graph_capture_bs: list[int] = []
+
+    def init_moe_trace_recorder(self) -> None:
+        # Gate inputs and logical routes are replicated under tensor
+        # parallelism.  A single TP leader owns persistence so rank-local
+        # writers never race on a request manifest.
+        if self.moe_trace_config is None or get_parallel().tp_rank != 0:
+            return
+        recorder = MoeTraceRecorder(
+            self.moe_trace_config,
+            self.moe_trace_sites,
+            max_rows=max(self.max_running_requests, self.max_decode_logits_rows()),
+            device=self.device,
+        )
+        set_global_moe_trace_recorder(recorder)
 
     def maybe_init_hisparse_coordinator(self):
         if not self.enable_hisparse:
@@ -1495,7 +1542,7 @@ class ModelRunner:
 
     def init_decode_cuda_graph(self):
         self.decode_cuda_graph_runner = None
-        capture = capture_decode_graph(model_runner=self)
+        capture = capture_decode_graph_with_moe_trace(model_runner=self)
         self.decode_cuda_graph_runner = capture.runner
         self.graph_memory_usage = replace_graph_memory_usage(
             self.graph_memory_usage,
@@ -1733,9 +1780,24 @@ class ModelRunner:
             else contextlib.nullcontext()
         )
 
+        trace_recorder = get_global_moe_trace_recorder()
+        trace_this_forward = bool(
+            trace_recorder is not None
+            and not self.is_draft_worker
+            and forward_batch.forward_mode.is_decode()
+        )
+        if trace_recorder is not None:
+            trace_recorder.begin_forward(trace_this_forward)
+        trace_scope = (
+            trace_recorder.capture_scope(trace_this_forward)
+            if trace_recorder is not None
+            else contextlib.nullcontext()
+        )
+
         with (
             canary_ctx,
             step_span_ctx,
+            trace_scope,
             get_global_expert_distribution_recorder().with_forward_pass(
                 self.forward_pass_id,
                 forward_batch,
@@ -1756,6 +1818,8 @@ class ModelRunner:
                     split_forward_count,
                 )
         output.expert_distribution_metrics = recorder_outputs.get("metrics")
+        if trace_this_forward:
+            output.moe_trace_output = trace_recorder.end_forward(forward_batch)
 
         no_copy_to_cpu = not get_schedule().disable_overlap_schedule
         if (

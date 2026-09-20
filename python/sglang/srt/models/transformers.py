@@ -407,6 +407,13 @@ class TransformersFusedMoE(nn.Module):
     ) -> torch.Tensor:
         topk_ids = topk_ids.to(torch.int32)
         topk_weights = topk_weights.to(torch.float32)
+        # Transformers supplies a precomputed router result to this bridge;
+        # its original gate input is not available here.  The registry marks
+        # this as route-only, while the IDs remain logical at this boundary.
+        if getattr(self, "_moe_trace_site_id", None) is not None:
+            from sglang.srt.moe_trace.recorder import capture_route
+
+            capture_route(self, topk_ids, topk_weights)
         if hidden_states.is_cuda:
             return torch.ops.sglang.transformers_moe_forward(
                 hidden_states,
