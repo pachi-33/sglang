@@ -100,8 +100,33 @@ def validate_moe_trace_server_args(server_args: Any) -> None:
         raise ValueError("--moe-trace-queue-depth must be positive")
     if cfg.moe_trace_overflow_policy not in {"block", "drop"}:
         raise ValueError("--moe-trace-overflow-policy must be either 'block' or 'drop'")
-    if str(cfg.device).lower() != "cuda":
-        raise ValueError("MoE tracing v1 supports CUDA devices only")
+    device = str(cfg.device).lower()
+    if device == "npu":
+        if not routes or inputs:
+            raise ValueError(
+                "MoE tracing v1 on NPU supports --moe-trace-expert-routes only; "
+                "--moe-trace-router-inputs is CUDA-only"
+            )
+        non_tp_parallelism = {
+            "--data-parallel-size": getattr(cfg, "dp_size", 1),
+            "--moe-data-parallel-size": getattr(cfg, "moe_dp_size", 1),
+            "--dwdp-size": getattr(cfg, "dwdp_size", 1),
+        }
+        enabled_non_tp = [
+            name for name, size in non_tp_parallelism.items() if int(size) > 1
+        ]
+        if getattr(cfg, "enable_dp_attention", False) or enabled_non_tp:
+            detail = (
+                "--enable-dp-attention"
+                if getattr(cfg, "enable_dp_attention", False)
+                else ", ".join(enabled_non_tp)
+            )
+            raise ValueError(
+                "MoE tracing v1 on NPU supports tensor parallelism only; "
+                f"data parallelism is not supported ({detail})"
+            )
+    elif device != "cuda":
+        raise ValueError("MoE tracing v1 supports CUDA and NPU route-only devices only")
     if cfg.speculative_algorithm is not None:
         raise ValueError("MoE tracing v1 does not support speculative decoding")
     if cfg.dllm_algorithm is not None:
