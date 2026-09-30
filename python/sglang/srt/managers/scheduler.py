@@ -3075,6 +3075,11 @@ class Scheduler(
         # and each one otherwise burns ~1.5ms of pure CPU overhead.
         if (
             running_batch.is_empty()
+            and not (
+                self.require_mlp_sync
+                and not self.spec_algorithm.is_none()
+                and not get_spec().speculative_skip_dp_mlp_sync
+            )
             # and not (
             #     self.require_mlp_sync
             #     and not self.spec_algorithm.is_none()
