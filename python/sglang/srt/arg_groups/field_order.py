@@ -528,5 +528,6 @@ POSITIONAL_FIELD_ORDER = (
     "moe_trace_activation_group_size",
     "moe_trace_queue_depth",
     "moe_trace_overflow_policy",
+    "moe_trace_ids_only",
 )
 # fmt: on

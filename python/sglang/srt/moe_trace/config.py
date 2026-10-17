@@ -18,6 +18,7 @@ class MoeTraceConfig:
     activation_group_size: int
     queue_depth: int
     overflow_policy: str
+    ids_only: bool = False
 
     @property
     def enabled(self) -> bool:
@@ -28,7 +29,8 @@ class MoeTraceConfig:
         output_dir = observability.moe_trace_output_dir
         routes = bool(observability.moe_trace_expert_routes)
         inputs = bool(observability.moe_trace_router_inputs)
-        if output_dir is None and not routes and not inputs:
+        ids_only = bool(getattr(observability, "moe_trace_ids_only", False))
+        if output_dir is None and not routes and not inputs and not ids_only:
             return None
         if output_dir is None:
             raise ValueError(
@@ -42,11 +44,17 @@ class MoeTraceConfig:
             activation_group_size=int(observability.moe_trace_activation_group_size),
             queue_depth=int(observability.moe_trace_queue_depth),
             overflow_policy=str(observability.moe_trace_overflow_policy),
+            ids_only=ids_only,
         )
         config.validate()
         return config
 
     def validate(self) -> None:
+        if self.ids_only and (not self.expert_routes or self.router_inputs):
+            raise ValueError(
+                "--moe-trace-ids-only requires --moe-trace-expert-routes "
+                "without --moe-trace-router-inputs"
+            )
         if not self.enabled:
             raise ValueError(
                 "--moe-trace-output-dir requires --moe-trace-expert-routes "
@@ -71,7 +79,7 @@ class MoeTraceConfig:
 
 
 def validate_moe_trace_server_args(server_args: Any) -> None:
-    """Fail early for unsupported v1 execution modes."""
+    """Fail early for execution modes without a supported row mapping."""
 
     from sglang.srt.arg_groups.overrides import resolving_view
 
@@ -79,11 +87,17 @@ def validate_moe_trace_server_args(server_args: Any) -> None:
     output_dir = cfg.moe_trace_output_dir
     routes = bool(cfg.moe_trace_expert_routes)
     inputs = bool(cfg.moe_trace_router_inputs)
-    if output_dir is None and not routes and not inputs:
+    ids_only = bool(getattr(cfg, "moe_trace_ids_only", False))
+    if output_dir is None and not routes and not inputs and not ids_only:
         return
     if output_dir is None:
         raise ValueError(
             "--moe-trace-output-dir is required when MoE tracing is enabled"
+        )
+    if ids_only and (not routes or inputs):
+        raise ValueError(
+            "--moe-trace-ids-only requires --moe-trace-expert-routes "
+            "without --moe-trace-router-inputs"
         )
     if not routes and not inputs:
         raise ValueError(
@@ -127,7 +141,34 @@ def validate_moe_trace_server_args(server_args: Any) -> None:
             )
     elif device != "cuda":
         raise ValueError("MoE tracing v1 supports CUDA and NPU route-only devices only")
-    if cfg.speculative_algorithm is not None:
+    if ids_only:
+        # A TP leader observes the complete token batch only in this layout.
+        if getattr(cfg, "enable_dp_attention", False) or any(
+            int(getattr(cfg, field, 1)) > 1
+            for field in (
+                "dp_size",
+                "moe_dp_size",
+                "dwdp_size",
+                "ep_size",
+                "attn_cp_size",
+                "dcp_size",
+            )
+        ):
+            raise ValueError("IDs-only MoE tracing supports tensor parallelism only")
+        if getattr(cfg, "enable_two_batch_overlap", False):
+            raise ValueError("IDs-only MoE tracing does not support two-batch overlap")
+        algorithm = cfg.speculative_algorithm
+        if algorithm is not None and str(algorithm).upper() not in {
+            "EAGLE",
+            "EAGLE3",
+            "NEXTN",
+            "STANDALONE",
+        }:
+            raise ValueError(
+                "IDs-only MoE tracing supports EAGLE/EAGLE3/NEXTN/STANDALONE "
+                "speculative decoding only"
+            )
+    elif cfg.speculative_algorithm is not None:
         raise ValueError("MoE tracing v1 does not support speculative decoding")
     if cfg.dllm_algorithm is not None:
         raise ValueError("MoE tracing v1 does not support diffusion LLM decoding")

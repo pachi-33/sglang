@@ -15,12 +15,15 @@ from typing import Iterator, Optional, Sequence
 
 import torch
 
+from sglang.srt.moe_trace.batch_writer import MoeTraceBatchWriter
 from sglang.srt.moe_trace.codec import quantize_and_pack_int4
 from sglang.srt.moe_trace.config import MoeTraceConfig
 from sglang.srt.moe_trace.types import (
     MoeTraceBatchOutput,
+    MoeTraceForwardContext,
     MoeTraceSite,
     MoeTraceSiteLayout,
+    TraceRowLayout,
 )
 from sglang.srt.moe_trace.writer import MoeTraceWriter
 from sglang.srt.runtime_context import get_parallel, get_resources
@@ -79,6 +82,7 @@ class MoeTraceRecorder:
         self._trace_counts: dict[str, int] = defaultdict(int)
         self._finalized: set[str] = set()
         self._pending_finalization: set[str] = set()
+        self._next_forward_id = 0
 
         num_sites = len(self.layouts)
         self.site_valid = torch.zeros(
@@ -100,16 +104,23 @@ class MoeTraceRecorder:
             self.expert_ids = torch.empty(
                 (max_rows, route_width), dtype=torch.int32, device=self.device
             )
-            self.expert_weights = torch.empty(
-                (max_rows, route_width), dtype=torch.float32, device=self.device
-            )
+            if not config.ids_only:
+                self.expert_weights = torch.empty(
+                    (max_rows, route_width), dtype=torch.float32, device=self.device
+                )
 
-        self.writer = MoeTraceWriter(
+        writer_class = MoeTraceBatchWriter if config.ids_only else MoeTraceWriter
+        self.writer = writer_class(
             config.output_dir,
             self.layouts,
             rank=get_parallel().tp_rank,
             queue_depth=config.queue_depth,
             overflow=config.overflow_policy,
+            **(
+                {"max_rows_per_request": config.max_decode_tokens}
+                if config.ids_only
+                else {}
+            ),
             quantization=(
                 {
                     "scheme": "symmetric-groupwise-int4",
@@ -220,7 +231,8 @@ class MoeTraceRecorder:
             )
         route = slice(layout.route_offset, layout.route_offset + layout.site.top_k)
         self.expert_ids[:rows, route].copy_(logical_topk_ids)
-        self.expert_weights[:rows, route].copy_(topk_weights)
+        if self.expert_weights is not None:
+            self.expert_weights[:rows, route].copy_(topk_weights)
         self.site_valid[:rows, layout.site.site_id] = True
 
     def _selected_rows(self, request_ids: Sequence[str]) -> list[int]:
@@ -238,7 +250,89 @@ class MoeTraceRecorder:
         view = tensor[:rows]
         return view.clone() if indices is None else view.index_select(0, indices)
 
-    def end_forward(self, forward_batch) -> Optional[MoeTraceBatchOutput]:
+    def prepare_forward(self, forward_batch) -> MoeTraceForwardContext:
+        """Freeze row ownership and inputs before padding/rebinding in forward."""
+        request_ids = tuple(forward_batch.rids or ())
+        if not request_ids:
+            raise ValueError("target trace requires request IDs for every active batch")
+        if forward_batch.forward_mode.is_decode():
+            phase, width = "decode", 1
+        elif forward_batch.forward_mode.is_target_verify():
+            phase = "target_verify"
+            width = int(getattr(forward_batch.spec_info, "num_tokens_per_req", 0))
+            if width <= 0:
+                raise ValueError("target verify requires an explicit trace row width")
+        else:
+            raise ValueError("MoE IDs-only tracing requires decode or target verify")
+        layout = TraceRowLayout.from_counts(
+            self._next_forward_id, phase, request_ids, [width] * len(request_ids)
+        )
+        self._next_forward_id += 1
+        return self.prepare_rows(
+            layout, forward_batch.input_ids, forward_batch.positions
+        )
+
+    def prepare_rows(
+        self, layout, input_token_ids, positions
+    ) -> MoeTraceForwardContext:
+        """Also accepts explicit nonuniform layouts from future verify adapters."""
+        maximum = max(layout.capture_indices, default=-1)
+        if maximum >= self.max_rows:
+            raise ValueError("trace row layout exceeds the device buffer capacity")
+        if any(
+            tensor.ndim != 1 or tensor.shape[0] <= maximum
+            for tensor in (input_token_ids, positions)
+        ):
+            raise ValueError("trace row layout exceeds token/position metadata")
+        if layout.capture_indices == tuple(range(len(layout.capture_indices))):
+            rows = len(layout.capture_indices)
+            return MoeTraceForwardContext(
+                layout, input_token_ids[:rows].clone(), positions[:rows].clone()
+            )
+        indices = torch.tensor(
+            layout.capture_indices, dtype=torch.long, device=self.device
+        )
+        return MoeTraceForwardContext(
+            layout,
+            input_token_ids.index_select(0, indices),
+            positions.index_select(0, indices),
+        )
+
+    def _end_ids_forward(self, context) -> Optional[MoeTraceBatchOutput]:
+        layout = context.layout
+        request_ids = layout.expanded_request_ids()
+        selected = self._selected_rows(request_ids)
+        if not selected:
+            return None
+        if len(selected) == len(request_ids) and layout.capture_indices == tuple(
+            range(len(request_ids))
+        ):
+            rows = len(request_ids)
+            return MoeTraceBatchOutput(
+                request_ids=request_ids,
+                input_token_ids=context.input_token_ids,
+                positions=context.positions,
+                site_valid=self.site_valid[:rows].clone(),
+                expert_ids=self.expert_ids[:rows].clone(),
+                row_layout=layout,
+            )
+        layout = layout.select_rows(selected)
+        capture_indices = torch.tensor(
+            layout.capture_indices, dtype=torch.long, device=self.device
+        )
+        metadata_indices = torch.tensor(selected, dtype=torch.long, device=self.device)
+        return MoeTraceBatchOutput(
+            request_ids=layout.expanded_request_ids(),
+            input_token_ids=context.input_token_ids.index_select(0, metadata_indices),
+            positions=context.positions.index_select(0, metadata_indices),
+            site_valid=self.site_valid.index_select(0, capture_indices),
+            expert_ids=self.expert_ids.index_select(0, capture_indices),
+            row_layout=layout,
+        )
+
+    def end_forward(self, forward_batch, context=None) -> Optional[MoeTraceBatchOutput]:
+        if self.config.ids_only:
+            return self._end_ids_forward(context or self.prepare_forward(forward_batch))
         if not forward_batch.forward_mode.is_decode():
             return None
         request_ids = list(forward_batch.rids or ())
@@ -301,6 +395,10 @@ class MoeTraceRecorder:
         result reaches this method; matching rows are overshoot and are not
         persisted.
         """
+        if self.config.ids_only:
+            # Execution traces retain already-launched overlap forwards, even
+            # after logical request completion. No per-request overshoot filter.
+            return self.writer.submit(payload)
         pending = set(self._pending_finalization)
         accepted = False
         if pending:
@@ -333,6 +431,7 @@ class MoeTraceRecorder:
             or self._trace_counts.get(request_id, 0) == 0
         ):
             return
+        defer = defer and not self.config.ids_only
         if defer:
             self._pending_finalization.add(request_id)
             return

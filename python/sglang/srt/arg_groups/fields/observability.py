@@ -236,6 +236,10 @@ class Observability(msgspec.Struct):
         bool,
         "Trace logical expert IDs and final routing weights for standard decode steps. Supported on CUDA and NPU (TP-only).",
     ] = False
+    moe_trace_ids_only: A[
+        bool,
+        "Dump target expert IDs in forward-aligned batches, without weights or activations. Requires --moe-trace-expert-routes; supports EAGLE-family verify and concurrent requests with TP-only execution.",
+    ] = False
     moe_trace_router_inputs: A[
         bool,
         "Trace the hidden states immediately before MoE gate projections, packed as groupwise int4. Supported on CUDA only.",

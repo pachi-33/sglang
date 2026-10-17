@@ -1046,10 +1046,17 @@ class ModelRunner:
         # writers never race on a request manifest.
         if self.moe_trace_config is None or get_parallel().tp_rank != 0:
             return
+        max_eager_rows = self.max_running_requests
+        if self.moe_trace_config.ids_only:
+            # Eager batches can exceed the largest captured graph bucket.
+            # Adaptive speculation can also use a wider verify tree later.
+            max_eager_rows *= self.decode_num_tokens_per_req(
+                num_draft_tokens=max_speculative_num_draft_tokens()
+            )
         recorder = MoeTraceRecorder(
             self.moe_trace_config,
             self.moe_trace_sites,
-            max_rows=max(self.max_running_requests, self.max_decode_logits_rows()),
+            max_rows=max(max_eager_rows, self.max_decode_logits_rows()),
             device=self.device,
         )
         set_global_moe_trace_recorder(recorder)
@@ -1877,7 +1884,18 @@ class ModelRunner:
         trace_this_forward = bool(
             trace_recorder is not None
             and not self.is_draft_worker
-            and forward_batch.forward_mode.is_decode()
+            and (
+                forward_batch.forward_mode.is_decode()
+                or (
+                    trace_recorder.config.ids_only
+                    and forward_batch.forward_mode.is_target_verify()
+                )
+            )
+        )
+        trace_context = (
+            trace_recorder.prepare_forward(forward_batch)
+            if trace_this_forward and trace_recorder.config.ids_only
+            else None
         )
         if trace_recorder is not None:
             trace_recorder.begin_forward(trace_this_forward)
@@ -1912,7 +1930,9 @@ class ModelRunner:
                 )
         output.expert_distribution_metrics = recorder_outputs.get("metrics")
         if trace_this_forward:
-            output.moe_trace_output = trace_recorder.end_forward(forward_batch)
+            output.moe_trace_output = trace_recorder.end_forward(
+                forward_batch, context=trace_context
+            )
 
         no_copy_to_cpu = not get_schedule().disable_overlap_schedule
         if (

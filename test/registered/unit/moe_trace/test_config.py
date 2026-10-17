@@ -28,6 +28,36 @@ def _server_args(**overrides):
 
 
 class TestMoeTraceResolvedConfigValidation(unittest.TestCase):
+    def test_ids_only_supports_eagle_family_with_concurrent_tp_requests(self):
+        for device in ("cuda", "npu"):
+            for algorithm in (None, "EAGLE", "EAGLE3", "NEXTN", "STANDALONE"):
+                with self.subTest(device=device, algorithm=algorithm):
+                    validate_moe_trace_server_args(
+                        _server_args(
+                            device=device,
+                            speculative_algorithm=algorithm,
+                            moe_trace_ids_only=True,
+                            tp_size=2,
+                        )
+                    )
+
+    def test_ids_only_rejects_unmapped_execution_modes(self):
+        for options in (
+            {"speculative_algorithm": "DFLASH"},
+            {"speculative_algorithm": "FROZEN_KV_MTP"},
+            {"moe_trace_router_inputs": True},
+            {"moe_trace_expert_routes": False},
+            {"enable_dp_attention": True},
+            {"ep_size": 2},
+            {"attn_cp_size": 2},
+            {"dcp_size": 2},
+            {"enable_two_batch_overlap": True},
+        ):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                validate_moe_trace_server_args(
+                    _server_args(moe_trace_ids_only=True, **options)
+                )
+
     def test_cuda_route_only_is_allowed(self):
         validate_moe_trace_server_args(_server_args())
 
