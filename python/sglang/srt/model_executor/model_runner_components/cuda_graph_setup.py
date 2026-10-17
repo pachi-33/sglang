@@ -5,6 +5,7 @@ import hashlib
 import logging
 import time
 from collections import defaultdict
+from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, Optional
 
 import msgspec
@@ -343,7 +344,7 @@ def recapture_elastic_cuda_graph(
     refresh_deep_gemm_layout_memory_budget(model_runner)
     # Warmup may communicate, so every rank repeats it after the rendezvous.
     model_runner._kernel_warmed_up = False
-    capture = capture_decode_graph(model_runner=model_runner)
+    capture = capture_decode_graph_with_moe_trace(model_runner=model_runner)
     if capture.runner is None:
         raise RuntimeError(
             "Elastic EP CUDA graph recapture did not create a decode graph runner."
@@ -410,7 +411,7 @@ def capture_cuda_graphs(
     )
     if capture_decode_cuda_graph:
         if current_platform.capabilities.graph_capture:
-            decode = capture_decode_graph(model_runner=model_runner)
+            decode = capture_decode_graph_with_moe_trace(model_runner=model_runner)
     else:
         decode = GraphCapture(
             runner=eager_runner,
@@ -753,3 +754,17 @@ def capture_decode_graph(*, model_runner: ModelRunner) -> GraphCapture:
         memory_usage_gb=memory_usage_gb,
         capture_time=capture_time,
     )
+
+
+def capture_decode_graph_with_moe_trace(*, model_runner: ModelRunner) -> GraphCapture:
+    """Capture decode graphs with trace writes enabled when configured.
+
+    This is deliberately decode-specific: prefill graph capture must not pay
+    for trace packing because prefill rows are never persisted.
+    """
+    from sglang.srt.moe_trace.recorder import get_global_moe_trace_recorder
+
+    recorder = get_global_moe_trace_recorder()
+    scope = recorder.capture_scope() if recorder is not None else nullcontext()
+    with scope:
+        return capture_decode_graph(model_runner=model_runner)
