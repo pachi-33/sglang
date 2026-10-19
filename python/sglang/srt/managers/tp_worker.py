@@ -688,6 +688,7 @@ class TpModelWorker(BaseTpWorker):
                     if folded is None
                     else self.model_runner.kv_index_translator.own_plan(batch)
                 ),
+                moe_trace_output=out.moe_trace_output,
             )
 
             capture_pre_sample_logits(batch, forward_batch, logits_output)

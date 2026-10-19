@@ -23,6 +23,7 @@ def fused_topk_npu(
     num_token_non_padded: Optional[torch.Tensor] = None,
     expert_location_dispatch_info: Optional["ExpertLocationDispatchInfo"] = None,
     layer_id: Optional[int] = None,
+    trace_module: Optional[torch.nn.Module] = None,
 ) -> "TopKOutput":
     use_grouped_topk = topk_config.use_grouped_topk
     renormalize = topk_config.renormalize
@@ -107,6 +108,22 @@ def fused_topk_npu(
             topk_config=topk_config,
             num_token_non_padded=num_token_non_padded,
             expert_location_dispatch_info=expert_location_dispatch_info,
+            trace_module=trace_module,
+        )
+
+    if (
+        trace_module is not None
+        and getattr(trace_module, "_moe_trace_site_id", None) is not None
+    ):
+        # NPU gate results are final but still use logical expert IDs here.
+        # Capture only routed slots; fused shared experts are not route choices.
+        routed_width = topk_ids.shape[-1] - topk_config.num_fused_shared_experts
+        from sglang.srt.moe_trace.recorder import capture_route
+
+        capture_route(
+            trace_module,
+            topk_ids[:, :routed_width],
+            topk_weights[:, :routed_width],
         )
 
     if expert_location_dispatch_info is not None:
