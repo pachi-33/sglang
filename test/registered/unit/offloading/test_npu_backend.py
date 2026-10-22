@@ -5,6 +5,7 @@ are simulated. These tests do not claim accelerator or collective correctness.
 """
 
 import ctypes
+import sys
 import unittest
 from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from sglang.srt.offloading.moe.execution import ExecutionRequest
 from sglang.srt.offloading.moe.npu import backend as npu_backend
 from sglang.srt.offloading.moe.npu import experts as npu_experts
 from sglang.srt.offloading.moe.npu import native_acl
+from sglang.srt.offloading.moe.npu import storage as npu_storage
 from sglang.srt.offloading.moe.npu.backend import NpuMoEBackend
 from sglang.srt.offloading.moe.npu.transfer import (
     DeviceMemoryRegion,
@@ -357,6 +359,44 @@ class Assembly:
             self.backend.runtime.close()
         else:
             self.backend.close_unbound()
+
+
+class MemFabricHostPoolTests(unittest.TestCase):
+    def test_initialization_requests_giant_pages_for_local_pool(self):
+        offload = SimpleNamespace(
+            OffloadConfig=SimpleNamespace,
+            OFFLOAD_FLAG_GIANT_PAGE=1,
+            Scene=SimpleNamespace(LOCAL="local"),
+            # Stop at the native allocation boundary; no real pool is allocated.
+            initialize=mock.Mock(return_value=23),
+        )
+        with (
+            mock.patch.dict(
+                sys.modules, {"memfabric_hybrid": SimpleNamespace(offload=offload)}
+            ),
+            mock.patch.dict(
+                npu_storage.os.environ, {"SGLANG_HICACHE_HOST_MEM_BACKEND": ""}
+            ),
+            mock.patch.object(
+                npu_storage.os, "sysconf", return_value=4096, create=True
+            ),
+            mock.patch.object(npu_storage, "_check_host_registration_platform"),
+            self.assertRaisesRegex(RuntimeError, "MemFabric initialization failed: 23"),
+        ):
+            npu_storage.MemFabricHostPool(
+                4096, 3, physical_bytes=48 * 1024**3, native_acl=mock.Mock()
+            )
+
+        offload.initialize.assert_called_once()
+        config = offload.initialize.call_args.args[0]
+        self.assertEqual(config.flags, offload.OFFLOAD_FLAG_GIANT_PAGE)
+        self.assertEqual(config.rank_id, 0)
+        self.assertEqual(config.device_id, 3)
+        self.assertEqual((config.world_size, config.local_world_size), (1, 1))
+        self.assertEqual(config.scene, offload.Scene.LOCAL)
+        self.assertEqual(config.reserve_size, 48 * 1024**3)
+        self.assertEqual(config.alloc_size, config.reserve_size)
+        self.assertIsNone(npu_storage.MemFabricHostPool._active)
 
 
 class NpuBackendAssemblyTests(unittest.TestCase):

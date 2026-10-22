@@ -112,7 +112,8 @@ class MemFabricHostPool:
                 config.device_id = device_index
                 config.reserve_size = config.alloc_size = physical_bytes
                 config.world_size = config.local_world_size = 1
-                config.rank_id = config.flags = 0
+                config.rank_id = 0
+                config.flags = offload.OFFLOAD_FLAG_GIANT_PAGE
                 config.scene = offload.Scene.LOCAL
                 status = offload.initialize(config)
                 if status not in (None, 0):
