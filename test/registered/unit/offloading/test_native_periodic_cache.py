@@ -34,7 +34,7 @@ class TestNativePeriodicCache(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.profile = Path(self.directory.name) / "profile.json"
-        # EP rank 1 owns global IDs 4..7. The initial rank-wide Top-K gives
+        # EP rank 1 owns global IDs 4..7. Layer-balanced initialization gives
         # two slots to each layer, while online usage starts independently.
         self.profile.write_text(
             json.dumps(
@@ -106,6 +106,42 @@ class TestNativePeriodicCache(unittest.TestCase):
         self.assertEqual(int(runtime.cache_stats.accesses), 12)
         self.assertEqual(int(runtime.cache_stats.hits), 12)
         self.assertEqual(int(runtime.cache_stats.misses), 0)
+
+    def test_no_profile_initialization_replacement_and_restore(self):
+        self.assembly.backend.settings.offline_model_id = None
+        self.assembly.policy = PeriodicLFUPolicy(
+            PeriodicLFUConfig(), self.assembly.catalog
+        )
+        runtime = self.assembly.finalize()
+        self.assertEqual(runtime.residency.slot_to_key.tolist(), [0, 1, 4, 5])
+        self.assertTrue(bool(runtime.residency.slot_valid.all()))
+        for tensor in self.assembly.backend.format.banks[0].tensors.values():
+            self.assertEqual(tensor[:, 0].tolist(), [30, 31, 40, 41])
+        state = runtime.cache_updates.policy_state
+        self.assertEqual(int(state.step_mod), 0)
+        self.assertEqual(int(state.usage.count_nonzero()), 0)
+        demand = {3: [0, 0, 5, 0], 4: [0, 0, 0, 7]}
+        for _ in range(4):
+            self.run_step(runtime, demand)
+        self.assertEqual(set(runtime.residency.slot_to_key.tolist()), {1, 2, 5, 7})
+        self.run_step(runtime, demand)
+        self.assertEqual(int(runtime.cache_stats.hits), 12)
+        self.assertEqual(int(runtime.cache_stats.misses), 0)
+        keys, usage = runtime.residency.slot_to_key.clone(), state.usage.clone()
+        bank = self.assembly.backend.format.banks[0]
+        weights = {name: value.clone() for name, value in bank.tensors.items()}
+        owner = MoEOffloadOwner(self.assembly.config, self.assembly.catalog, runtime)
+        owner.switch_phase(Phase.PREFILL)
+        for tensor in bank.tensors.values():
+            tensor.fill_(199)
+        owner.switch_phase(Phase.DECODE)
+        torch.testing.assert_close(runtime.residency.slot_to_key, keys)
+        torch.testing.assert_close(state.usage, usage)
+        self.assertEqual(int(state.step_mod), 1)
+        for name, tensor in bank.tensors.items():
+            torch.testing.assert_close(tensor, weights[name])
+        self.assertEqual(int(runtime.ops.error_status), 0)
+        owner.close()
 
     def test_assignment_statistics_count_repeated_routes_and_clear_per_batch(self):
         runtime = self.assembly.finalize()
@@ -207,18 +243,28 @@ class TestNativePeriodicConfig(unittest.TestCase):
         values.update(kwargs)
         return NpuOffloadSettings(**values)
 
-    def test_profile_is_required_only_when_caching_is_enabled(self):
-        with self.assertRaisesRegex(ValueError, "offline_stats_path"):
-            self.settings(offline_stats_path=None)
-        with self.assertRaisesRegex(ValueError, "offline_model_id"):
-            self.settings(offline_model_id=None)
+    def test_profile_and_model_id_are_optional_with_nonzero_cache(self):
+        settings = self.settings(offline_stats_path=None, offline_model_id=None)
+        catalog = Assembly(ratio=0.5, layer_count=2, local_experts=4)
+        self.addCleanup(catalog.close)
+        policy = PeriodicLFUPolicy(settings.policy_config(), catalog.catalog)
+        self.assertEqual(policy.initial_keys(4), (0, 1, 4, 5))
+        self.assertIsNone(self.settings(offline_model_id=None).offline_model_id)
         settings = self.settings(
             cache_ratio=0, offline_stats_path=None, offline_model_id=None
         )
-        catalog = Assembly(ratio=0, layer_count=2, local_experts=4)
-        self.addCleanup(catalog.close)
         policy = PeriodicLFUPolicy(settings.policy_config(), catalog.catalog)
         self.assertEqual(policy.initial_keys(0, None), ())
+
+    def test_repository_example_starts_without_profile_configuration(self):
+        example = (
+            Path(__file__).resolve().parents[4]
+            / "python/sglang/srt/offloading/moe/npu/examples/v4.json"
+        )
+        settings = NpuOffloadSettings.from_file(example)
+        self.assertGreater(settings.cache_ratio, 0)
+        self.assertIsNone(settings.offline_stats_path)
+        self.assertIsNone(settings.offline_model_id)
 
     def test_relative_profile_path_and_policy_parameters_roundtrip(self):
         with tempfile.TemporaryDirectory() as directory:

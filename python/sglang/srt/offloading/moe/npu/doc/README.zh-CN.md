@@ -17,12 +17,12 @@
 
 `NpuMoEBackend` 在模型构造前安装，由 FusedMoE 的统一权重创建入口接管
 host 参数分配；post-load 后装配共享 host master、hot/execution bank、固定 Tensor
-residency、离线 Top-K / 周期层内 LFU、ACL eager prefill、MemFabric decode 和现有 Ascend EP/FFN。
+residency、按层初始化 / 周期层内 LFU、ACL eager prefill、MemFabric decode 和现有 Ascend EP/FFN。
 本项依赖 native ACL、真实存储和 EP/FFN 三项适配一起使用。
 
 2026-10-22 缓存接入说明见 [周期缓存配置与验证](PERIODIC_CACHE_1022.zh-CN.md)。
-非零热池必须配置 `offline_stats_path` 与 `offline_model_id`；示例 JSON 中的 profile
-路径需要替换为真实离线统计文件。在线各层缓存配额由离线初始化确定。
+非零热池默认按层分配初始 slot，不需要统计文件。可选的 `offline_stats_path` 只影响
+层内专家排序；`offline_model_id` 不必填写。在线各层缓存配额保持初始化分配。
 
 `NpuBoundMoERuntime` 在 decoder 层首启动 prefill worker，在 FusedMoE.forward_impl
 进入 routed program，外层原有 shared experts 与缩放保持原路径。层间、forward
@@ -87,9 +87,9 @@ token 数均为 1024、context length 为 8192，`mem_fraction_static=0.8`。
 它不带 EAGLE、DP attention 或 HiCache 参数，关闭 overlap；GLM-5.2 权重
 不适用于当前后端，实际启动时会在构建扩展前检查 `model_type` 和 EP 可整除性。
 
-默认 JSON 的 `offline_stats_path` 是占位符。非零 cache_ratio 必须提供真实 profile，
-`offline_model_id` 与 profile 的 `model_id` 一致；相对路径以 JSON 所在目录解析。
-脚本在构建扩展前检查文件和 ID，格式参见 [周期缓存配置](PERIODIC_CACHE_1022.zh-CN.md)。
+默认 JSON 不包含 profile 或 model ID，直接按层初始化热池。若显式提供 `offline_stats_path`，
+相对路径以 JSON 所在目录解析，脚本在构建扩展前检查文件和格式。`offline_model_id` 仅在
+显式填写时校验文件标签，格式参见 [周期缓存配置](PERIODIC_CACHE_1022.zh-CN.md)。
 
 日志默认落盘到新建的 `${TMPDIR:-/tmp}/sglang-moe-offload/<时间>-<PID>/server.log`，同时输出到终端。
 同目录保存 offload 配置快照和 logging.json；可用 `LOG_DIR` 指定持久目录。脚本保留

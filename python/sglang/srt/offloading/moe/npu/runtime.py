@@ -138,7 +138,7 @@ class NpuBoundMoERuntime(BoundMoERuntime):
         self.residency.update_enabled.fill_(True)
 
     def initialize_hot_cache(self, keys):
-        """Materialize offline Top-K through the production transfer/publication.
+        """Materialize initial keys through the production transfer/publication.
 
         No synthetic decode step runs here: online usage and the periodic clock
         remain zero. The same fault latch and complete-bundle fence used during
@@ -151,12 +151,12 @@ class NpuBoundMoERuntime(BoundMoERuntime):
             raise RuntimeError("Initialize the hot cache exactly once before binding")
         keys = tuple(keys)
         if len(keys) != self.residency.slot_to_key.numel():
-            raise ValueError("Offline Top-K must fill the configured hot capacity")
+            raise ValueError("Initial keys must fill the configured hot capacity")
         if len(set(keys)) != len(keys) or any(
             type(key) is not int or not 0 <= key < self.residency.key_to_slot.numel()
             for key in keys
         ):
-            raise ValueError("Offline Top-K must contain distinct catalog keys")
+            raise ValueError("Initial keys must contain distinct catalog keys")
 
         def initialize(context):
             targets = self.cache_updates.target_keys

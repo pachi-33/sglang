@@ -1,7 +1,7 @@
 # MoE 权重 Offload 框架
 
-> **2026-10-22 缓存更新**：原生 Ascend 启动入口已切换为离线 Top-K 预热、周期层内 LFU
-> 及设备端 assignment 命中统计；在线保持离线初始化确定的每层配额。配置、物理后端边界
+> **2026-10-22 缓存更新**：原生 Ascend 启动入口使用按层预热、周期层内 LFU
+> 及设备端 assignment 命中统计；离线统计可选，在线保持初始化确定的每层配额。配置、物理后端边界
 > 和当前验证方法见 [周期缓存接入](../npu/doc/PERIODIC_CACHE_1022.zh-CN.md)。
 
 > **2026-10-21 实现更新**：已接入 Tensor cache、有界 prefill、原生 ACL batch、

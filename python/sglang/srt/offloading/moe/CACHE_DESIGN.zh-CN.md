@@ -8,7 +8,7 @@
 
 ```mermaid
 flowchart TD
-    A[JSON 配置 / 离线路由频率] --> B[create_npu_offloader]
+    A[JSON 配置 / 可选离线路由频率] --> B[create_npu_offloader]
     B --> C[NpuMoEBackend 初始化权重池与策略]
     C --> D[NpuBoundMoERuntime]
     D --> E[ModelRunner forward_scope / 图首尾 / 层首钩子]
@@ -52,10 +52,13 @@ dispatch 后采用该层本地专家编号，目录负责两者转换。
 
 ## 3. LFU 规则与本次简化
 
-保留原有五项行为：
+当前五项行为：
 
-1. **初始化**：在本 rank 全部可卸载专家中，按离线频率选 Top-K；同频按 key 排序。
-   启动阶段装入完整 bundle 后发布映射，在线 usage 从零开始。
+1. **初始化**：本 rank 按 layer_id 顺序，每轮给每个可卸载层分配一个 slot，直到用满容量；
+   专家已全部装入的层不再分配。无统计文件时，各层按 expert ID 顺序选专家；有文件时改为
+   层内频率 Top-K，同频按 ID 排序。统计不会改变层间配额。容量不少于可卸载层数时，每层
+   至少一个 slot；容量更小时，先分给 layer_id 较小的层。启动阶段装入完整 bundle 后发布
+   映射，在线 usage 从零开始，不依赖空缓存逐步填充。
 2. **在线计数**：使用 dispatch 后有效 assignment counts。重复路由逐次计数，hit/miss 都计入；
    padding、无效 token 不计入，不将 counts 展开成逐 token Python 列表。
 3. **周期替换**：每 4 个有效完整 decode forward 调整一次。每层内部将最热的非驻留专家
@@ -77,6 +80,18 @@ residency 必须按相同 slot 落位。现有 residency 决定最终搬运和 s
 图中每步发出固定形状的运算，通过设备 `update_due` 控制是否真正替换；不会在 Python 中读取
 设备热度来决定分支。capture/warmup 与 prefill 不推进周期，全局空步不推进周期；
 若全局有工作而本 rank 没有路由，本 rank 仍推进周期，与其他 rank 保持 forward 节奏一致。
+
+### 启动配置
+
+`offline_stats_path` 默认为空，示例 `npu/examples/v4.json` 可直接开启 0.25 热缓存，无需
+事先统计。可选文件只需 `{"layers":{"3":{"0":120,"1":80}}}`，expert ID 使用全局编号，
+缺少的频次按零处理。启用热缓存时，显式提供的文件不存在、格式错误或频次非法仍报错。
+
+`offline_model_id` 不必填写，文件也不必包含 `model_id`。旧配置若显式填写此项，仍与文件
+标签比较；这只是用户指定的标签校验，不代表验证了实际模型权重的身份。
+
+本次只改变启动选集与配置要求，不改变 `ResidencyOps`、`WholeMoEProgram`、transferOps、
+bank 布局、H2D/D2D 等待及发布接口。默认周期和在线层内替换规则保持不变。
 
 ## 4. Prefill / decode 的接线
 
@@ -104,7 +119,7 @@ residency 必须按相同 slot 落位。现有 residency 决定最终搬运和 s
 
 | 文件 | 当前职责 |
 | --- | --- |
-| `periodic_lfu.py` | 离线初始化、在线计数、层内配对、rank 限额与衰减 |
+| `periodic_lfu.py` | 按层初始化及可选离线排序、在线计数、层内配对、rank 限额与衰减 |
 | `cache_metadata.py` | 仅保留 `CacheRouteStats`，消费现有计数与命中 mask |
 | `execution.py` | 原有程序编排及唯一的 `CacheUpdateCoordinator` 图尾入口 |
 | `npu/backend.py`、`npu/runtime.py` | 唯一生产组装、钩子、阶段和 capture/replay 生命周期 |
@@ -136,6 +151,10 @@ residency 必须按相同 slot 落位。现有 residency 决定最终搬运和 s
 未执行未修改的 POSIX 启动脚本测试 `test_launch_moe_offload_npu.py`（11 项）。
 未在本轮执行真实 NPU/H2D/D2D 或完整模型推理；CPU 图相关测试验证的是捕获接线和张量依赖，
 不能替代 NPU graph replay 验证。
+
+同日初始化修正后，CPU 回归为 **150 项通过、无 skip**，含无 profile 的实际原生装配调用链、
+在线替换与回填，以及启动脚本 Python 配置检查。Bash 语法检查通过；POSIX 整套启动测试与
+真实 NPU 推理仍需在目标环境执行。
 
 在有 PyTorch 的环境可运行同一组 CPU 测试：
 

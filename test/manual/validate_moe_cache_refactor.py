@@ -22,6 +22,7 @@ CPU_MODULES = (
     "test_cache_metadata",
     "test_cache_model_binding",
     "test_cache_runtime",
+    "test_launch_moe_offload_npu.TestMoEOffloadProfileConfig",
     "test_moe_diagnostics",
     "test_moe_framework",
     "test_moe_graph_leases",

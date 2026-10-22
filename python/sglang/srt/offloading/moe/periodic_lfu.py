@@ -8,6 +8,7 @@ must validate capture support and budget the sorting temporaries/workspace.
 import json
 import math
 from dataclasses import dataclass
+from itertools import islice, zip_longest
 from typing import Optional
 
 from .config import ExpertCatalog
@@ -16,7 +17,7 @@ from .interfaces import CachePolicy
 
 @dataclass(frozen=True)
 class PeriodicLFUConfig:
-    offline_stats_path: Optional[str]
+    offline_stats_path: Optional[str] = None
     update_interval: int = 4
     min_usage: float = 2.0
     replacement_min_gain: float = 1.5
@@ -59,30 +60,37 @@ class PeriodicLFUPolicy(CachePolicy):
         # Catalog order is layer_id order, also the global pair tie-break order.
         self.layer_ranges = tuple(ranges)
 
-    def initial_keys(self, capacity: int, model_id: str) -> tuple[int, ...]:
-        """Host-only offline Top-K; backend loads/publishes these before serving.
+    def initial_keys(self, capacity: int, model_id=None) -> tuple[int, ...]:
+        """Share slots across layers, optionally ranking each by offline counts.
 
         Frequencies use global expert IDs. Resident layers and foreign EP experts
         are excluded by the catalog. Online usage is not seeded with this data.
+        The backend loads/publishes complete bundles before serving.
         """
         if type(capacity) is not int or not 0 <= capacity <= self.catalog.num_experts:
             raise ValueError("Hot capacity must be within the eligible expert count")
         if capacity == 0:
             return ()
-        if self.config.offline_stats_path is None:
-            raise ValueError("A nonempty hot cache requires offline_stats_path")
-        with open(self.config.offline_stats_path, encoding="utf-8") as stream:
-            profile = json.load(stream)
-        if not isinstance(profile, dict) or profile.get("model_id") != model_id:
-            raise ValueError("Offline profile model_id does not match the model")
-        layers = profile.get("layers")
-        if not isinstance(layers, dict):
-            raise ValueError("Offline profile must contain a layers object")
-        counts = []
+        layers = {}
+        if self.config.offline_stats_path is not None:
+            with open(self.config.offline_stats_path, encoding="utf-8") as stream:
+                profile = json.load(stream)
+            if not isinstance(profile, dict) or not isinstance(
+                profile.get("layers"), dict
+            ):
+                raise ValueError("Offline profile must contain a layers object")
+            if model_id is not None and profile.get("model_id") != model_id:
+                raise ValueError(
+                    "Offline profile model_id does not match offline_model_id"
+                )
+            layers = profile["layers"]
+        ranked = []
+        offset = 0
         for layer in self.catalog.offloaded_layers:
             frequencies = layers.get(str(layer.layer_id), {})
             if not isinstance(frequencies, dict):
                 raise ValueError("Layer frequencies must be an object")
+            counts = []
             for local_id in range(layer.local_experts):
                 frequency = frequencies.get(str(layer.global_start + local_id), 0)
                 if (
@@ -94,9 +102,17 @@ class PeriodicLFUPolicy(CachePolicy):
                         "Offline frequencies must be finite and nonnegative"
                     )
                 counts.append(frequency)
-        return tuple(
-            sorted(range(len(counts)), key=lambda key: (-counts[key], key))[:capacity]
-        )
+            ranked.append(
+                sorted(
+                    range(offset, offset + layer.local_experts),
+                    key=lambda key: (-counts[key - offset], key),
+                )
+            )
+            offset += layer.local_experts
+        # One slot per layer each round. Full layers drop out; a small capacity
+        # favors lower layer IDs. Offline counts change experts, not layer quotas.
+        keys = (key for row in zip_longest(*ranked) for key in row if key is not None)
+        return tuple(sorted(islice(keys, capacity)))
 
     def allocate_state(self, num_experts, device):
         import torch
