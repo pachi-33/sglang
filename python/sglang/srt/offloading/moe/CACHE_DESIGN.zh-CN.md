@@ -161,3 +161,19 @@ PY
 
 原生启动配置、profile 格式和 NPU 环境验证入口见
 [周期缓存接入原生后端](npu/doc/PERIODIC_CACHE_1022.zh-CN.md)及其链接的运行说明。
+
+也可用本轮独立验证入口生成日志和 JSON 报告：
+
+```bash
+# CPU 调用链回归，需要 PyTorch。
+python test/manual/validate_moe_cache_refactor.py --output /tmp/moe-cache-check
+
+# 在 NPU 上额外验证本次 LFU / 统计修改的真实图捕获和 replay。
+MOE_TEST_NPU_DEVICE=0 python test/manual/validate_moe_cache_refactor.py \
+  --npu --output /tmp/moe-cache-check-npu
+```
+
+退出码 0 表示所选阶段全部通过且无 skip；失败返回非零。`report.json` 记录提交、各阶段结果和
+未覆盖项，`cpu.log` / `npu_lfu_graph.log` 保存详细日志。显式传入 `--npu` 后，缺少 torch_npu、
+无设备或图捕获失败都算失败，不回退 CPU。NPU 阶段验证动态 counts、周期与衰减、统计门控、
+热集合变化、空洞 slot 和固定状态地址；用测试映射模拟发布，不宣称验证了真实权重搬运。
