@@ -97,11 +97,16 @@ bank 布局、H2D/D2D 等待及发布接口。默认周期和在线层内替换�
 
 ### Decode
 
-1. `forward_scope` 根据 batch 是否有全局工作设置设备统计开关。
+1. `forward_scope` 结合全局 `is_extend_in_batch` 选择阶段：Attention-DP 中只要有 rank
+   在 prefill，本地 decode/idle rank 也使用 prefill 路径。普通 decode 根据 batch
+   是否有全局工作设置设备统计开关。
 2. 图首清理本步计数；每层 Dispatch 一次，按收到的专家需求执行多个固定 wave，再 Combine 一次。
 3. 每个 wave 记录真实 assignment 数和命中数；空 lane 不触发有效搬运或计算。
 4. 图尾调用 `CacheUpdateCoordinator`，更新 usage，选目标集合，完成周期衰减，再提交驻留更新。
 5. replay 执行图中已有节点；Python `forward_scope` 不再次更新 LFU，避免一个 batch 计数两次。
+6. eager/replay 返回前，在 compute stream 上回读一次 `error_status` 标量。权重搬运和
+   发布的依赖已汇入该流；非零状态抛出异常，owner 进入 FAILED，拒绝后续 forward。
+   此检查位于图外，独立于日志开关；会增加一次标量回读的主机等待，不新增整卡同步。
 
 `ModelRunner` 保留统一 forward scope、capture 和层首入口，移除只服务旧 eager runtime 的
 `eager_step_scope` 透传。统计门控由原生 runtime 的固定地址设备状态负责，不再传第二个 `adjust` 开关。

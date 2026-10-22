@@ -16,7 +16,9 @@ dispatch 后本 rank 收到的有效 token-expert 路由。重复使用同一专
 
 prefill 采用 HOST_ONLY，三个命中计数字段及命中率显示 N/A；decode 无有效需求时
 命中率显示 N/A。非零 `error` 使用 ERROR 级别并将命中率显示为 N/A，不把故障屏蔽后
-的计数当成健康命中率。故障仍由原有 runtime/owner 路径处理，日志不会清除错误标记。
+的计数当成健康命中率。runtime 在 forward 返回前独立回读错误标量，非零时抛异常并将
+owner 标为 FAILED；即使关闭日志也会检查。失败 batch 不保证输出异步汇总，错误由
+forward 异常报告；日志不会清除错误标记。
 
 JSON 可增加以下可选配置：
 
@@ -41,7 +43,8 @@ wait、全设备同步或 collective，不变更 D/F/C、权重搬运、缓存�
 device drain，再结束日志线程。分配/回传/query 失败会停用 batch 日志并告警，保留已提交
 快照直到原有 drain，避免因诊断失败中断正常推理。
 
-仍有少量异步 D2H 和 CPU 日志开销；以上约束保证不以观测新增同步屏障，不代表零性能开销。
+仍有少量异步 D2H 和 CPU 日志开销；以上约束仅描述日志采集本身。runtime 的独立错误检查
+会增加一次标量回读的主机等待，不新增整卡同步。日志采集不增加同步屏障，不代表零性能开销。
 metadata 预算也必须容纳诊断池。
 
 INFO 生命周期日志包括 runtime/bank 容量、初始 cache、内存计账、model hooks、Graph

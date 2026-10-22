@@ -6,10 +6,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
+from test_cache_runtime import batch
 from test_npu_backend import Assembly
 
 from sglang.srt.offloading.moe.config import Phase, fixed_waves
 from sglang.srt.offloading.moe.npu import experts
+from sglang.srt.offloading.moe.owner import MoEOffloadOwner, OwnerState
 from sglang.test.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=2, suite="base-a-test-cpu")
@@ -166,6 +168,98 @@ class TestNativeCacheLayout(unittest.TestCase):
             ),
             0,
         )
+
+
+class TestNativeCacheFaultPropagation(unittest.TestCase):
+    def setUp(self):
+        self.assembly = Assembly(layer_count=1, local_experts=4)
+        self.runtime = self.assembly.finalize()
+        self.owner = MoEOffloadOwner(
+            self.assembly.config, self.assembly.catalog, self.runtime
+        )
+        self.addCleanup(self.owner.close)
+        scope = patch.object(experts, "_compute_scope", lambda *args: nullcontext())
+        scope.start()
+        self.addCleanup(scope.stop)
+        self.adapter = experts.NPUDispatchLayout(
+            4, 2, 6, "cpu", self.runtime.ops.error_status
+        )
+
+    def received(self, counts):
+        return SimpleNamespace(
+            raw=SimpleNamespace(
+                hidden_states=torch.ones(6, 2, dtype=torch.bfloat16),
+                hidden_states_scale=None,
+                masked_m=torch.tensor(counts, dtype=torch.int64),
+                format="deepep_ll",
+            )
+        )
+
+    def assert_bad_counts_fail(self, decode):
+        # Trigger the actual layout fault; do not inject the error flag directly.
+        with (
+            self.assertLogs("sglang.srt.offloading.moe.npu.runtime", level="ERROR"),
+            self.assertRaisesRegex(RuntimeError, "device fault: status=64"),
+            patch.object(
+                self.owner, "finish_forward", wraps=self.owner.finish_forward
+            ) as finish,
+        ):
+            with self.runtime.forward_scope(self.owner, batch(decode)) as context:
+                layout = self.adapter.bind(self.received([7, 0, 0, 0]), context)
+                layout.output.fill_(9)
+                output = self.adapter.combine_input(layout, context).hidden_states
+                self.assertEqual(output.count_nonzero().item(), 0)
+        finish.assert_not_called()
+        self.assertEqual(self.owner.state, OwnerState.FAILED)
+        # A valid subsequent batch must not run with the sticky fault latch.
+        with self.assertRaisesRegex(RuntimeError, "owner is failed"):
+            with self.runtime.forward_scope(self.owner, batch(decode)):
+                self.fail("A failed runtime accepted another forward")
+
+    def test_decode_layout_fault_fails_before_return_and_blocks_next_batch(self):
+        self.assert_bad_counts_fail(decode=True)
+
+    def test_prefill_layout_fault_fails_before_return_and_blocks_next_batch(self):
+        self.assert_bad_counts_fail(decode=False)
+
+    def test_missing_expert_weights_fail_instead_of_returning_zero_output(self):
+        with (
+            self.assertLogs("sglang.srt.offloading.moe.npu.runtime", level="ERROR"),
+            self.assertRaisesRegex(RuntimeError, "device fault: status=128"),
+        ):
+            with self.runtime.forward_scope(self.owner, batch(True)) as context:
+                layout = self.adapter.bind(self.received([1, 1, 0, 0]), context)
+                selected = self.adapter.select_wave(
+                    layout, fixed_waves(4, 2)[0], context
+                )
+                bank = self.assembly.backend.format.banks[1]
+                binding = SimpleNamespace(
+                    expert_bank=experts.NPUExpertBank(
+                        bank.quant_info(),
+                        torch.zeros(4, dtype=torch.bool),
+                        self.runtime.ops.error_status,
+                    )
+                )
+                runner = experts.NPUExpertRunner(
+                    None, _core=CpuCore(), _input_type=SimpleNamespace
+                )
+                result = runner(3, selected, binding, context)
+                self.assertEqual(result.output.count_nonzero().item(), 0)
+        self.assertEqual(self.owner.state, OwnerState.FAILED)
+
+    def test_healthy_replays_preserve_outputs_without_device_wide_sync(self):
+        with patch.object(
+            self.runtime.device_runtime,
+            "synchronize",
+            side_effect=AssertionError("Unexpected device-wide synchronization"),
+        ):
+            for _ in range(2):
+                with self.runtime.forward_scope(self.owner, batch(True)) as context:
+                    layout = self.adapter.bind(self.received([1, 1, 0, 0]), context)
+                    layout.output.fill_(9)
+                    output = self.adapter.combine_input(layout, context).hidden_states
+                torch.testing.assert_close(output, torch.full_like(output, 9))
+                self.assertEqual(self.owner.state, OwnerState.READY)
 
 
 if __name__ == "__main__":

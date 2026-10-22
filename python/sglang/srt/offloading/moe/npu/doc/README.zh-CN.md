@@ -13,7 +13,7 @@
 实现说明：[存储](V4_STORAGE.md)、[EP/FFN](EXPERTS_IMPLEMENTATION.zh-CN.md)、
 [ACL](../native/doc/README.zh-CN.md)；本地验证见 [验证记录](../../doc/LOCAL_VALIDATION_1021.zh-CN.md)。
 
-每 batch 命中率、生命周期日志及无额外设备同步的约束见 [维测日志](OBSERVABILITY.zh-CN.md)。
+每 batch 命中率、生命周期日志及日志采集不额外增加设备同步的约束见 [维测日志](OBSERVABILITY.zh-CN.md)。
 
 `NpuMoEBackend` 在模型构造前安装，由 FusedMoE 的统一权重创建入口接管
 host 参数分配；post-load 后装配共享 host master、hot/execution bank、固定 Tensor

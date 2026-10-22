@@ -56,9 +56,9 @@ profile 的专家编号为 **global expert ID**，格式如下。示例数字仅
 }
 ```
 
-`model_id` 必须与配置匹配；缺失频率按零处理，同频率按 canonical key 排序。
-线上 usage 独立从零开始。离线数据会决定每层配额，部署时应提供覆盖实际模型的统计。
-已有 `examples/v4.json` 中的 `/path/to/...` 必须替换为真实 profile。
+仅在显式配置 `offline_model_id` 时检查文件中的 `model_id`；缺失频率按零处理，
+同频率按 canonical key 排序。线上 usage 独立从零开始，离线数据只影响层内选集，
+不改变每层配额。`examples/v4.json` 可直接在没有 profile 的情况下初始化缓存。
 
 ## 命中统计与后端边界
 

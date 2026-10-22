@@ -319,7 +319,13 @@ class NpuBoundMoERuntime(BoundMoERuntime):
     def _phase(forward_batch):
         mode = forward_batch.forward_mode
         if mode.is_decode_or_idle():
-            return Phase.DECODE
+            # Attention-DP peers share one EP collective. A local decode/idle
+            # batch must use the eager prefill path when any peer is extending.
+            return (
+                Phase.PREFILL
+                if getattr(forward_batch, "is_extend_in_batch", False)
+                else Phase.DECODE
+            )
         if mode.is_extend_without_speculative():
             return Phase.PREFILL
         raise ValueError("MoE offload accepts decode/idle or ordinary extend only")
@@ -388,6 +394,13 @@ class NpuBoundMoERuntime(BoundMoERuntime):
                         "MoE offload batch snapshot unavailable", exc_info=True
                     )
             completion = context.finish(residency_ready=tail)
+            # Copy/publication and FFN dependencies already join this stream.
+            # Check outside capture before exposing a possibly masked output.
+            # This scalar read waits for the forward, not the entire device.
+            with self.device_runtime.stream_scope(context.compute_stream):
+                status = self.ops.error_status.item()
+            if status:
+                raise RuntimeError(f"MoE offload device fault: status={status}")
             owner.finish_forward(token, completion)
             if self.diagnostics is not None:
                 try:
