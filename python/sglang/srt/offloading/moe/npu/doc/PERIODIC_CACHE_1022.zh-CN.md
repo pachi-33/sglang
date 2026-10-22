@@ -17,8 +17,9 @@
 - prefill 和 capture/warmup 不推进热度或周期；全局空步不推进，有工作但本 rank 无路由仍推进。
 - prefill 借池后，按原 slot 从 host 重载完整权重，并恢复 usage、周期和驻留状态。
 
-`TensorLFUPolicy` 和上游通用 `CacheBackend` 保留兼容用途；原生 `create_npu_offloader`
-始终选择周期策略。原生路径继续使用已有的固定设备计划、有效 lane 检查、sticky error、
+`TensorLFUPolicy` 保留为框架基础策略；原生 `create_npu_offloader` 始终选择周期策略。
+重复的通用缓存后端已移除，当前结构见 [Cache 与框架适配](../../CACHE_DESIGN.zh-CN.md)。
+原生路径继续使用已有的固定设备计划、有效 lane 检查、sticky error、
 输入 padding 屏蔽、ACL prefill 流水、原生 FP4 bank 和 Graph lease。生产搬运不增加 CPU fallback。
 
 ## 配置和 profile
@@ -71,7 +72,7 @@ assignment 命中率为 `hits / accesses`，无访问时应报告 N/A。重复�
 配置、日志含义及缓冲饱和行为见 [维测日志](OBSERVABILITY.zh-CN.md)。
 
 `CacheRouteStats.allocations()` 纳入 metadata 账本。策略快照通过原有 `DecodeStateSnapshot`
-持有全部周期字段；原生后端没有额外建立一份 CacheMetadataAdapter 快照或另一组权重池。
+持有全部周期字段；原生后端不额外建立第二份缓存快照或另一组权重池。
 上游通用 residency 的 int64 count 不直接传给原生 MemFabric；原生计划保留 int32 count ABI。
 
 ## 本地验证
