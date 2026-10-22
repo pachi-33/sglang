@@ -9,7 +9,7 @@ import sys
 import unittest
 from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest import mock
 
 import torch
@@ -30,6 +30,7 @@ from sglang.srt.offloading.moe.npu.backend import NpuMoEBackend
 from sglang.srt.offloading.moe.npu.transfer import (
     DeviceMemoryRegion,
     MemFabricDeviceTransferOps,
+    _group_pack_copy,
 )
 from sglang.srt.offloading.moe.owner import MoEOffloadOwner
 from sglang.srt.offloading.moe.policy import TensorLFUPolicy
@@ -625,6 +626,29 @@ class NpuBackendAssemblyTests(unittest.TestCase):
         self.assertTrue(
             all(bool(torch.all(tensor == 199)) for tensor in hot.tensors.values())
         )
+
+
+class TestMemFabricPublicWrapper(unittest.TestCase):
+    def test_passes_tensors_to_public_offload_wrapper(self):
+        package = ModuleType("memfabric_hybrid")
+        native = mock.Mock(return_value=0)
+        tensors = tuple(torch.zeros(1, dtype=torch.int64) for _ in range(6))
+        device = SimpleNamespace(index=5)
+
+        def public_wrapper(*args):
+            for actual, expected in zip(args[:6], tensors):
+                self.assertIs(actual, expected)
+            self.assertIs(args[6], device)
+            return native(*(value.data_ptr() for value in args[:6]), args[6].index)
+
+        package.offload = SimpleNamespace(group_pack_copy=public_wrapper)
+        # The internal module must not be imported: use the package's public API.
+        with mock.patch.dict(
+            sys.modules,
+            {"memfabric_hybrid": package, "memfabric_hybrid.mf_acc_offload": None},
+        ):
+            self.assertEqual(_group_pack_copy(*tensors, device), 0)
+        native.assert_called_once_with(*(value.data_ptr() for value in tensors), 5)
 
 
 if __name__ == "__main__":
