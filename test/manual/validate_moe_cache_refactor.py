@@ -1,7 +1,8 @@
-"""CPU contracts, plus optional real NPU LFU/statistics graph replay.
+"""One-command CPU contracts and real NPU LFU/statistics graph replay.
 
-Run from any directory. Requires PyTorch; --npu also requires torch_npu and a
-device. This does not validate native H2D/D2D, FP4 kernels, or multi-rank serving.
+Run without arguments in an NPU environment with PyTorch and torch_npu. Reports
+go to ./moe-cache-validation. Use --cpu-only explicitly for a CPU-only check.
+This does not validate native H2D/D2D, FP4 kernels, or multi-rank serving.
 """
 
 import argparse
@@ -172,9 +173,14 @@ def worker(stage, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--npu", action="store_true", help="Require real NPU graph replay"
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--npu", dest="npu", action="store_true", help="Require NPU replay (default)"
     )
+    mode.add_argument(
+        "--cpu-only", dest="npu", action="store_false", help="Run CPU contracts only"
+    )
+    parser.set_defaults(npu=True)
     parser.add_argument("--output", type=Path, default=Path("moe-cache-validation"))
     parser.add_argument(
         "--stage", choices=("cpu", "npu_lfu_graph"), help=argparse.SUPPRESS
