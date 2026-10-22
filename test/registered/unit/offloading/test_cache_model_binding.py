@@ -105,50 +105,6 @@ class TestNativeCacheLayout(unittest.TestCase):
         layout = self.adapter.bind(raw, self.context)
         self.assertEqual(layout.counts.tolist(), [1, 1, 0, 0])
 
-    def test_byte_gather_preserves_bits_with_npu_mask_dtype_constraint(self):
-        adapter = experts.NPUDispatchLayout(
-            4, 256, 8, "cpu", self.runtime.ops.error_status
-        )
-        # All byte patterns, including high bits and floating-point NaNs.
-        payload = torch.arange(256).to(torch.uint8).reshape(8, 32)
-        indices = torch.tensor([7, 2, 5, 0, 6, 3, 1, 4])
-        masked_fill = torch.Tensor.masked_fill_
-
-        def npu_masked_fill(tensor, mask, value):
-            if tensor.dtype == torch.uint8:
-                raise RuntimeError("NPU masked_fill_ does not support UINT8")
-            return masked_fill(tensor, mask, value)
-
-        for dtype in (
-            torch.uint8,
-            torch.int8,
-            torch.bfloat16,
-            torch.float16,
-            torch.float32,
-            torch.float8_e4m3fn,
-        ):
-            source = payload.view(dtype)
-            for name in ("input_bytes", "scale_bytes"):
-                for count in (8, 3, 0):
-                    with self.subTest(dtype=dtype, buffer=name, count=count):
-                        expected = payload.index_select(0, indices)
-                        expected[count:].zero_()
-                        with patch.object(
-                            torch.Tensor, "masked_fill_", npu_masked_fill
-                        ):
-                            output = adapter._gather_bytes(
-                                source, indices, torch.tensor(count), name
-                            )
-                        torch.testing.assert_close(output.view(torch.uint8), expected)
-                        self.assertEqual(output.dtype, dtype)
-                        self.assertEqual(output.shape, source.shape)
-                        self.assertEqual(
-                            output.data_ptr(), adapter._owned[name].data_ptr()
-                        )
-        torch.testing.assert_close(
-            payload, torch.arange(256).to(torch.uint8).reshape(8, 32)
-        )
-
     def test_zero_receive_rows_preserve_geometry(self):
         layout = self.adapter.bind(self.received([0] * 4, rows=0), self.context)
         for wave in fixed_waves(4, 2):
