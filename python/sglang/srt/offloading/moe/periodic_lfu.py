@@ -130,7 +130,7 @@ class PeriodicLFUPolicy(CachePolicy):
         if capacity == 0:
             return
         resident = key_to_slot >= 0
-        candidates, victims, gains, valid_pairs = [], [], [], []
+        candidates, victims = [], []
         for start, end in self.layer_ranges:
             usage = state.usage[start:end]
             hot = resident[start:end]
@@ -140,22 +140,18 @@ class PeriodicLFUPolicy(CachePolicy):
                 torch.where(~hot, usage, -torch.inf), descending=True, stable=True
             )
             hot_order = torch.argsort(torch.where(hot, usage, torch.inf), stable=True)
-            gain = usage[cold_order] - usage[hot_order]
-            valid = (
-                ~hot[cold_order]
-                & hot[hot_order]
-                & (usage[cold_order] >= self.config.min_usage)
-                & (gain >= self.config.replacement_min_gain)
-            )
             candidates.append(cold_order + start)
             victims.append(hot_order + start)
-            gains.append(gain)
-            valid_pairs.append(valid)
 
         candidate = torch.cat(candidates)
         victim = torch.cat(victims)
-        gain = torch.cat(gains)
-        valid = torch.cat(valid_pairs)
+        gain = state.usage[candidate] - state.usage[victim]
+        valid = (
+            ~resident[candidate]
+            & resident[victim]
+            & (state.usage[candidate] >= self.config.min_usage)
+            & (gain >= self.config.replacement_min_gain)
+        )
         # Stable sorting preserves layer_id, candidate key, victim key on ties:
         # within each layer equal gains imply equal candidate/victim usages.
         order = torch.argsort(
@@ -163,15 +159,19 @@ class PeriodicLFUPolicy(CachePolicy):
         )
         chosen = order[: self.config.max_swaps]
         swaps = (valid[chosen] & state.update_due).to(torch.int64)
-        membership = resident.to(torch.int64)
-        membership.scatter_add_(0, victim[chosen], -swaps)
-        membership.scatter_add_(0, candidate[chosen], swaps)
-
-        # Canonical set representation; output position is NOT a physical slot.
+        # Each selected pair replaces a distinct victim in its existing slot.
+        # This avoids rebuilding and sorting an E-entry membership vector.
+        # The public result remains a sorted set, not a slot-placement request.
         keys = torch.arange(count, device=state.usage.device, dtype=torch.int64)
-        selected = torch.sort(torch.where(membership > 0, keys, count)).values[
-            :capacity
-        ]
+        slots = key_to_slot.clamp_min(0)
+        placed = torch.zeros(capacity, dtype=torch.int64, device=keys.device)
+        placed.scatter_add_(0, slots, torch.where(resident, keys + 1, 0))
+        placed.scatter_add_(
+            0,
+            key_to_slot[victim[chosen]].clamp_min(0),
+            swaps * (candidate[chosen] - victim[chosen]),
+        )
+        selected = torch.sort(torch.where(placed > 0, placed - 1, count)).values
         target_keys.copy_(torch.where(selected < count, selected, -1))
 
     def finish_step(self, state):

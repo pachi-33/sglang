@@ -241,7 +241,7 @@ class CacheUpdateCoordinator:
         self.target_keys = target_keys
         self.access = access
 
-    def emit_step_end(self, context, *, adjust=True):
+    def emit_step_end(self, context):
         if context.phase is Phase.PREFILL:
             require_prefill(context)
             return TransferTicket(ImmediateCompletion())
@@ -253,11 +253,8 @@ class CacheUpdateCoordinator:
             self.residency_state.step_access_count,
             self.residency_state.update_enabled,
         )
-        if adjust:
-            self.policy.select_hot_set(
-                self.policy_state, self.residency_state.key_to_slot, self.target_keys
-            )
+        self.policy.select_hot_set(
+            self.policy_state, self.residency_state.key_to_slot, self.target_keys
+        )
         self.policy.finish_step(self.policy_state)
-        if not adjust:
-            return TransferTicket(ImmediateCompletion())
         return self.access.apply_update(self.target_keys, context)
