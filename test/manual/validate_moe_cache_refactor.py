@@ -1,4 +1,4 @@
-"""One-command CPU contracts and real NPU LFU/statistics graph replay.
+"""One-command CPU contracts and real NPU LFU/statistics and byte-packing graphs.
 
 Run without arguments in an NPU environment with PyTorch and torch_npu. Reports
 go to ./moe-cache-validation. Use --cpu-only explicitly for a CPU-only check.
@@ -149,15 +149,95 @@ class NpuLFUReplay(unittest.TestCase):
         self.assertEqual(initial_addresses, addresses())
 
 
+class NpuBytePackingReplay(unittest.TestCase):
+    def runTest(self):
+        import torch
+        import torch_npu  # noqa: F401
+
+        from sglang.srt.offloading.moe.npu.experts import NPUDispatchLayout
+
+        self.assertTrue(torch.npu.is_available(), "--npu requires an Ascend device")
+        index = int(os.environ.get("MOE_TEST_NPU_DEVICE", "0"))
+        torch.npu.set_device(index)
+        device = f"npu:{index}"
+        layout = NPUDispatchLayout(
+            4, 256, 8, device, torch.zeros((), dtype=torch.int32, device=device)
+        )
+        # Transfer bytes before viewing their dtype: compare payload bits, even
+        # when a pattern represents NaN, rather than converting numeric values.
+        pattern = torch.arange(256, dtype=torch.int64).to(torch.uint8).reshape(8, 32)
+        sources = (pattern.to(device), pattern.to(device))
+        typed = (sources[0].view(torch.bfloat16), sources[1].view(torch.float32))
+        names = ("input_bytes", "scale_bytes")
+        indices = torch.arange(8, dtype=torch.int64, device=device)
+        count = torch.tensor(8, dtype=torch.int64, device=device)
+        addresses = [
+            tensor.data_ptr()
+            for tensor in (*sources, indices, count, *(layout._owned[n] for n in names))
+        ]
+
+        def step():
+            return tuple(
+                layout._gather_bytes(source, indices, count, name)
+                for source, name in zip(typed, names)
+            )
+
+        stream = torch.npu.Stream()
+        torch.npu.synchronize()
+        with torch.npu.stream(stream):
+            for _ in range(2):
+                step()
+        torch.npu.synchronize()
+        graph = torch.npu.NPUGraph()
+        with torch.npu.graph(graph, stream=stream):
+            outputs = step()
+        torch.npu.synchronize()
+
+        for iteration, valid_rows in enumerate((8, 3, 0, 8)):
+            # Change every live input without recapture. In particular, a full
+            # replay after an empty one must overwrite the previously zeroed bank.
+            live_indices = (torch.arange(8) + iteration).remainder(8)
+            live_pattern = (
+                (torch.arange(256) + 17 * iteration)
+                .remainder(256)
+                .to(torch.uint8)
+                .reshape(8, 32)
+            )
+            for source in sources:
+                source.copy_(live_pattern)
+            indices.copy_(live_indices)
+            count.fill_(valid_rows)
+            graph.replay()
+            torch.npu.synchronize()
+            expected = live_pattern.index_select(0, live_indices)
+            expected[valid_rows:].zero_()
+            for output, source, name in zip(outputs, sources, names):
+                torch.testing.assert_close(output.view(torch.uint8).cpu(), expected)
+                torch.testing.assert_close(source.cpu(), live_pattern)
+                self.assertEqual(output.data_ptr(), layout._owned[name].data_ptr())
+            self.assertEqual(
+                addresses,
+                [
+                    tensor.data_ptr()
+                    for tensor in (
+                        *sources,
+                        indices,
+                        count,
+                        *(layout._owned[n] for n in names),
+                    )
+                ],
+            )
+
+
 def worker(stage, output):
     bind_source_tree()
     report = {"stage": stage, "status": "failed"}
     try:
-        suite = (
-            unittest.defaultTestLoader.loadTestsFromNames(CPU_MODULES)
-            if stage == "cpu"
-            else unittest.TestSuite([NpuLFUReplay()])
-        )
+        if stage == "cpu":
+            suite = unittest.defaultTestLoader.loadTestsFromNames(CPU_MODULES)
+        else:
+            test = NpuLFUReplay if stage == "npu_lfu_graph" else NpuBytePackingReplay
+            suite = unittest.TestSuite([test()])
         result = unittest.TextTestRunner(verbosity=2).run(suite)
         passed = result.wasSuccessful() and result.testsRun > 0 and not result.skipped
         report.update(
@@ -185,7 +265,9 @@ def main():
     parser.set_defaults(npu=True)
     parser.add_argument("--output", type=Path, default=Path("moe-cache-validation"))
     parser.add_argument(
-        "--stage", choices=("cpu", "npu_lfu_graph"), help=argparse.SUPPRESS
+        "--stage",
+        choices=("cpu", "npu_lfu_graph", "npu_layout_graph"),
+        help=argparse.SUPPRESS,
     )
     args = parser.parse_args()
     output = args.output.resolve()
@@ -209,7 +291,8 @@ def main():
     }
     if not args.npu:
         report["not_covered"].append("real NPU graph replay (use --npu)")
-    for stage in ("cpu", "npu_lfu_graph") if args.npu else ("cpu",):
+    stages = ("cpu", "npu_lfu_graph", "npu_layout_graph") if args.npu else ("cpu",)
+    for stage in stages:
         stage_json = output / f"{stage}.json"
         stage_json.unlink(missing_ok=True)
         started = time.monotonic()
