@@ -113,14 +113,19 @@ bank 布局、H2D/D2D 等待及发布接口。默认周期和在线层内替换�
 
 ### Warmup 与捕获资源
 
-同一组图首/图尾钩子也会被 NPU graph backend 的 warmup 调用。runtime 查询当前流的实际
-capture 状态：warmup 完成后等待全部设备流，再清理上下文的资源、完成票据及循环引用，
-不把 warmup 的中间张量保留到 graph 销毁。同步失败时继续保留资源，交给原有失败清理。
-真正 capture 的上下文仍由 graph 持有；正常 replay 不新增整卡同步。
+同一组图首/图尾钩子也会被 NPU graph backend 的 warmup 调用。`GraphLeaseBackend`
+在每次 warmup 及原有 reset hook 完成后调用 `after_graph_warmup()`：等待全部设备流，
+再通过 `release_completed()` 清理上下文的资源、完成票据及循环引用。同步失败时继续
+保留资源，交给原有失败清理。真正 capture 的上下文仍由 graph 持有；正常 replay 不新增整卡同步。
 
-FFN 对自己产生的输出原地清零无效行，避免 `torch.where` 为每层、每个 wave 再分配一份
-完整接收容量的输出。保留原有权重、事件及跨流读者保护。这两项修复不改变 LFU 或缓存容量；
-实际 capture 仍有中间结果保活，不能据此保证所有模型/图配置均无 OOM。
+Decode 每层及每个 wave 使用 `temporary_scope()`。FFN 的跨流读者汇入 compute stream、
+wave 结果写回后释放该 wave 的临时引用；Combine 后释放该层的接收张量和通信 handle 引用，
+让 graph allocator 能复用中间存储。事件和 transfer ticket 继续保留至完成或 graph 销毁，
+失败提交的资源保留至 drain。Prefill 仍沿用整次 invocation 的资源生命周期。
+
+FFN 对自己产生的输出原地清零无效行，wave 写回使用 `torch.where(..., out=layout.output)`，
+减少完整接收容量的中间输出。这些修改不改变 LFU 或缓存容量；真实 NPU 的内存峰值及完整
+模型 replay 仍需验证，CPU 生命周期测试不能证明目标模型已经消除 OOM。
 
 ### Prefill 与恢复
 
@@ -176,10 +181,10 @@ FFN 对自己产生的输出原地清零无效行，避免 `torch.where` 为每�
 字节打包仅在清零时使用 INT8 view，避开 Ascend masked_fill_ 不支持 UINT8 的限制；
 保留原始位模式和缓冲地址。CPU 测试覆盖该 dtype 限制、输入/scale 缓冲及 padding 清零。
 
-同步同事修复并收紧 warmup 生命周期后，CPU 回归为 **163 项通过、无 skip**。
-新增检查覆盖连续 warmup 的资源及循环引用释放、同步失败时保活、真实 capture 保活，
-以及 FFN 输出原地清零。启动日志 `MoE offload warmup released=...` 显示每轮释放的
-PyTorch allocated 内存和释放后的分配量；它不代表整卡 free 或 reserved。
+同步同事 `81e49613` 的生命周期修复，统一使用 warmup 完成钩子，移除旧的流状态查询和
+图尾自动释放实现。新增 CPU 检查覆盖 40 层多 wave 临时张量释放、空/部分 wave、
+FFN 输出原地清零、多图 bucket 的 warmup 清理，以及同步失败时保活。
+整合后的统一 CPU 回归为 **169 项通过、无 skip**；本轮未执行真实 NPU 测试。
 
 在有 PyTorch 的环境可运行同一组 CPU 测试：
 
@@ -228,5 +233,5 @@ python test/manual/validate_moe_cache_refactor.py --cpu-only
 不运行完整专家 FFN，也不能替代模型推理验证。本地未执行新增的 NPU 阶段。
 
 `npu_capture_lifetime` 使用真实 NPU 流、事件和 NPUGraph 调用生产 runtime 的首尾钩子，
-检查多次 warmup 后临时 Tensor 释放、capture 后保活以及修改输入后的 replay 正确性；
+检查每次 `after_graph_warmup()` 后临时 Tensor 释放、capture 后保活以及修改输入后的 replay 正确性；
 不调用 MemFabric 或专家 kernel，也不证明完整 TP8 模型已无 OOM。

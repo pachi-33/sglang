@@ -3,7 +3,6 @@
 import ast
 import contextlib
 import unittest
-import weakref
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -155,7 +154,6 @@ class TestNativeCacheRuntime(unittest.TestCase):
         device.allocated = lambda: 0
         device.peak = lambda: 0
         device.reset_peak = lambda: None
-        device.capturing = True
         with self.runtime.capture_scope(
             self.owner, self.runner, device.compute
         ) as retained:
@@ -184,86 +182,6 @@ class TestNativeCacheRuntime(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "captured full graph"):
             with self.runtime.forward_scope(self.owner, batch(True)):
                 self.runtime._ensure_step()
-
-    def test_warmup_releases_tensors_and_lease_cycles_but_capture_keeps_them(self):
-        self.install()
-        device = self.runtime.device_runtime
-        device.allocated = device.peak = lambda: 0
-        device.reset_peak = lambda: None
-        with self.runtime.capture_scope(
-            self.owner, self.runner, device.compute
-        ) as retained:
-            for _ in range(2):  # Two shape buckets, each with two warmups.
-                previous_captures = len(retained)
-                for _ in range(2):
-                    device.capturing = False
-                    self.runtime._capture_head(self.runner, batch(True), 2)
-                    context = self.runtime.context
-                    self.assertFalse(context.capturing)
-                    tensor = torch.ones(8)
-                    reference = weakref.ref(tensor)
-                    # Like a WeightLease, this points back to its own context.
-                    context.retain(SimpleNamespace(context=context, tensor=tensor))
-                    del tensor
-                    context_ref = weakref.ref(context)
-                    del context
-                    drain = self.runtime.synchronize
-
-                    def checked_drain():
-                        self.assertIsNotNone(reference())
-                        drain()
-
-                    with patch.object(
-                        self.runtime, "synchronize", side_effect=checked_drain
-                    ):
-                        self.runtime._capture_tail(self.runner, None, batch(True), 2)
-                    # No gc.collect(): cycles must be broken before the next warmup.
-                    self.assertIsNone(reference())
-                    self.assertIsNone(context_ref())
-                    self.assertEqual(len(retained), previous_captures)
-                    self.assertFalse(bool(self.runtime.residency.update_enabled))
-
-                device.capturing = True
-                self.runtime._capture_head(self.runner, batch(True), 2)
-                tensor = torch.ones(8)
-                reference = weakref.ref(tensor)
-                self.runtime.context.retain(tensor)
-                del tensor
-                with patch.object(
-                    self.runtime,
-                    "synchronize",
-                    side_effect=AssertionError("Cannot drain during capture"),
-                ):
-                    self.runtime._capture_tail(self.runner, None, batch(True), 2)
-                self.assertIsNotNone(reference())
-                self.assertEqual(len(retained), previous_captures + 1)
-                self.assertTrue(retained[-1].capturing)
-                with self.assertRaisesRegex(RuntimeError, "finished eager"):
-                    retained[-1].release_after_drain()
-        self.assertTrue(bool(self.runtime.residency.update_enabled))
-
-    def test_warmup_failed_drain_keeps_resources_for_failure_cleanup(self):
-        device = self.runtime.device_runtime
-        device.allocated = device.peak = lambda: 0
-        device.reset_peak = lambda: None
-        with self.assertRaisesRegex(RuntimeError, "drain failed"):
-            with self.runtime.capture_scope(self.owner, self.runner, device.compute):
-                self.runtime._capture_head(self.runner, batch(True), 2)
-                context = self.runtime.context
-                tensor = torch.ones(8)
-                reference = weakref.ref(tensor)
-                context.retain(tensor)
-                del tensor
-                with patch.object(
-                    self.runtime,
-                    "synchronize",
-                    side_effect=RuntimeError("drain failed"),
-                ):
-                    self.runtime._capture_tail(self.runner, None, batch(True), 2)
-        self.assertIn(context, self.runtime._failed_contexts)
-        self.assertIsNotNone(reference())
-        self.assertIsNotNone(context._completion)
-        self.assertTrue(context._resources)
 
     def test_global_prefill_flag_does_not_enable_speculative_modes(self):
         for extending in (False, True):

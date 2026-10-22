@@ -25,9 +25,11 @@ CPU_MODULES = (
     "test_cache_model_binding",
     "test_cache_runtime",
     "test_launch_moe_offload_npu.TestMoEOffloadProfileConfig",
+    "test_moe_decode_workspace",
     "test_moe_diagnostics",
     "test_moe_framework",
     "test_moe_graph_leases",
+    "test_moe_warmup_lifetime",
     "test_native_periodic_cache",
     "test_npu_backend",
     "test_npu_moe_graph_lifetime",
@@ -299,6 +301,9 @@ class NpuCaptureLifetime(unittest.TestCase):
                 with device.stream_scope(stream):
                     for _ in range(3):
                         reference = step()
+                        self.assertIsNotNone(reference())
+                        self.assertEqual(len(retained), 1)
+                        runtime.after_graph_warmup()
                         self.assertIsNone(reference())
                         self.assertEqual(len(retained), 0)
                 with torch.npu.graph(graph, stream=stream):

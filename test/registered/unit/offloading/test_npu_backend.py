@@ -169,13 +169,9 @@ class Storage:
 class Device:
     def __init__(self, events):
         self.events, self.copy_stream, self.compute = events, object(), object()
-        self.capturing = False
 
     def current_stream(self):
         return self.compute
-
-    def is_capturing(self):
-        return self.capturing
 
     def record(self, stream):
         return TransferTicket(ImmediateCompletion(), (stream,))

@@ -35,10 +35,6 @@ class NpuDeviceRuntime:
     def current_stream(self):
         return self.torch.npu.current_stream(self.device)
 
-    def is_capturing(self):
-        with self.torch.npu.device(self.device):
-            return self.torch.npu.is_current_stream_capturing()
-
     @contextmanager
     def stream_scope(self, stream):
         with self.torch.npu.device(self.device), self.torch.npu.stream(stream):
@@ -317,7 +313,12 @@ class NpuBoundMoERuntime(BoundMoERuntime):
             if context.phase is Phase.PREFILL
             else self.decode_program
         )
-        return program.run(layer_id, hidden_states, routing, context)
+        # Dispatch/combine join native communication onto compute_stream. This
+        # matches resident inference: release receive tensors/handles after C so
+        # the graph allocator can reuse them for the next layer. Events and copy
+        # descriptors remain pinned by the invocation; failed scopes keep tensors.
+        with context.temporary_scope():
+            return program.run(layer_id, hidden_states, routing, context)
 
     @staticmethod
     def _phase(forward_batch):
@@ -437,9 +438,7 @@ class NpuBoundMoERuntime(BoundMoERuntime):
         if self._capture is None or self._context is not None:
             raise RuntimeError("Invalid offload capture invocation")
         stream = self.device_runtime.current_stream()
-        context = self._new_context(
-            Phase.DECODE, stream=stream, capturing=self.device_runtime.is_capturing()
-        )
+        context = self._new_context(Phase.DECODE, stream=stream, capturing=True)
         context.forward_batch = forward_batch
         context.num_token_non_padded = None
         context.retain(forward_batch)
@@ -451,23 +450,8 @@ class NpuBoundMoERuntime(BoundMoERuntime):
     def _capture_tail(self, graph_runner, output, forward_batch, num_tokens):
         if self._capture is None or not self._step_started:
             raise RuntimeError("Capture tail requires its matching head")
-        context = self.context
-        tail = self.emit_step_end(context)
-        context.finish(residency_ready=tail)
-        if not context.capturing:
-            # The graph backend invokes these hooks for warmups too. Wait for
-            # copy/compute/EP before freeing their temporaries; a failed drain
-            # leaves the context in _capture for the existing failure cleanup.
-            self.synchronize()
-            before = self.device_runtime.allocated()
-            context.release_after_drain()
-            self._capture.pop()
-            after = self.device_runtime.allocated()
-            logger.info(
-                "MoE offload warmup released=%.2f MiB, allocated=%.2f GiB",
-                (before - after) / (1 << 20),
-                after / (1 << 30),
-            )
+        tail = self.emit_step_end(self.context)
+        self.context.finish(residency_ready=tail)
         self._context, self._step_started = None, False
 
     @contextmanager
@@ -502,6 +486,17 @@ class NpuBoundMoERuntime(BoundMoERuntime):
             # Outside the captured graph: replay observes the live device flag.
             self.residency.update_enabled.fill_(True)
             self.synchronize()
+
+    def after_graph_warmup(self):
+        self._require_open()
+        if self._capture is None or self._context is not None or not self._capture:
+            raise RuntimeError("Warmup retirement requires a finished invocation")
+        # capture_one invokes its reset hook after one eager forward, before the
+        # next warmup/capture. Older entries may belong to captured graph buckets.
+        context = self._capture[-1]
+        self.synchronize()  # Includes native EP streams and partially queued work.
+        context.release_completed()
+        self._capture.pop()
 
     def _account_capture_workspace(self, owner):
         if self._static_allocated is None:
