@@ -161,6 +161,10 @@ bank 布局、H2D/D2D 等待及发布接口。默认周期和在线层内替换�
 在线替换与回填，以及启动脚本 Python 配置检查。Bash 语法检查通过；POSIX 整套启动测试与
 真实 NPU 推理仍需在目标环境执行。
 
+设备故障传播、全局 prefill 阶段及字节打包修正后，CPU 回归为 **157 项通过、无 skip**。
+字节打包仅在清零时使用 INT8 view，避开 Ascend masked_fill_ 不支持 UINT8 的限制；
+保留原始位模式和缓冲地址。CPU 测试覆盖该 dtype 限制、输入/scale 缓冲及 padding 清零。
+
 在有 PyTorch 的环境可运行同一组 CPU 测试：
 
 ```bash
@@ -187,7 +191,7 @@ PY
 [周期缓存接入原生后端](npu/doc/PERIODIC_CACHE_1022.zh-CN.md)及其链接的运行说明。
 
 在已具备 PyTorch / torch_npu 的 NPU 环境，直接执行一条命令，自动运行 CPU 回归和
-真实 NPU LFU/统计图 replay，并将日志和 JSON 报告保存到当前目录的 `moe-cache-validation/`：
+真实 NPU LFU/统计及字节打包图 replay，并将日志和 JSON 报告保存到当前目录的 `moe-cache-validation/`：
 
 ```bash
 python test/manual/validate_moe_cache_refactor.py
@@ -200,6 +204,8 @@ python test/manual/validate_moe_cache_refactor.py --cpu-only
 ```
 
 退出码 0 表示所选阶段全部通过且无 skip；失败返回非零。`report.json` 记录提交、各阶段结果和
-未覆盖项，`cpu.log` / `npu_lfu_graph.log` 保存详细日志。默认模式下，缺少 torch_npu、
+未覆盖项，`cpu.log` / `npu_lfu_graph.log` / `npu_layout_graph.log` 保存详细日志。默认模式下，缺少 torch_npu、
 无设备或图捕获失败都算失败，不回退 CPU。NPU 阶段验证动态 counts、周期与衰减、统计门控、
 热集合变化、空洞 slot 和固定状态地址；用测试映射模拟发布，不宣称验证了真实权重搬运。
+字节打包阶段调用真实 `_gather_bytes`，检查动态 count/index、有效字节、padding 及地址稳定性；
+不运行完整专家 FFN，也不能替代模型推理验证。本地未执行新增的 NPU 阶段。
