@@ -1,6 +1,7 @@
 """Native layout and runner contracts with CPU stand-ins only for NPU kernels."""
 
 import unittest
+import weakref
 from contextlib import ExitStack, nullcontext
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -22,6 +23,7 @@ class CpuCore:
 
     def run(self, inputs, quant, _):
         output = torch.full_like(inputs.hidden_states, float("nan"))
+        self.last_output = weakref.ref(output)
         offset = 0
         for expert, count in enumerate(inputs.expert_tokens.tolist()):
             output[offset : offset + count] = (
@@ -171,12 +173,12 @@ class TestNativeCacheLayout(unittest.TestCase):
         )
         layout = self.adapter.bind(self.received([1, 2, 0, 0]), self.context)
         selected = self.adapter.select_wave(layout, fixed_waves(4, 2)[0], self.context)
-        runner = experts.NPUExpertRunner(
-            None, _core=CpuCore(), _input_type=SimpleNamespace
-        )
+        core = CpuCore()
+        runner = experts.NPUExpertRunner(None, _core=core, _input_type=SimpleNamespace)
         result = runner(
             3, selected, SimpleNamespace(expert_bank=native_bank), self.context
         )
+        self.assertIs(result.output, core.last_output())
         torch.testing.assert_close(
             result.output[:3],
             selected.hidden_states[:3] * torch.tensor([2, 3, 3])[:, None],

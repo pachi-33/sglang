@@ -565,8 +565,9 @@ class NPUExpertRunner:
             # Unwritten GMM padding may contain NaN; multiply-by-zero is unsafe.
             row_ids = torch.arange(output.shape[0], device=output.device)
             good_rows = (row_ids < dispatched.row_count) & healthy
-            output = torch.where(good_rows.unsqueeze(1), output, 0)
-            context.retain(output)
+            # The FFN output is owned here. Reuse it instead of retaining a
+            # second full receive-capacity tensor for every layer and wave.
+            output.masked_fill_(~good_rows.unsqueeze(1), 0)
             return LocalExecution(output, self._reader_ticket(context))
 
 

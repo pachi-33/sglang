@@ -111,6 +111,17 @@ bank 布局、H2D/D2D 等待及发布接口。默认周期和在线层内替换�
 `ModelRunner` 保留统一 forward scope、capture 和层首入口，移除只服务旧 eager runtime 的
 `eager_step_scope` 透传。统计门控由原生 runtime 的固定地址设备状态负责，不再传第二个 `adjust` 开关。
 
+### Warmup 与捕获资源
+
+同一组图首/图尾钩子也会被 NPU graph backend 的 warmup 调用。runtime 查询当前流的实际
+capture 状态：warmup 完成后等待全部设备流，再清理上下文的资源、完成票据及循环引用，
+不把 warmup 的中间张量保留到 graph 销毁。同步失败时继续保留资源，交给原有失败清理。
+真正 capture 的上下文仍由 graph 持有；正常 replay 不新增整卡同步。
+
+FFN 对自己产生的输出原地清零无效行，避免 `torch.where` 为每层、每个 wave 再分配一份
+完整接收容量的输出。保留原有权重、事件及跨流读者保护。这两项修复不改变 LFU 或缓存容量；
+实际 capture 仍有中间结果保活，不能据此保证所有模型/图配置均无 OOM。
+
 ### Prefill 与恢复
 
 1. 从 decode 切入 prefill 时，通过现有 `DecodeStateSnapshot` 保存驻留信息及 LFU 周期状态。
@@ -165,6 +176,11 @@ bank 布局、H2D/D2D 等待及发布接口。默认周期和在线层内替换�
 字节打包仅在清零时使用 INT8 view，避开 Ascend masked_fill_ 不支持 UINT8 的限制；
 保留原始位模式和缓冲地址。CPU 测试覆盖该 dtype 限制、输入/scale 缓冲及 padding 清零。
 
+同步同事修复并收紧 warmup 生命周期后，CPU 回归为 **163 项通过、无 skip**。
+新增检查覆盖连续 warmup 的资源及循环引用释放、同步失败时保活、真实 capture 保活，
+以及 FFN 输出原地清零。启动日志 `MoE offload warmup released=...` 显示每轮释放的
+PyTorch allocated 内存和释放后的分配量；它不代表整卡 free 或 reserved。
+
 在有 PyTorch 的环境可运行同一组 CPU 测试：
 
 ```bash
@@ -191,7 +207,7 @@ PY
 [周期缓存接入原生后端](npu/doc/PERIODIC_CACHE_1022.zh-CN.md)及其链接的运行说明。
 
 在已具备 PyTorch / torch_npu 的 NPU 环境，直接执行一条命令，自动运行 CPU 回归和
-真实 NPU LFU/统计及字节打包图 replay，并将日志和 JSON 报告保存到当前目录的 `moe-cache-validation/`：
+真实 NPU LFU/统计、字节打包和 capture 生命周期验证，并将日志和 JSON 报告保存到当前目录的 `moe-cache-validation/`：
 
 ```bash
 python test/manual/validate_moe_cache_refactor.py
@@ -204,8 +220,13 @@ python test/manual/validate_moe_cache_refactor.py --cpu-only
 ```
 
 退出码 0 表示所选阶段全部通过且无 skip；失败返回非零。`report.json` 记录提交、各阶段结果和
-未覆盖项，`cpu.log` / `npu_lfu_graph.log` / `npu_layout_graph.log` 保存详细日志。默认模式下，缺少 torch_npu、
+未覆盖项，`cpu.log` / `npu_lfu_graph.log` / `npu_layout_graph.log` / `npu_capture_lifetime.log`
+保存详细日志。默认模式下，缺少 torch_npu、
 无设备或图捕获失败都算失败，不回退 CPU。NPU 阶段验证动态 counts、周期与衰减、统计门控、
 热集合变化、空洞 slot 和固定状态地址；用测试映射模拟发布，不宣称验证了真实权重搬运。
 字节打包阶段调用真实 `_gather_bytes`，检查动态 count/index、有效字节、padding 及地址稳定性；
 不运行完整专家 FFN，也不能替代模型推理验证。本地未执行新增的 NPU 阶段。
+
+`npu_capture_lifetime` 使用真实 NPU 流、事件和 NPUGraph 调用生产 runtime 的首尾钩子，
+检查多次 warmup 后临时 Tensor 释放、capture 后保活以及修改输入后的 replay 正确性；
+不调用 MemFabric 或专家 kernel，也不证明完整 TP8 模型已无 OOM。

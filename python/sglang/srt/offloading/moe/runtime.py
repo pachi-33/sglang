@@ -107,6 +107,19 @@ class ManagedExecutionContext(ExecutionContext):
             self._resources.clear()
             self._dependencies.clear()
 
+    def release_after_drain(self):
+        """Release a finished eager invocation after the caller drains all streams.
+
+        Warmups must not inherit the graph lifetime. Clear the completion's
+        keepalives too, including leases which refer back to this context.
+        """
+        with self._lock:
+            if self.capturing or not self._closed:
+                raise RuntimeError("Only a finished eager context may be released")
+            self._completion = None
+            self._resources.clear()
+            self._dependencies.clear()
+
 
 class DecodeStateSnapshot:
     """Preallocated metadata snapshot with weights reloaded into original slots.

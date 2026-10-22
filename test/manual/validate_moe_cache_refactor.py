@@ -1,4 +1,4 @@
-"""One-command CPU contracts and real NPU LFU/statistics and byte-packing graphs.
+"""CPU contracts and NPU LFU, byte-packing and capture-lifetime checks.
 
 Run without arguments in an NPU environment with PyTorch and torch_npu. Reports
 go to ./moe-cache-validation. Use --cpu-only explicitly for a CPU-only check.
@@ -14,7 +14,9 @@ import time
 import traceback
 import types
 import unittest
+import weakref
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 CPU_MODULES = (
@@ -229,6 +231,95 @@ class NpuBytePackingReplay(unittest.TestCase):
             )
 
 
+class NpuCaptureLifetime(unittest.TestCase):
+    """Real streams and graph; no model weights, MemFabric or expert kernels."""
+
+    def runTest(self):
+        import torch
+        import torch_npu  # noqa: F401
+
+        from sglang.srt.offloading.moe.npu.runtime import (
+            NpuBoundMoERuntime,
+            NpuDeviceRuntime,
+        )
+        from sglang.srt.offloading.moe.resources import AllocationLedger, ResourceKind
+        from sglang.srt.offloading.moe.state import ResidencyState
+
+        self.assertTrue(torch.npu.is_available(), "NPU lifecycle check requires Ascend")
+        index = int(os.environ.get("MOE_TEST_NPU_DEVICE", "0"))
+        torch.npu.set_device(index)
+        device = NpuDeviceRuntime(f"npu:{index}")
+        state = ResidencyState.allocate(4, 0, 2, device.device)
+        runtime = NpuBoundMoERuntime(
+            device_runtime=device,
+            residency=state,
+            residency_ops=SimpleNamespace(
+                error_status=torch.zeros((), dtype=torch.int32, device=device.device),
+                begin_step=lambda ctx: state.step_access_count.zero_(),
+            ),
+            cache_updates=SimpleNamespace(
+                emit_step_end=lambda ctx: ctx.record_compute_completion()
+            ),
+            snapshot=None,
+            reload_weights=None,
+            layer_programs={3: None},
+            resources=(),
+            expert_nbytes=1,
+            storage=(),
+        )
+        owner = SimpleNamespace(
+            allocation_ledger=AllocationLedger({ResourceKind.WORKSPACE: 1 << 30}, ())
+        )
+        source = torch.ones((1024, 1024), device=device.device)
+        output = torch.empty_like(source)
+        stream = torch.npu.Stream()
+        graph = torch.npu.NPUGraph()
+        retained = []
+
+        def step():
+            runtime._capture_head(None, None, source.shape[0])
+            context = runtime.context
+            # Exercise the compute -> copy -> compute dependency with real events.
+            context.record_compute_completion().completion.wait_on(context.copy_stream)
+            with device.stream_scope(context.copy_stream):
+                temporary = source + 1
+                context.retain(SimpleNamespace(context=context, tensor=temporary))
+                copied = device.record(context.copy_stream)
+            context.retain(copied)
+            copied.completion.wait_on(context.compute_stream)
+            output.copy_(temporary)
+            reference = weakref.ref(temporary)
+            del temporary
+            runtime._capture_tail(None, None, None, source.shape[0])
+            return reference
+
+        try:
+            device.synchronize()
+            with runtime.capture_scope(owner, None, stream) as retained:
+                with device.stream_scope(stream):
+                    for _ in range(3):
+                        reference = step()
+                        self.assertIsNone(reference())
+                        self.assertEqual(len(retained), 0)
+                with torch.npu.graph(graph, stream=stream):
+                    captured = step()
+                self.assertEqual(len(retained), 1)
+                self.assertTrue(retained[0].capturing)
+                self.assertIsNotNone(captured())
+            for value in (2, 5):
+                source.fill_(value)
+                graph.replay()
+                device.synchronize()
+                torch.testing.assert_close(
+                    output.cpu(), torch.full(source.shape, value + 1.0)
+                )
+        finally:
+            device.synchronize()
+            graph.reset()
+            retained.clear()
+            runtime.close()
+
+
 def worker(stage, output):
     bind_source_tree()
     report = {"stage": stage, "status": "failed"}
@@ -236,7 +327,11 @@ def worker(stage, output):
         if stage == "cpu":
             suite = unittest.defaultTestLoader.loadTestsFromNames(CPU_MODULES)
         else:
-            test = NpuLFUReplay if stage == "npu_lfu_graph" else NpuBytePackingReplay
+            test = {
+                "npu_lfu_graph": NpuLFUReplay,
+                "npu_layout_graph": NpuBytePackingReplay,
+                "npu_capture_lifetime": NpuCaptureLifetime,
+            }[stage]
             suite = unittest.TestSuite([test()])
         result = unittest.TextTestRunner(verbosity=2).run(suite)
         passed = result.wasSuccessful() and result.testsRun > 0 and not result.skipped
@@ -266,7 +361,7 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("moe-cache-validation"))
     parser.add_argument(
         "--stage",
-        choices=("cpu", "npu_lfu_graph", "npu_layout_graph"),
+        choices=("cpu", "npu_lfu_graph", "npu_layout_graph", "npu_capture_lifetime"),
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args()
@@ -291,7 +386,11 @@ def main():
     }
     if not args.npu:
         report["not_covered"].append("real NPU graph replay (use --npu)")
-    stages = ("cpu", "npu_lfu_graph", "npu_layout_graph") if args.npu else ("cpu",)
+    stages = (
+        ("cpu", "npu_lfu_graph", "npu_layout_graph", "npu_capture_lifetime")
+        if args.npu
+        else ("cpu",)
+    )
     for stage in stages:
         stage_json = output / f"{stage}.json"
         stage_json.unlink(missing_ok=True)
