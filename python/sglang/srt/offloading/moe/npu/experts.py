@@ -420,8 +420,7 @@ class NPUDispatchLayout(DispatchLayoutAdapter):
             raise ValueError("Activation scale workspace capacity exceeded")
         out = storage[:nbytes].view(byte_rows.shape)
         torch.index_select(byte_rows, 0, indices, out=out)
-        # Ascend masked_fill_ supports INT8, not UINT8. Reinterpret the same
-        # bytes without converting values or allocating another activation.
+        # ACLNN masked_fill_ supports INT8, not UINT8. Alias the same byte storage.
         out.view(torch.int8).masked_fill_(
             (self._owned["rows"][:rows] >= count).unsqueeze(1), 0
         )
