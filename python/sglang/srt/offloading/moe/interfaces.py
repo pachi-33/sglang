@@ -8,7 +8,6 @@ called again on graph replay. Runtime bindings must own all captured addresses.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -285,10 +284,6 @@ class BoundMoERuntime(ABC):
     prefill_program: WholeMoEProgram
     decode_program: WholeMoEProgram
     cache_updates = None  # Optional bound CacheUpdateCoordinator.
-
-    def eager_step_scope(self, forward_batch):
-        """Optional step emission; capture uses separately installed hooks."""
-        return nullcontext()
 
     @abstractmethod
     def install_model_hooks(self, offloader, model_runner):

@@ -243,6 +243,18 @@ class TestPeriodicLFU(unittest.TestCase):
                 policy.select_hot_set(state, slots, target)
                 policy.finish_step(state)
 
+    def test_holes_and_permuted_slots_preserve_set_contract(self):
+        policy = self.make_policy()
+        state = policy.allocate_state(8, "cpu")
+        state.usage.copy_(torch.tensor([2, 8, 5, 3, 1, 7, 2, 4]))
+        slots = torch.tensor([3, -1, 0, -1, -1, -1, -1, 1])
+        target = torch.empty(4, dtype=torch.int64)
+        for due, expected in ((False, [0, 2, 7, -1]), (True, [1, 2, 5, -1])):
+            state.update_due.fill_(due)
+            policy.select_hot_set(state, slots, target)
+            self.assertEqual(target.tolist(), expected)
+        self.assertEqual(slots.tolist(), [3, -1, 0, -1, -1, -1, -1, 1])
+
     def test_invalid_configuration_and_capacity(self):
         for overrides in (
             {"update_interval": 0},
