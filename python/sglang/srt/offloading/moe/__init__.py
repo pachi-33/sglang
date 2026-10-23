@@ -1,10 +1,6 @@
 """Opt-in MoE offloading framework; accelerator execution is backend supplied."""
 
-from .cache_backend import CacheBackend, CacheBackendBinding
-from .cache_metadata import CacheMetadataAdapter, CacheRouteStats
-from .cache_residency import CopySource
-from .cache_residency import TensorResidencyOps as CacheResidencyOps
-from .cache_runtime import CacheExecutionContext, CacheRuntime
+from .cache_metadata import CacheRouteStats
 from .config import ExpertCatalog, ExpertLayerSpec, MoEOffloadConfig, Phase
 from .execution import (
     CacheUpdateCoordinator,
@@ -40,16 +36,9 @@ from .storage import HostMemoryCapability
 __all__ = [
     "BoundExecutionWave",
     "BoundedPrefillWeightPipeline",
-    "CacheBackend",
-    "CacheBackendBinding",
-    "CacheExecutionContext",
-    "CacheMetadataAdapter",
-    "CacheResidencyOps",
     "CacheRouteStats",
-    "CacheRuntime",
     "CacheUpdateCoordinator",
     "ComposedDFCProgram",
-    "CopySource",
     "DecodeLocalExpertProgram",
     "DecodeStateSnapshot",
     "DispatchOnceProgram",

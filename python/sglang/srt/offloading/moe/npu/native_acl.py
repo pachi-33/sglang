@@ -177,10 +177,10 @@ def _load_native_acl(directory):
 class NativeAclBatchSubmitter:
     """Bridge AclCopyBatch to owning native descriptors before any async writes.
 
-    source_location describes the original allocator: ``host`` for ACL host
-    allocations, ``unregistered`` for externally allocated memory (which still
-    requires a successful pinned-memory registration), or ``host_numa`` for the
-    documented host NUMA allocation type. It is not a pinning inference.
+    source_location is forwarded to ACL as ``host``, ``unregistered``, or
+    ``host_numa``. The current A3 binding selects ``host`` for its registered
+    MemFabric slab; compatibility must be checked against the target SDK.
+    This location does not establish pinning, which is certified separately.
     Runtime/pipeline grants this stream one submitting thread at a time.
     """
 

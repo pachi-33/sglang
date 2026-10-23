@@ -188,8 +188,11 @@ slot regions. Returning a lease does not free the runtime-owned tensors.
 ## Lifecycle and graph contracts
 
 1. `begin_forward` rejects simultaneous host forward scopes and waits on the
-   previous `resources_idle` **on the device stream**. Normal decode does not
-   synchronize the host. Its token is consumed exactly once by finish/fail.
+   previous `resources_idle` **on the device stream**. Before returning a serving
+   forward, the native runtime reads the device error scalar on the compute
+   stream, outside graph capture. This adds a scalar host wait, not a device-wide
+   synchronization; a fault fails the owner instead of returning masked output.
+   Its token is consumed exactly once by finish/fail.
 2. Hot membership is immutable within a decode forward. Temporary loads and
    accesses are separate from hot admission. At step end, policy selects keys;
    residency retains surviving slots, materializes new members, then publishes.

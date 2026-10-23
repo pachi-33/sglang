@@ -298,10 +298,6 @@ class BoundMoERuntime(ABC):
     decode_program: WholeMoEProgram
     cache_updates = None  # Optional bound CacheUpdateCoordinator.
 
-    def eager_step_scope(self, forward_batch):
-        """Optional step emission; capture uses separately installed hooks."""
-        return nullcontext()
-
     @abstractmethod
     def install_model_hooks(self, offloader, model_runner):
         """Bind layer-start/router hooks and capture_head_hooks/capture_tail_hooks.

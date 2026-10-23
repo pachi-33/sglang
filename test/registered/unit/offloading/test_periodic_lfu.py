@@ -243,6 +243,18 @@ class TestPeriodicLFU(unittest.TestCase):
                 policy.select_hot_set(state, slots, target)
                 policy.finish_step(state)
 
+    def test_holes_and_permuted_slots_preserve_set_contract(self):
+        policy = self.make_policy()
+        state = policy.allocate_state(8, "cpu")
+        state.usage.copy_(torch.tensor([2, 8, 5, 3, 1, 7, 2, 4]))
+        slots = torch.tensor([3, -1, 0, -1, -1, -1, -1, 1])
+        target = torch.empty(4, dtype=torch.int64)
+        for due, expected in ((False, [0, 2, 7, -1]), (True, [1, 2, 5, -1])):
+            state.update_due.fill_(due)
+            policy.select_hot_set(state, slots, target)
+            self.assertEqual(target.tolist(), expected)
+        self.assertEqual(slots.tolist(), [3, -1, 0, -1, -1, -1, -1, 1])
+
     def test_invalid_configuration_and_capacity(self):
         for overrides in (
             {"update_interval": 0},
@@ -269,7 +281,43 @@ class TestPeriodicLFU(unittest.TestCase):
 
 
 class TestOfflineInitialization(unittest.TestCase):
-    def test_rank_filter_global_topk_missing_and_ties(self):
+    def test_default_slots_are_shared_across_layers_without_a_profile(self):
+        policy = PeriodicLFUPolicy(PeriodicLFUConfig(), catalog())
+        for capacity, expected in (
+            (0, ()),
+            (1, (0,)),
+            (2, (0, 4)),
+            (3, (0, 1, 4)),
+            (4, (0, 1, 4, 5)),
+            (8, tuple(range(8))),
+        ):
+            with self.subTest(capacity=capacity):
+                self.assertEqual(policy.initial_keys(capacity), expected)
+
+    def test_full_layers_redistribute_remaining_slots(self):
+        cat = ExpertCatalog(
+            tuple(
+                ExpertLayerSpec(i, count, 1, 0) for i, count in ((3, 1), (4, 3), (5, 4))
+            )
+        )
+        policy = PeriodicLFUPolicy(PeriodicLFUConfig(), cat)
+        self.assertEqual(policy.initial_keys(5), (0, 1, 2, 4, 5))
+        self.assertEqual(policy.initial_keys(8), tuple(range(8)))
+        with self.assertRaises(ValueError):
+            policy.initial_keys(9)
+
+    def test_profile_cannot_starve_another_layer_or_require_a_model_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "profile.json"
+            path.write_text(json.dumps({"layers": {"3": {"4": 1000, "5": 900}}}))
+            policy = PeriodicLFUPolicy(PeriodicLFUConfig(str(path)), catalog())
+            # The second layer gets a slot even with no recorded routes.
+            self.assertEqual(policy.initial_keys(2), (0, 4))
+            self.assertEqual(policy.initial_keys(4), (0, 1, 4, 5))
+            path.write_text(json.dumps({"layers": {}}))
+            self.assertEqual(policy.initial_keys(2), (0, 4))
+
+    def test_rank_filter_layer_topk_missing_and_ties(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "profile.json"
             profile = {
@@ -283,9 +331,8 @@ class TestOfflineInitialization(unittest.TestCase):
             path.write_text(json.dumps(profile), encoding="utf-8")
             policy = PeriodicLFUPolicy(PeriodicLFUConfig(str(path)), catalog())
             self.assertEqual(policy.initial_keys(4, "test-model"), (0, 2, 4, 7))
-            self.assertEqual(
-                policy.initial_keys(8, "test-model"), (0, 2, 4, 7, 1, 3, 5, 6)
-            )
+            self.assertEqual(policy.initial_keys(8, "test-model"), tuple(range(8)))
+            self.assertEqual(policy.initial_keys(4), (0, 2, 4, 7))
             self.assertEqual(policy.initial_keys(0, "test-model"), ())
             self.assertEqual(policy.allocate_state(8, "cpu").usage.sum().item(), 0)
             with self.assertRaises(ValueError):
@@ -296,6 +343,17 @@ class TestOfflineInitialization(unittest.TestCase):
             path.write_text(json.dumps(profile), encoding="utf-8")
             with self.assertRaises(ValueError):
                 policy.initial_keys(4, "test-model")
+
+    def test_explicit_missing_or_malformed_profile_is_not_ignored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "missing.json"
+            policy = PeriodicLFUPolicy(PeriodicLFUConfig(str(path)), catalog())
+            with self.assertRaises(FileNotFoundError):
+                policy.initial_keys(2)
+            for content in ([], {}, {"layers": []}):
+                path.write_text(json.dumps(content))
+                with self.assertRaisesRegex(ValueError, "layers object"):
+                    policy.initial_keys(2)
 
 
 class TestTensorReplay(unittest.TestCase):

@@ -13,6 +13,79 @@ from sglang.test.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=5, suite="base-a-test-cpu")
 
 
+class TestMoEOffloadProfileConfig(unittest.TestCase):
+    """Run the launcher's actual Python preflight without requiring Bash/NPU."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        script = (
+            Path(__file__).resolve().parents[4] / "scripts/launch_moe_offload_npu.sh"
+        ).read_text()
+        self.code = script.split(" <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        self.config = self.root / "offload.json"
+        self.profile = self.root / "profile.json"
+
+    def run_config(self, **overrides):
+        config = {
+            "cache_ratio": 0.25,
+            "native_extension_directory": str(self.root / "native"),
+            **overrides,
+        }
+        self.config.write_text(json.dumps(config))
+        return subprocess.run(
+            [
+                sys.executable,
+                "-",
+                str(self.config),
+                "0",
+                str(self.root),
+                "info",
+                "info",
+                "0",
+            ],
+            input=self.code,
+            text=True,
+            capture_output=True,
+        )
+
+    def test_nonzero_cache_accepts_absent_or_null_profile(self):
+        for ratio in (0, 0.25, 1):
+            for profile in ({}, {"offline_stats_path": None, "offline_model_id": None}):
+                with self.subTest(ratio=ratio, profile=profile):
+                    result = self.run_config(cache_ratio=ratio, **profile)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertTrue(
+                        (self.root / "offload-config.snapshot.json").is_file()
+                    )
+
+    def test_profile_needs_only_layers_and_resolves_relative_path(self):
+        self.profile.write_text(json.dumps({"layers": {"3": {"0": 10}}}))
+        result = self.run_config(offline_stats_path="profile.json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        snapshot = json.loads((self.root / "offload-config.snapshot.json").read_text())
+        self.assertEqual(snapshot["offline_stats_path"], str(self.profile.resolve()))
+        self.assertNotIn("offline_model_id", snapshot)
+
+    def test_explicit_missing_or_invalid_profile_fails(self):
+        result = self.run_config(offline_stats_path="profile.json")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Missing offline expert profile", result.stderr)
+        self.profile.write_text(json.dumps({"layers": []}))
+        result = self.run_config(offline_stats_path="profile.json")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("layers object", result.stderr)
+
+    def test_explicit_model_label_still_checks_for_mismatch(self):
+        self.profile.write_text(json.dumps({"model_id": "toy", "layers": {}}))
+        for label, success in (("toy", True), ("other", False)):
+            result = self.run_config(
+                offline_stats_path="profile.json", offline_model_id=label
+            )
+            self.assertEqual(result.returncode == 0, success, result.stderr)
+
+
 class TestMoEOffloadLaunchLogging(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -290,9 +363,9 @@ os.execv(REAL_PYTHON, [REAL_PYTHON] + sys.argv[1:])
             json.loads(self.config.read_text())["offline_stats_path"], "profile.json"
         )
 
-    def test_zero_cache_requires_no_offline_profile(self):
+    def test_nonzero_cache_requires_no_offline_profile(self):
         config = json.loads(self.config.read_text())
-        config["cache_ratio"] = 0
+        config["cache_ratio"] = 0.25
         del config["offline_stats_path"]
         del config["offline_model_id"]
         self.config.write_text(json.dumps(config))
@@ -319,14 +392,17 @@ os.execv(REAL_PYTHON, [REAL_PYTHON] + sys.argv[1:])
                     json.dumps({"model_type": "deepseek_v4", "n_routed_experts": width})
                 )
                 code, output = self.run_script(
-                    WORLD_SIZE=str(width), ATTN_DP_SIZE=str(width),
+                    WORLD_SIZE=str(width),
+                    ATTN_DP_SIZE=str(width),
                     ASCEND_RT_VISIBLE_DEVICES="",
                 )
                 self.assertEqual(code, 0, output)
                 arguments = self.server_result()["args"]
                 for flag, value in (
-                    ("--tp-size", str(width)), ("--ep-size", str(width)),
-                    ("--attn-dp-size", str(width)), ("--dp-size", "1"),
+                    ("--tp-size", str(width)),
+                    ("--ep-size", str(width)),
+                    ("--attn-dp-size", str(width)),
+                    ("--dp-size", "1"),
                     ("--moe-dp-size", "1"),
                 ):
                     self.assertEqual(arguments[arguments.index(flag) + 1], value)
@@ -338,7 +414,9 @@ os.execv(REAL_PYTHON, [REAL_PYTHON] + sys.argv[1:])
 
     def test_partial_attention_dp_dry_run_does_not_create_logs(self):
         code, output = self.run_script(
-            "--dry-run", WORLD_SIZE="16", ATTN_DP_SIZE="4",
+            "--dry-run",
+            WORLD_SIZE="16",
+            ATTN_DP_SIZE="4",
             ASCEND_RT_VISIBLE_DEVICES="",
         )
         self.assertEqual(code, 0, output)
@@ -349,8 +427,11 @@ os.execv(REAL_PYTHON, [REAL_PYTHON] + sys.argv[1:])
 
     def test_graph_buckets_cover_attention_tp_when_concurrency_is_smaller(self):
         code, output = self.run_script(
-            "--dry-run", WORLD_SIZE="16", ATTN_DP_SIZE="1",
-            ASCEND_RT_VISIBLE_DEVICES="", MAX_RUNNING_REQUESTS="8",
+            "--dry-run",
+            WORLD_SIZE="16",
+            ATTN_DP_SIZE="1",
+            ASCEND_RT_VISIBLE_DEVICES="",
+            MAX_RUNNING_REQUESTS="8",
         )
         self.assertEqual(code, 0, output)
         self.assertIn("--cuda-graph-bs-decode 1 2 4 8 16", output)
@@ -362,13 +443,16 @@ os.execv(REAL_PYTHON, [REAL_PYTHON] + sys.argv[1:])
         for width, dp in (("16", "3"), ("8", "16"), ("8", "0"), ("8", "-1")):
             with self.subTest(width=width, dp=dp):
                 code, output = self.run_script(
-                    "--dry-run", WORLD_SIZE=width, ATTN_DP_SIZE=dp,
+                    "--dry-run",
+                    WORLD_SIZE=width,
+                    ATTN_DP_SIZE=dp,
                     ASCEND_RT_VISIBLE_DEVICES="",
                 )
                 self.assertNotEqual(code, 0)
                 self.assertIn("ATTN_DP_SIZE", output)
         self.assertFalse(self.build_marker.exists())
         self.assertFalse(self.server_output.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

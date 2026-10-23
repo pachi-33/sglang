@@ -8,6 +8,7 @@ must validate capture support and budget the sorting temporaries/workspace.
 import json
 import math
 from dataclasses import dataclass
+from itertools import islice, zip_longest
 from typing import Optional
 
 from .config import ExpertCatalog
@@ -16,7 +17,7 @@ from .interfaces import CachePolicy
 
 @dataclass(frozen=True)
 class PeriodicLFUConfig:
-    offline_stats_path: Optional[str]
+    offline_stats_path: Optional[str] = None
     update_interval: int = 4
     min_usage: float = 2.0
     replacement_min_gain: float = 1.5
@@ -59,30 +60,37 @@ class PeriodicLFUPolicy(CachePolicy):
         # Catalog order is layer_id order, also the global pair tie-break order.
         self.layer_ranges = tuple(ranges)
 
-    def initial_keys(self, capacity: int, model_id: str) -> tuple[int, ...]:
-        """Host-only offline Top-K; backend loads/publishes these before serving.
+    def initial_keys(self, capacity: int, model_id=None) -> tuple[int, ...]:
+        """Share slots across layers, optionally ranking each by offline counts.
 
         Frequencies use global expert IDs. Resident layers and foreign EP experts
         are excluded by the catalog. Online usage is not seeded with this data.
+        The backend loads/publishes complete bundles before serving.
         """
         if type(capacity) is not int or not 0 <= capacity <= self.catalog.num_experts:
             raise ValueError("Hot capacity must be within the eligible expert count")
         if capacity == 0:
             return ()
-        if self.config.offline_stats_path is None:
-            raise ValueError("A nonempty hot cache requires offline_stats_path")
-        with open(self.config.offline_stats_path, encoding="utf-8") as stream:
-            profile = json.load(stream)
-        if not isinstance(profile, dict) or profile.get("model_id") != model_id:
-            raise ValueError("Offline profile model_id does not match the model")
-        layers = profile.get("layers")
-        if not isinstance(layers, dict):
-            raise ValueError("Offline profile must contain a layers object")
-        counts = []
+        layers = {}
+        if self.config.offline_stats_path is not None:
+            with open(self.config.offline_stats_path, encoding="utf-8") as stream:
+                profile = json.load(stream)
+            if not isinstance(profile, dict) or not isinstance(
+                profile.get("layers"), dict
+            ):
+                raise ValueError("Offline profile must contain a layers object")
+            if model_id is not None and profile.get("model_id") != model_id:
+                raise ValueError(
+                    "Offline profile model_id does not match offline_model_id"
+                )
+            layers = profile["layers"]
+        ranked = []
+        offset = 0
         for layer in self.catalog.offloaded_layers:
             frequencies = layers.get(str(layer.layer_id), {})
             if not isinstance(frequencies, dict):
                 raise ValueError("Layer frequencies must be an object")
+            counts = []
             for local_id in range(layer.local_experts):
                 frequency = frequencies.get(str(layer.global_start + local_id), 0)
                 if (
@@ -94,9 +102,17 @@ class PeriodicLFUPolicy(CachePolicy):
                         "Offline frequencies must be finite and nonnegative"
                     )
                 counts.append(frequency)
-        return tuple(
-            sorted(range(len(counts)), key=lambda key: (-counts[key], key))[:capacity]
-        )
+            ranked.append(
+                sorted(
+                    range(offset, offset + layer.local_experts),
+                    key=lambda key: (-counts[key - offset], key),
+                )
+            )
+            offset += layer.local_experts
+        # One slot per layer each round. Full layers drop out; a small capacity
+        # favors lower layer IDs. Offline counts change experts, not layer quotas.
+        keys = (key for row in zip_longest(*ranked) for key in row if key is not None)
+        return tuple(sorted(islice(keys, capacity)))
 
     def allocate_state(self, num_experts, device):
         import torch
@@ -130,7 +146,7 @@ class PeriodicLFUPolicy(CachePolicy):
         if capacity == 0:
             return
         resident = key_to_slot >= 0
-        candidates, victims, gains, valid_pairs = [], [], [], []
+        candidates, victims = [], []
         for start, end in self.layer_ranges:
             usage = state.usage[start:end]
             hot = resident[start:end]
@@ -140,22 +156,18 @@ class PeriodicLFUPolicy(CachePolicy):
                 torch.where(~hot, usage, -torch.inf), descending=True, stable=True
             )
             hot_order = torch.argsort(torch.where(hot, usage, torch.inf), stable=True)
-            gain = usage[cold_order] - usage[hot_order]
-            valid = (
-                ~hot[cold_order]
-                & hot[hot_order]
-                & (usage[cold_order] >= self.config.min_usage)
-                & (gain >= self.config.replacement_min_gain)
-            )
             candidates.append(cold_order + start)
             victims.append(hot_order + start)
-            gains.append(gain)
-            valid_pairs.append(valid)
 
         candidate = torch.cat(candidates)
         victim = torch.cat(victims)
-        gain = torch.cat(gains)
-        valid = torch.cat(valid_pairs)
+        gain = state.usage[candidate] - state.usage[victim]
+        valid = (
+            ~resident[candidate]
+            & resident[victim]
+            & (state.usage[candidate] >= self.config.min_usage)
+            & (gain >= self.config.replacement_min_gain)
+        )
         # Stable sorting preserves layer_id, candidate key, victim key on ties:
         # within each layer equal gains imply equal candidate/victim usages.
         order = torch.argsort(
@@ -163,15 +175,19 @@ class PeriodicLFUPolicy(CachePolicy):
         )
         chosen = order[: self.config.max_swaps]
         swaps = (valid[chosen] & state.update_due).to(torch.int64)
-        membership = resident.to(torch.int64)
-        membership.scatter_add_(0, victim[chosen], -swaps)
-        membership.scatter_add_(0, candidate[chosen], swaps)
-
-        # Canonical set representation; output position is NOT a physical slot.
+        # Each selected pair replaces a distinct victim in its existing slot.
+        # This avoids rebuilding and sorting an E-entry membership vector.
+        # The public result remains a sorted set, not a slot-placement request.
         keys = torch.arange(count, device=state.usage.device, dtype=torch.int64)
-        selected = torch.sort(torch.where(membership > 0, keys, count)).values[
-            :capacity
-        ]
+        slots = key_to_slot.clamp_min(0)
+        placed = torch.zeros(capacity, dtype=torch.int64, device=keys.device)
+        placed.scatter_add_(0, slots, torch.where(resident, keys + 1, 0))
+        placed.scatter_add_(
+            0,
+            key_to_slot[victim[chosen]].clamp_min(0),
+            swaps * (candidate[chosen] - victim[chosen]),
+        )
+        selected = torch.sort(torch.where(placed > 0, placed - 1, count)).values
         target_keys.copy_(torch.where(selected < count, selected, -1))
 
     def finish_step(self, state):

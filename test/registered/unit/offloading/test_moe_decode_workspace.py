@@ -455,8 +455,8 @@ class TestDecodeWorkspace(unittest.TestCase):
                         fixture = self.fixture(ids=(), phase=Phase.PREFILL)
                         runtime = fixture.runtime
                         runtime._context, runtime._capture = None, None
-                        runtime.device_runtime.stream_scope = (
-                            lambda stream: nullcontext()
+                        runtime.device_runtime.stream_scope = lambda stream: (
+                            nullcontext()
                         )
                         owner = SimpleNamespace(
                             phase=Phase.DECODE,
@@ -513,6 +513,7 @@ class TestDecodeWorkspace(unittest.TestCase):
                         self.assertEqual(calls, ["dispatch", (0, received), (1, 0)])
                         self.assertIsNone(dispatcher.handle)
                         self.assertIsNone(program.pipeline.active_layer)
+
 
 if __name__ == "__main__":
     unittest.main()

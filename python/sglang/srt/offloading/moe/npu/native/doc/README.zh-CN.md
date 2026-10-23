@@ -27,7 +27,7 @@ native = get_native_acl("/absolute/path/to/moe-acl-build")
 host_ops = make_acl_host_ops(
     module=native,
     retain=context.retain,
-    source_location="unregistered",  # 外部 MemFabric 分配，再经 ACL 注册锁页
+    source_location="host",  # 与当前 A3 backend 接线一致；MemFabric slab 仍须 ACL 注册锁页
     max_batch_entries=256,
 )
 ```
@@ -35,10 +35,11 @@ host_ops = make_acl_host_ops(
 同一进程按规范化构建目录缓存扩展加载，多个 layer/runtime 可以复用模块。
 加载不自动编译；模块不存在时启动失败，不退回 Torch 权重复制。
 
-`source_location="host"` 用于 ACL 分配的 host 内存；`unregistered` 表达
-原始分配并非来自 ACL API；`host_numa` 需要匹配分配所在 NUMA ID。
+`source_location` 将 `host`、`unregistered` 或 `host_numa` 位置属性传给 ACL；
+具体选值应匹配目标 SDK，`host_numa` 还需要匹配分配所在 NUMA ID。
 这些位置属性不证明锁页。所有路径仍需 `HostMemoryCapability` 的独立锁页
-认证。对 MemFabric 的外部分配，应先成功调用以下注册接口，再建立能力描述。
+认证。当前 A3 backend 对 MemFabric 池采用 `host` 设置；其与目标 CANN 版本的兼容性
+需在实机验证。对 MemFabric 的外部分配，应先成功调用以下注册接口，再建立能力描述。
 
 ## SDK 签名和提交顺序
 
