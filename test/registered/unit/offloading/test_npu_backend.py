@@ -442,9 +442,7 @@ class NpuBackendAssemblyTests(unittest.TestCase):
                         for _, result, _ in assembly.builds
                     )
                 )
-                self.assertEqual(
-                    assembly.host_arguments["source_location"], "unregistered"
-                )
+                self.assertEqual(assembly.host_arguments["source_location"], "host")
                 self.assertIs(
                     assembly.host_arguments["module"], assembly.backend.native_acl
                 )
