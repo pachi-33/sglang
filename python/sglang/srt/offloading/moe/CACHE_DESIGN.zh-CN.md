@@ -99,7 +99,8 @@ bank 布局、H2D/D2D 等待及发布接口。默认周期和在线层内替换�
 
 1. `forward_scope` 结合全局 `is_extend_in_batch` 选择阶段：Attention-DP 中只要有 rank
    在 prefill，本地 decode/idle rank 也使用 prefill 路径。普通 decode 根据 batch
-   是否有全局工作设置设备统计开关。
+   是否有全局工作设置设备统计开关。全局全部空闲时保持当前阶段，不触发借池或回填，
+   也不推进 LFU 周期。
 2. 图首清理本步计数；每层 Dispatch 一次，按收到的专家需求执行多个固定 wave，再 Combine 一次。
 3. 每个 wave 记录真实 assignment 数和命中数；空 lane 不触发有效搬运或计算。
 4. 图尾调用 `CacheUpdateCoordinator`，更新 usage，选目标集合，完成周期衰减，再提交驻留更新。
@@ -118,10 +119,12 @@ bank 布局、H2D/D2D 等待及发布接口。默认周期和在线层内替换�
 再通过 `release_completed()` 清理上下文的资源、完成票据及循环引用。同步失败时继续
 保留资源，交给原有失败清理。真正 capture 的上下文仍由 graph 持有；正常 replay 不新增整卡同步。
 
-Decode 每层及每个 wave 使用 `temporary_scope()`。FFN 的跨流读者汇入 compute stream、
+Prefill/Decode 每层及每个 wave 使用 `temporary_scope()`。FFN 的跨流读者汇入 compute stream、
 wave 结果写回后释放该 wave 的临时引用；Combine 后释放该层的接收张量和通信 handle 引用，
 让 graph allocator 能复用中间存储。事件和 transfer ticket 继续保留至完成或 graph 销毁，
-失败提交的资源保留至 drain。Prefill 仍沿用整次 invocation 的资源生命周期。
+失败提交的资源保留至 drain。作用域只管理提交线程的临时资源；Prefill 后台搬运线程的
+资源仍保留整次 invocation，避免被计算线程提前释放。Capture 图尾把 copy stream 的
+最后一个完成事件汇入 compute stream，再结束捕获，保证所有辅助流工作已汇回捕获流。
 
 FFN 对自己产生的输出原地清零无效行，wave 写回使用 `torch.where(..., out=layout.output)`，
 减少完整接收容量的中间输出。这些修改不改变 LFU 或缓存容量；真实 NPU 的内存峰值及完整
@@ -185,6 +188,12 @@ FFN 对自己产生的输出原地清零无效行，wave 写回使用 `torch.whe
 图尾自动释放实现。新增 CPU 检查覆盖 40 层多 wave 临时张量释放、空/部分 wave、
 FFN 输出原地清零、多图 bucket 的 warmup 清理，以及同步失败时保活。
 整合后的统一 CPU 回归为 **169 项通过、无 skip**；本轮未执行真实 NPU 测试。
+
+2026-10-23：同步同事 `78cd635e`，加入 capture 尾部 copy stream 汇回、Prefill
+临时资源释放和 Attention DP 阶段协调；统一脚本新增 `test_moe_capture_stream_join`。
+本轮 4 项独立启动配置测试、Python 静态/格式检查及 Bash 语法检查通过。完整 CPU
+回归被本机 Windows 应用控制策略阻止加载 `torch_python.dll`（WinError 4551），
+未执行到测试；上面的 169 项结果属于上一版，不能作为本轮通过记录。真实 NPU 未验证。
 
 在有 PyTorch 的环境可运行同一组 CPU 测试：
 

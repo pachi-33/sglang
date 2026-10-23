@@ -178,7 +178,7 @@ class TestNativeCacheRuntime(unittest.TestCase):
             is_decode_or_idle=lambda: False, is_extend_without_speculative=lambda: False
         )
         with self.assertRaisesRegex(ValueError, "ordinary extend"):
-            self.runtime._phase(bad)
+            self.runtime._phase(bad, has_global_work=True, current_phase=Phase.DECODE)
         with self.assertRaisesRegex(RuntimeError, "captured full graph"):
             with self.runtime.forward_scope(self.owner, batch(True)):
                 self.runtime._ensure_step()
@@ -189,7 +189,9 @@ class TestNativeCacheRuntime(unittest.TestCase):
                 ordinary = batch(True)
                 ordinary.is_extend_in_batch = extending
                 self.assertIs(
-                    self.runtime._phase(ordinary),
+                    self.runtime._phase(
+                        ordinary, has_global_work=True, current_phase=Phase.DECODE
+                    ),
                     Phase.PREFILL if extending else Phase.DECODE,
                 )
                 unsupported = batch(True)
@@ -199,7 +201,9 @@ class TestNativeCacheRuntime(unittest.TestCase):
                     is_extend_without_speculative=lambda: False,
                 )
                 with self.assertRaisesRegex(ValueError, "ordinary extend"):
-                    self.runtime._phase(unsupported)
+                    self.runtime._phase(
+                        unsupported, has_global_work=True, current_phase=Phase.DECODE
+                    )
 
     def test_global_prefill_eager_path_preserves_cache_and_lfu_on_local_decode_or_idle(
         self,
