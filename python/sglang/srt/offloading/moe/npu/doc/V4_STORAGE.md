@@ -19,10 +19,11 @@ of this slab. There is no parallel pinned copy of the complete expert master.
 MemFabric's `get_dva` must certify a linear mapping over the slab; ACL's real
 `aclrtHostRegisterV2(..., ACL_HOST_REG_PINNED)` must succeed before asynchronous
 host-read capability is published. The existing MemFabric mapping is reused;
-ACL is not asked to make a second device mapping. Because MemFabric allocated
-the memory, ACL batch location is `unregistered` (external allocation), even
-after successful PINNED registration. Source location and pin capability have
-different meanings.
+ACL is not asked to make a second device mapping. The current A3 integration
+passes ACL batch location `host` for this registered MemFabric slab. Source
+location and pin capability remain separate; this setting does not replace
+registration. Its compatibility with the installed CANN version must be
+validated on the target NPU.
 
 The reference MemFabric `initialize` silently returns success if somebody else
 already initialized its process singleton. This owner therefore requires
@@ -31,10 +32,10 @@ repository's MemFabric HiCache backend are rejected. An unrelated external
 caller that initializes the same singleton is unsupported; the reference API
 provides no query that would certify its configuration or ownership.
 
-External host registration requires Linux newer than 5.10. Older kernels and
-unrecognized releases are rejected before native initialization; a vendor
-backport needs independent qualification rather than silently bypassing this
-check. See the official [aclrtHostRegisterV2 contract](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/API/runtimeapi/aclcppdevg_03_2128.html).
+The current A3 integration attempts native host registration without a Linux
+kernel-version precheck. This does not establish support for all kernels;
+the installed CANN and kernel combination still needs target-device validation.
+See the official [aclrtHostRegisterV2 contract](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/API/runtimeapi/aclcppdevg_03_2128.html).
 
 Runtime teardown must drain host submitters, streams and captured-graph leases,
 then call each `V4LayerStorage.close()` before `MemFabricHostPool.close()`.

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import ctypes
 import os
-import platform
 import re
 import sys
 import threading
@@ -78,7 +77,7 @@ class MemFabricHostPool:
         self.nbytes = _align(total_bytes, self.page_size)
         if self.nbytes > physical_bytes:
             raise ValueError("Registered slab exceeds the physical host budget")
-        # _check_host_registration_platform(platform.system(), platform.release())
+        # Attempt native registration directly without a kernel-version precheck.
         hicache = sys.modules.get("sglang.srt.mem_cache.pool_host.npu_memfabric")
         hicache_active = getattr(hicache, "_memfabric_state", {}).get(
             "initialized", False
@@ -112,7 +111,8 @@ class MemFabricHostPool:
                 config.device_id = device_index
                 config.reserve_size = config.alloc_size = physical_bytes
                 config.world_size = config.local_world_size = 1
-                config.rank_id = config.flags = 0
+                config.rank_id = 0
+                config.flags = offload.OFFLOAD_FLAG_GIANT_PAGE
                 config.scene = offload.Scene.LOCAL
                 status = offload.initialize(config)
                 if status not in (None, 0):

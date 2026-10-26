@@ -7,18 +7,21 @@
 
 原生 JSON 启动入口使用 `PeriodicLFUPolicy`，替换此前每步全局 LFU 的默认策略：
 
-- 离线频率在本 rank 全部可卸载专家中选择 Top-K。resident 层和外 rank 专家排除在外。
+- 按 layer_id 顺序轮流分配初始 slot，直到填满容量；满层不再分配。无 profile 时层内按
+  expert ID 选取，有 profile 时层内按频率 Top-K。resident 层和外 rank 专家排除在外。
 - 首次权重通过原生 `ExpertWeightAccess.apply_update` 和 MemFabric 路径装入，完整 bundle
   完成且共享错误状态健康后才结束初始化；初始化不执行虚拟 decode，不注入在线 usage。
 - 在线按 post-dispatch 有效 token-expert assignment 累计，命中和 miss 都计入热度。
 - 每 `update_interval` 个有效完整 decode forward 做同层冷热配对；最低 usage、加性增益
   和 rank 级 `max_swaps` 限制替换，周期尾再执行衰减。默认参数为 4、2、1.5、96、0.7。
-- 每层在线热专家数量由离线初始化固定；零配额层一直走 miss 路径，不跨层抢占。
+- 每层在线热专家数量保持初始化配额，不跨层抢占。容量不少于可卸载层数时，每层至少一个
+  slot；容量更小时先分给 layer_id 较小的层，零配额层仍走 miss 路径。
 - prefill 和 capture/warmup 不推进热度或周期；全局空步不推进，有工作但本 rank 无路由仍推进。
 - prefill 借池后，按原 slot 从 host 重载完整权重，并恢复 usage、周期和驻留状态。
 
-`TensorLFUPolicy` 和上游通用 `CacheBackend` 保留兼容用途；原生 `create_npu_offloader`
-始终选择周期策略。原生路径继续使用已有的固定设备计划、有效 lane 检查、sticky error、
+`TensorLFUPolicy` 保留为框架基础策略；原生 `create_npu_offloader` 始终选择周期策略。
+重复的通用缓存后端已移除，当前结构见 [Cache 与框架适配](../../CACHE_DESIGN.zh-CN.md)。
+原生路径继续使用已有的固定设备计划、有效 lane 检查、sticky error、
 输入 padding 屏蔽、ACL prefill 流水、原生 FP4 bank 和 Graph lease。生产搬运不增加 CPU fallback。
 
 ## 配置和 profile
@@ -27,8 +30,6 @@
 
 ```json
 {
-  "offline_stats_path": "/path/to/deepseek-v4-expert-profile.json",
-  "offline_model_id": "DeepSeek-V4-Flash",
   "update_interval": 4,
   "min_usage": 2.0,
   "replacement_min_gain": 1.5,
@@ -37,14 +38,17 @@
 }
 ```
 
-`offline_stats_path` 的相对路径以 offload JSON 所在目录解析。非零 `cache_ratio`
-要求提供路径与 model ID；`cache_ratio=0` 不需要 profile，也不隐式填充缓存。
+这些参数均有默认值。非零 `cache_ratio` 也不需要 profile 或 model ID。
+如需使用离线排序，只添加 `offline_stats_path`；相对路径以 offload JSON 所在目录解析。
+显式指定的文件仍检查存在性、格式和频次。`cache_ratio=0` 不填充热缓存。
+
+`offline_model_id` 仅保留为可选的文件标签校验，显式设置时要求与 profile 的 `model_id`
+一致；它不核验实际加载的权重身份。通常两处都不需要填写。
 
 profile 的专家编号为 **global expert ID**，格式如下。示例数字仅说明格式，不是推荐热度。
 
 ```json
 {
-  "model_id": "DeepSeek-V4-Flash",
   "layers": {
     "3": {"0": 1200, "1": 900},
     "4": {"0": 300, "1": 1800}
@@ -52,9 +56,9 @@ profile 的专家编号为 **global expert ID**，格式如下。示例数字仅
 }
 ```
 
-`model_id` 必须与配置匹配；缺失频率按零处理，同频率按 canonical key 排序。
-线上 usage 独立从零开始。离线数据会决定每层配额，部署时应提供覆盖实际模型的统计。
-已有 `examples/v4.json` 中的 `/path/to/...` 必须替换为真实 profile。
+仅在显式配置 `offline_model_id` 时检查文件中的 `model_id`；缺失频率按零处理，
+同频率按 canonical key 排序。线上 usage 独立从零开始，离线数据只影响层内选集，
+不改变每层配额。`examples/v4.json` 可直接在没有 profile 的情况下初始化缓存。
 
 ## 命中统计与后端边界
 
@@ -71,7 +75,7 @@ assignment 命中率为 `hits / accesses`，无访问时应报告 N/A。重复�
 配置、日志含义及缓冲饱和行为见 [维测日志](OBSERVABILITY.zh-CN.md)。
 
 `CacheRouteStats.allocations()` 纳入 metadata 账本。策略快照通过原有 `DecodeStateSnapshot`
-持有全部周期字段；原生后端没有额外建立一份 CacheMetadataAdapter 快照或另一组权重池。
+持有全部周期字段；原生后端不额外建立第二份缓存快照或另一组权重池。
 上游通用 residency 的 int64 count 不直接传给原生 MemFabric；原生计划保留 int32 count ABI。
 
 ## 本地验证

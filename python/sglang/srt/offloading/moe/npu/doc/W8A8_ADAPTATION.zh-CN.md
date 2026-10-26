@@ -107,7 +107,7 @@ graph lease、snapshot、原 slot 恢复仍由原框架控制；W8A8 没有私�
 忽略 NZ padding 时，BF16 scales 和 FP32 offsets 后约 24.046875 MiB/专家；
 host 中保留 FP32 scale 空间约 24.0625 MiB/专家。以 probe 和实际分配 ledger 为准。
 cache_ratio、execution_slots、host_pool_gib 都是每 rank 配置，不能照搬 FP4 的预算。
-非零 cache_ratio 仍需这份模型对应的离线 profile/model ID。
+非零 cache_ratio 默认按层初始化，无需离线 profile/model ID；可选 profile 只影响层内排序。
 
 ```bash
 MODEL_PATH=/path/to/complete/Deepseek-v4-flash \
