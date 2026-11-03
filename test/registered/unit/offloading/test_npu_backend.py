@@ -198,6 +198,10 @@ class HostOps:
     def clear_cache(self):
         self.plans.clear()
 
+    def prepare(self, plan, device):
+        # Test transport has no native descriptors to lower. Do not copy here.
+        pass
+
     def materialize_into(self, plan, bindings, stream):
         self.retain((plan, bindings))
         self.plans.append(plan)
@@ -832,6 +836,15 @@ class TestAddressCatalogMetadata(unittest.TestCase):
 
 
 class TestAclHostTransfer(unittest.TestCase):
+    def test_prepare_lowers_descriptors_without_copy_and_serving_reuses_them(self):
+        self.ops.prepare(self.plan, self.device)
+        self.assertEqual(self.module.Batch.call_count, 2)
+        self.module.submit.assert_not_called()
+        self.assertEqual(self.retained, [])
+        self.ops.materialize_into(self.plan, None, self.stream)
+        self.assertEqual(self.module.Batch.call_count, 2)
+        self.assertEqual(self.module.submit.call_count, 2)
+
     def setUp(self):
         self.device = SimulatedNpuDevice()
         self.retained = []

@@ -1,5 +1,8 @@
 # Ascend V4 offload 运行时装配
 
+2026-11-02：默认 Prefill 改为整层双缓冲预取，Decode 保留 `liantiao/moe-offload`
+的 wave 执行和周期缓存逻辑。本次仅移植 Prefill 优化，不包含整层 Decode 优化。
+
 2026-10-25：当前装配使用唯一运行栈；[重构记录](../../doc/REFACTOR_20261025.zh-CN.md)
 列出迁移与验证边界。公共生命周期已提取到 `moe/runtime.py`，模型与量化各自扩展。
 
@@ -36,26 +39,49 @@ host 只按有效 decode batch 计数选图，不回读设备热度或路由；�
 非零热池必须配置 `offline_stats_path` 与 `offline_model_id`；示例 JSON 中的 profile
 路径需要替换为真实离线统计文件。在线各层缓存配额可在同一个 EP rank 内重新分配。
 
-公共 `BoundMoERuntime` 在 decoder 层首向常驻 prefill worker 提交任务，在 FusedMoE.forward_impl
-进入 routed program，外层原有 shared experts 与缩放保持原路径。层间、forward
-间复用 A/B 前会把前一个 compute reader frontier 接到 copy stream。激活打包
-workspace 在串行层之间共用。Dispatch 后真实本地计数进入 residency；设备
-padding 上界由 ForwardBatch 传入 dispatcher，不使用本 rank Router 频次代替。
+公共 `BoundMoERuntime` 在 decoder 层首触发 Prefill，在 FusedMoE.forward_impl
+进入 routed program，外层 shared experts 与缩放保持原路径。
 
-Prefill 的初始 microbatch 和后续 wave 共用一个 worker，跨层、跨 chunk 复用线程。
-主线程取得当前 wave 后即可提交 FFN，下一 wave 的描述符准备、ACL 提交在 worker 执行；
-覆盖 A/B 前仍在 copy stream 等待该 bank 的最后一个 reader。初始组先记录覆盖全部
-microbatch 的 copy fence，再允许提交 B，因此首个 FFN 只等待初始组，不被 B 的搬运阻塞。
-固定 bank 视图、HostCopyPlan 和 native ACL Batch 使用有界缓存（分别最多 256、1024、1024 项），
-命中后复用地址检查结果和 native 描述符；lease、reservation、完成事件仍逐次创建。
-缓存淘汰不释放在途 ticket 的资源，runtime 停止提交并 drain 后才清空缓存及释放注册。
-`torch_npu` host queue flush 继续保留，确保 stream 上先前的 event wait 排在 ACL 拷贝之前。
+### 整层 Prefill（`prefill_mode="layer"`，默认）
 
-`scripts/moe_offload_a3.json` 针对长输入把 `prefill_microbatch_size` 调为 4、
-`prefill_max_inflight` 调为 4，`prefill_group_size=8` 不变；初始组若提交满 16 个专家，
-ACL microbatch 提交从 16 次降为 4 次，不增加权重池容量。短输入可继续使用更小 microbatch。
-CPU 回归验证线程复用、资源保活、覆盖顺序和描述符复用；16K～128K 输入的 TTFT 收益
-仍需在 A3 上对比测量，未把 CPU 模拟测试时间作为设备性能结果。
+`LayerPrefetchPipeline` 在第一个卸载层入口提交前两层权重。每层只 Dispatch 一次、
+执行一次完整 FFN（内部仍有两次 GMM）、Combine 一次，不再按专家 wave 重复打包和计算。
+当前层最后一次权重读取的 event 记录后，向同一个 bank 提交后两层的权重；例如
+L 用 bank A、L+1 用 bank B，L 的 FFN 提交完后可向 A 预取 L+2。
+copy stream 等待 A 的 reader event，compute stream 只在当前 FFN 前等待当前层权重就绪。
+仅 forward 入口保留全局 compute→copy 依赖，层间依赖按 bank 管理。
+host 主线程直接提交，不为整层 Prefill 创建 worker 或轮询完成状态。
+
+每个 rank 有 E 个本地专家时，两个 bank 都必须容纳 E 个专家：
+
+- A 使用 Execution 的前 E 个 slot，`execution_slots >= E`。
+- Hot 至少有 E 个 slot 时，B 借用 Hot 的前 E 个 slot。
+- Hot 不足 E 时，B 使用 Execution 的第二段，要求 `execution_slots >= 2*E`。
+
+bank 是现有池的 view，不额外分配权重池，不自动缩减 Hot 容量。容量不足会在装配时报错；
+启动前需显式配置足够的 `execution_slots`。例如 E=16、Hot 至少 16 时可用 16 个 Execution slot；
+`cache_ratio=0` 时则至少需要 32 个。借用 Hot 后，切回 Decode 仍走原有快照与回填流程。
+
+整层 FFN 直接使用 NORMAL Dispatch 的 host counts 和有效行前缀。
+去掉逐 wave offsets/cumsum、重复 counts 拷贝与有效性归约，以及输出重新拼接；
+接收区无 padding 时直接将 FFN 输出交给 Combine，有 padding 时只清尾部并复制有效前缀。
+权重失败标记仍在 FFN 前及 Combine 前检查。FP4/W8A8 的原生 FFN 内核保持不变。
+固定地址的 HostCopyPlan 和 ACL Batch 在装配时准备，运行时仅创建本轮 lease 与完成事件；
+`torch_npu` host queue flush 继续保证 event wait 与 ACL 拷贝顺序。
+
+配置 `layer_profile=true` 可记录 `layer_load_submit`、`layer_wait_ready`、
+`layer_compute_submit` 和 `bank_reuse_wait`，标明 forward/layer/bank。
+这些是 CPU 提交区间；验证实际重叠需关联对应的设备 GMM 和 MEMCPY_ASYNC。
+
+### 原 wave Prefill（`prefill_mode="wave"`）
+
+保留基线实现作为对照：`prefill_group_size`、`prefill_microbatch_size` 和
+`prefill_max_inflight` 仅控制该模式。一个常驻 worker 跨层、跨 chunk 提交
+microbatch/wave，覆盖 bank 前等待最后一个 reader；固定 bank 视图和 ACL 描述符复用。
+这些参数不控制整层 Prefill 的专家数量。Decode 在两种 Prefill 配置下均保留原实现。
+
+CPU 回归覆盖整层预取顺序、bank 复用依赖、完整权重与 scale 拷贝、FFN 前后处理和
+缓存恢复。原生 H2D、EP 通信、图执行与 TTFT 收益仍需在目标 NPU 环境验证。
 
 Capture head/tail 覆盖 warmup 与完整模型；update_enabled 在图外关闭/恢复。
 真实 replay 不重复执行 Python 统计或 LFU tail，而在提交后记录 fresh NPU

@@ -40,6 +40,8 @@ class NpuOffloadSettings:
     workspace_limit_bytes: int
     metadata_limit_bytes: int
     max_dispatch_rows: int
+    prefill_mode: str = "layer"
+    layer_profile: bool = False
     prefill_group_size: int = 8
     prefill_microbatch_size: int = 1
     prefill_max_inflight: int = 1
@@ -78,6 +80,10 @@ class NpuOffloadSettings:
             raise ValueError("cache_ratio must be a finite number")
         if not 0 <= self.cache_ratio <= 1:
             raise ValueError("cache_ratio must be in [0, 1]")
+        if self.prefill_mode not in ("wave", "layer"):
+            raise ValueError("prefill_mode must be wave or layer")
+        if type(self.layer_profile) is not bool:
+            raise ValueError("layer_profile must be boolean")
         self.policy_config()
         if self.offline_model_id is not None and (
             not isinstance(self.offline_model_id, str) or not self.offline_model_id

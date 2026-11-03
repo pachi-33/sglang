@@ -19,10 +19,12 @@ from ..diagnostics import BatchDiagnostics
 from ..execution import (
     CacheUpdateCoordinator,
     ExecutionRequest,
-    MaterializationPlan,
     ExpertWeightAccess,
+    MaterializationPlan,
 )
 from ..interfaces import MoEBackend
+from ..layer_execution import LayerExecutionRequest, whole_layer_bank_layout
+from ..layer_prefetch import LayerPrefetchPipeline
 from ..models import DeepSeekV4Adapter
 from ..prefill import BoundedPrefillWeightPipeline, PrefillPipelineConfig
 from ..residency import BoundExecutionWave, TensorResidencyOps
@@ -229,7 +231,14 @@ class NpuMoEBackend(MoEBackend):
         group = min(
             self.settings.prefill_group_size, catalog.offloaded_layers[0].local_experts
         )
-        if k >= group:
+        prefill_mode = getattr(self.settings, "prefill_mode", "wave")
+        if prefill_mode == "layer":
+            banks = whole_layer_bank_layout(
+                catalog.offloaded_layers[0].local_experts, k, config.execution_slots
+            )
+            pools = {"hot": hot, "execution": execution}
+            a, b = (pools[pool].view(offset, count) for pool, offset, count in banks)
+        elif k >= group:
             a = hot.view(0, min(k, catalog.offloaded_layers[0].local_experts))
             b = execution.view(0, group)
         elif config.execution_slots >= 2 * group:
@@ -300,6 +309,8 @@ class NpuMoEBackend(MoEBackend):
             )
 
         def prepare_prefill(request, context):
+            if isinstance(request, LayerExecutionRequest):
+                return layer_plans[(request.layer_id, request.bank_id)]
             target = request.local_demand
             if not isinstance(target, _PrefillTarget):
                 raise TypeError("Prefill requires a bounded physical bank target")
@@ -375,26 +386,59 @@ class NpuMoEBackend(MoEBackend):
             )
 
         programs, program_resources = {}, []
+
         # A/B belong to the arena, so one submitter owns their complete reader
         # history across layers. Layer identity is part of each session/request.
-        pipeline = BoundedPrefillWeightPipeline(
-            access,
-            PrefillPipelineConfig(
-                local_experts=catalog.offloaded_layers[0].local_experts,
-                initial_capacity=a.capacity,
-                group_size=group,
-                secondary_capacity=b.capacity,
-                microbatch_size=self.settings.prefill_microbatch_size,
-                max_inflight=self.settings.prefill_max_inflight,
-            ),
-            make_request=make_request,
-            combine_bindings=combine_bindings,
-            worker_scope=lambda ctx: self.device_runtime.stream_scope(ctx.copy_stream),
-            record_copy_completion=lambda ctx: self.device_runtime.record(
-                ctx.copy_stream
-            ),
-            ordered_copy_stream=True,
+        def profile(name, layer_id, bank_id, context):
+            return torch.profiler.record_function(
+                f"moe.{context.phase.value}.{name} "
+                f"forward={getattr(context, 'forward_sequence', 'capture')} "
+                f"layer={layer_id} bank={bank_id} "
+                f"experts={catalog.layer(layer_id).local_experts}"
+            )
+
+        profile_scope = (
+            profile if getattr(self.settings, "layer_profile", False) else None
         )
+        layer_plans = {}
+        if prefill_mode == "layer":
+            for index, spec in enumerate(catalog.offloaded_layers):
+                bank_id = index % 2
+                plan = prefill_plan(spec.layer_id, 0, spec.local_experts, bank_id, 0)
+                layer_plans[(spec.layer_id, bank_id)] = plan
+                host_ops.prepare(plan.copy_plan, self.device)
+            pipeline = LayerPrefetchPipeline(
+                access,
+                (spec.layer_id for spec in catalog.offloaded_layers),
+                make_request=lambda layer, bank, ctx: LayerExecutionRequest(
+                    layer, None, Phase.PREFILL, bank
+                ),
+                record_copy_completion=lambda ctx: self.device_runtime.record(
+                    ctx.copy_stream
+                ),
+                profile=profile_scope,
+            )
+        else:
+            pipeline = BoundedPrefillWeightPipeline(
+                access,
+                PrefillPipelineConfig(
+                    local_experts=catalog.offloaded_layers[0].local_experts,
+                    initial_capacity=a.capacity,
+                    group_size=group,
+                    secondary_capacity=b.capacity,
+                    microbatch_size=self.settings.prefill_microbatch_size,
+                    max_inflight=self.settings.prefill_max_inflight,
+                ),
+                make_request=make_request,
+                combine_bindings=combine_bindings,
+                worker_scope=lambda ctx: self.device_runtime.stream_scope(
+                    ctx.copy_stream
+                ),
+                record_copy_completion=lambda ctx: self.device_runtime.record(
+                    ctx.copy_stream
+                ),
+                ordered_copy_stream=True,
+            )
         pipelines = (pipeline,)
         shared_layout = None
         for module, spec in layers:
@@ -407,6 +451,8 @@ class NpuMoEBackend(MoEBackend):
                 max_dispatch_rows=self.settings.max_dispatch_rows,
                 device=self.device,
                 shared_layout=shared_layout,
+                prefill_mode=prefill_mode,
+                profile=profile_scope,
             )
             if shared_layout is None:
                 shared_layout = programs[spec.layer_id].layout
@@ -465,7 +511,7 @@ class NpuMoEBackend(MoEBackend):
         logger.info(
             "MoE offload runtime bound: rank=%s device=%s layers=%s experts=%s "
             "hot_slots=%s execution_slots=%s expert_bytes=%s "
-            "prefill_A=%s prefill_B=%s group=%s batch_log_interval=%s",
+            "prefill_A=%s prefill_B=%s group=%s batch_log_interval=%s prefill_mode=%s",
             config.ep_rank,
             self.device,
             len(layers),
@@ -477,6 +523,7 @@ class NpuMoEBackend(MoEBackend):
             b.capacity,
             group,
             getattr(self.settings, "batch_log_interval", 1) if diagnostics else 0,
+            prefill_mode,
         )
 
         def release():
@@ -484,6 +531,7 @@ class NpuMoEBackend(MoEBackend):
             host_ops.clear_cache()
             prefill_plan.cache_clear()
             prefill_binding.cache_clear()
+            layer_plans.clear()
             self._release()
 
         self.runtime = BoundMoERuntime(

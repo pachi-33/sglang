@@ -3,9 +3,9 @@
 The NPU DeepEP receive buffer is a *flat*, expert-grouped allocation. Its device
 counts delimit the meaningful prefix; CUDA's [expert, capacity, hidden] layout
 is deliberately not accepted. Decode waves keep fixed activation capacity and
-device offsets; eager NORMAL prefill uses the dispatcher's host counts to slice
-each wave's actual rows. Native GMM/activation temporaries still belong to the
-runtime's workspace budget.
+device offsets; eager NORMAL prefill uses host counts for a compact whole layer
+or each legacy wave's actual rows. Native GMM/activation temporaries still belong
+to the runtime's workspace budget.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from ...transfer import EventCompletion, JoinedCompletion, TransferTicket
 from ..config import Phase
 from ..execution import ExecutionRequest, LocalExecution
 from ..interfaces import DispatchLayoutAdapter, MoEDispatcher
+from ..layer_programs import PrefillLayerProgram
 from ..programs import (
     DecodeLocalExpertProgram,
     DispatchOnceProgram,
@@ -97,11 +98,20 @@ class NPUDispatch:
 class _Layout:
     dispatched: NPUDispatch
     counts: torch.Tensor
-    offsets: torch.Tensor
+    offsets: torch.Tensor | None
     output: torch.Tensor
     row_ids: torch.Tensor
     selected: object = None
     prefill_offsets: tuple[int, ...] | None = None
+    prefill_rows: int | None = None
+
+
+@dataclass(frozen=True)
+class NPULayerInput:
+    hidden_states: torch.Tensor
+    hidden_states_scale: object
+    expert_tokens: torch.Tensor
+    row_count: int
 
 
 @dataclass(frozen=True)
@@ -311,7 +321,7 @@ class NPUDispatchLayout(DispatchLayoutAdapter):
             prefix + ".", self._owned.items(), ResourceKind.WORKSPACE
         )
 
-    def bind(self, dispatched, context):
+    def bind(self, dispatched, context, *, whole_layer=False):
         raw = dispatched.raw
         x = raw.hidden_states
         if (
@@ -325,6 +335,11 @@ class NPUDispatchLayout(DispatchLayoutAdapter):
             raise ValueError("Unsupported NPU compact dispatch shape or capacity")
         name = _format_name(raw)
         prefill_offsets = None
+        prefill_rows = None
+        if whole_layer and (
+            name != "deepep_normal" or context.phase is not Phase.PREFILL
+        ):
+            raise ValueError("Whole-layer prefill requires eager NORMAL dispatch")
         if name == "deepep_normal":
             if context.capturing or context.phase is Phase.DECODE:
                 raise ValueError("Decode requires device-count DeepEP low latency")
@@ -337,8 +352,13 @@ class NPUDispatchLayout(DispatchLayoutAdapter):
                 raise ValueError(
                     "Prefill dispatch requires nonnegative host counts for every expert"
                 )
-            prefill_offsets = tuple(accumulate(host_counts, initial=0))
-            if prefill_offsets[-1] > x.shape[0]:
+            if whole_layer:
+                prefill_rows = sum(host_counts)
+                used = prefill_rows
+            else:
+                prefill_offsets = tuple(accumulate(host_counts, initial=0))
+                used = prefill_offsets[-1]
+            if used > x.shape[0]:
                 raise ValueError("Prefill dispatch counts exceed receive capacity")
             source = torch.as_tensor(host_counts, dtype=torch.int64, device=self.device)
         elif name == "deepep_ll":
@@ -353,18 +373,24 @@ class NPUDispatchLayout(DispatchLayoutAdapter):
             raise ValueError("Dispatch counts must cover every local expert")
         context.retain((self, dispatched, source))
         with _compute_scope(context, self.device):
-            counts = self._owned["counts"]
-            counts.copy_(source)
-            invalid = (counts < 0).any() | (counts.sum() > x.shape[0])
-            self.error_status.bitwise_or_(invalid.to(torch.int32) * 64)
-            counts.masked_fill_(self.error_status != 0, 0)
-            offsets = self._owned["offsets"]
-            offsets[0].zero_()
-            torch.cumsum(counts, 0, out=offsets[1:])
+            if whole_layer:
+                # NORMAL host counts were checked above. No device copy/reduction
+                # or per-wave offsets are needed for an entire expert bank.
+                counts, offsets = source, None
+            else:
+                counts = self._owned["counts"]
+                counts.copy_(source)
+                invalid = (counts < 0).any() | (counts.sum() > x.shape[0])
+                self.error_status.bitwise_or_(invalid.to(torch.int32) * 64)
+                counts.masked_fill_(self.error_status != 0, 0)
+                offsets = self._owned["offsets"]
+                offsets[0].zero_()
+                torch.cumsum(counts, 0, out=offsets[1:])
             output = self._owned["output"][: x.shape[0]]
             if x.dtype == torch.float16:
                 output = output.view(torch.float16)
-            output.zero_()
+            if not whole_layer:
+                output.zero_()
             result = _Layout(
                 dispatched,
                 counts,
@@ -372,9 +398,50 @@ class NPUDispatchLayout(DispatchLayoutAdapter):
                 output,
                 self._owned["rows"][: x.shape[0]],
                 prefill_offsets=prefill_offsets,
+                prefill_rows=prefill_rows,
             )
             context.retain(result)
             return result
+
+    def select_layer(self, layout, context):
+        if layout.selected is not None or layout.prefill_rows is None:
+            raise RuntimeError("Select a whole prefill layer once before write_layer")
+        raw = layout.dispatched.raw
+        rows, used = raw.hidden_states.shape[0], layout.prefill_rows
+        with _compute_scope(context, self.device):
+            x = raw.hidden_states[:used]
+            scale = raw.hidden_states_scale
+            if scale is not None:
+                if rows == 0:
+                    if scale.numel():
+                        raise ValueError("Empty dispatch must have empty scales")
+                else:
+                    if not scale.is_contiguous() or scale.numel() % rows:
+                        raise ValueError(
+                            "Layer scales require a fixed contiguous row shape"
+                        )
+                    scale = scale.view(rows, -1)[:used]
+            result = NPULayerInput(x, scale, layout.counts, used)
+            layout.selected = result
+            context.retain(result)
+            return result
+
+    def write_layer(self, layout, output, context):
+        if not isinstance(layout.selected, NPULayerInput):
+            raise RuntimeError("Layer write requires its selected full-layer input")
+        rows = layout.selected.hidden_states.shape[0]
+        target = layout.output[:rows]
+        if output.shape != target.shape:
+            raise ValueError("Layer FFN must preserve the selected receive shape")
+        with _compute_scope(context, self.device):
+            if rows == layout.output.shape[0]:
+                # Compact NORMAL output already has the combine shape.
+                layout.output = output
+            else:
+                # Padded NORMAL retains receive capacity around its sliced FFN.
+                layout.output[rows:].zero_()
+                target.copy_(output)
+            layout.selected = None
 
     def _gather_bytes(self, source, indices, count, name):
         rows = source.shape[0]
@@ -547,11 +614,18 @@ class NPUExpertRunner:
                 output = torch.empty_like(dispatched.hidden_states, dtype=dtype)
                 context.retain(output)
                 return LocalExecution(output, self._reader_ticket(context))
-            valid = bank.execution_valid
-            bad = ((dispatched.expert_tokens > 0) & ~valid).any()
-            bank.error_status.bitwise_or_(bad.to(torch.int32) * 128)
-            healthy = bank.error_status == 0
-            counts = torch.where(healthy, dispatched.expert_tokens, 0)
+            compact_prefill = isinstance(dispatched, NPULayerInput)
+            if compact_prefill:
+                # Whole-bank prefill waits for the complete static weight bundle.
+                # Keep the fault latch, without rechecking dynamic cache slots.
+                counts = dispatched.expert_tokens
+                counts.masked_fill_(bank.error_status != 0, 0)
+            else:
+                valid = bank.execution_valid
+                bad = ((dispatched.expert_tokens > 0) & ~valid).any()
+                bank.error_status.bitwise_or_(bad.to(torch.int32) * 128)
+                healthy = bank.error_status == 0
+                counts = torch.where(healthy, dispatched.expert_tokens, 0)
             runner_input = self.input_type(
                 hidden_states=dispatched.hidden_states,
                 hidden_states_scale=dispatched.hidden_states_scale,
@@ -561,12 +635,13 @@ class NPUExpertRunner:
             context.retain(runner_input)
             output = self.core.run(runner_input, quant, {}).hidden_states
             context.retain(output)
-            # Unwritten GMM padding may contain NaN; multiply-by-zero is unsafe.
-            row_ids = torch.arange(output.shape[0], device=output.device)
-            good_rows = (row_ids < dispatched.row_count) & healthy
-            # Own the GMM result: clear padding in place rather than allocating
-            # and retaining a second [receive_capacity, hidden] output per wave.
-            output.masked_fill_(~good_rows.unsqueeze(1), 0)
+            if not compact_prefill:
+                # Unwritten GMM padding may contain NaN; multiply-by-zero is unsafe.
+                row_ids = torch.arange(output.shape[0], device=output.device)
+                good_rows = (row_ids < dispatched.row_count) & healthy
+                # Own the GMM result: clear padding in place rather than allocating
+                # and retaining a second [receive_capacity, hidden] output per wave.
+                output.masked_fill_(~good_rows.unsqueeze(1), 0)
             return LocalExecution(output, self._reader_ticket(context))
 
 
@@ -592,6 +667,8 @@ def build_npu_layer_programs(
     max_dispatch_rows,
     device=None,
     shared_layout=None,
+    prefill_mode="wave",
+    profile=None,
 ):
     """Bind a real FusedMoE's native dispatcher and Ascend FFN to offload access.
 
@@ -630,15 +707,27 @@ def build_npu_layer_programs(
         return ExecutionRequest(layer_id, wave_input.local_demand, wave, Phase.DECODE)
 
     decode_local = DecodeLocalExpertProgram(access, make_request, runner)
-    prefill_local = PrefillLocalExpertProgram(pipeline, runner)
-    return NPULayerPrograms(
-        PrefillDispatchOnceProgram(
+    if prefill_mode == "layer":
+        prefill = PrefillLayerProgram(
+            dispatcher,
+            layout,
+            runner,
+            access,
+            compute_scope=lambda ctx: _compute_scope(ctx, device),
+            pipeline=pipeline,
+            profile=profile,
+        )
+    else:
+        prefill_local = PrefillLocalExpertProgram(pipeline, runner)
+        prefill = PrefillDispatchOnceProgram(
             dispatcher,
             prefill_local,
             layout,
             local_experts=experts.num_local_experts,
             pipeline=pipeline,
-        ),
+        )
+    return NPULayerPrograms(
+        prefill,
         DispatchOnceProgram(
             decode_waves,
             dispatcher,
