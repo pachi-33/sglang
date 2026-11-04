@@ -207,6 +207,7 @@ if role == "prefill":
         (Path(logs) / "offload.json").write_text(output)
 PY_CONFIG
 
+export HCCL_BUFFSIZE=1024
 export PYTHONPATH="$SGLANG_ROOT/python${PYTHONPATH:+:$PYTHONPATH}"
 if [[ $ROLE != router ]]; then
   export ASCEND_MF_STORE_URL=${ASCEND_MF_STORE_URL:-tcp://$P_IP:$MF_STORE_PORT}
@@ -220,7 +221,7 @@ if [[ $ROLE != router ]]; then
     export HCCL_OP_EXPANSION_MODE=AIV INF_NAN_MODE_FORCE_DISABLE=1
   else
     export TASK_QUEUE_ENABLE=0 SGLANG_ENABLE_OVERLAP_PLAN_STREAM=1
-    export SGLANG_NPU_USE_MULTI_STREAM=1 HCCL_BUFFSIZE=650
+    export SGLANG_NPU_USE_MULTI_STREAM=1 HCCL_BUFFSIZE=1024
     export SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK=32
   fi
   printf 'KV store: %s; communication interface: %s\n' "$ASCEND_MF_STORE_URL" "$COMM_IFACE"
