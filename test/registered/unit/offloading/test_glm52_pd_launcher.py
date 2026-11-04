@@ -128,9 +128,11 @@ class TestGlm52PdLauncher(unittest.TestCase):
                     )
                     self._assert_option(command, "--ep-size", 16 if node == 0 else 32)
                     self._assert_option(
-                        command, "--max-running-requests", 16 if node == 0 else 128
+                        command, "--max-running-requests", 64 if node == 0 else 128
                     )
                     if node == 0:
+                        self._assert_option(command, "--context-length", 180000)
+                        self._assert_option(command, "--chunked-prefill-size", 65536)
                         self.assertIn("--moe-offload-config", command)
                         self.assertIn('"mode": "prefill_only"', result.stdout)
                         self.assertIn('"cache_ratio": 0', result.stdout)
@@ -147,7 +149,7 @@ class TestGlm52PdLauncher(unittest.TestCase):
             ((_IPS[0],), {"D0_IP": _IPS[0]}, "three distinct node addresses"),
             ((_IPS[2],), {"NODE_RANK": "0"}, "conflicts with detected D1_IP"),
             ((_IPS[0],), {"COMM_IFACE": "management0"}, "does not own detected IP"),
-            ((_IPS[0],), {"D1_IP": ""}, "Set D1_IP to a valid node IPv4"),
+            ((_IPS[0],), {"D1_IP": "invalid"}, "Set D1_IP to a valid node IPv4"),
             ((_IPS[0],), {"D1_IP": "127.0.0.1"}, "non-loopback unicast IPv4"),
         )
         for local_ips, overrides, message in cases:

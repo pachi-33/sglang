@@ -6,21 +6,21 @@ set -eo pipefail
 
 # ==================== 必填：修改这四项，三台机器保持一致 ====================
 # 在引号内填实际值；已有同名环境变量时，环境变量优先。
-MODEL_PATH=${MODEL_PATH:-""} # 本机 GLM-5.2 ModelSlim 权重目录，例如 /models/GLM-5.2
-P_IP=${P_IP:-""}             # P 机器实际绑定的、其他节点可达的通信 IPv4
-D0_IP=${D0_IP:-""}           # D 第 0 台机器的通信 IPv4（也是 D rendezvous / HTTP 地址）
-D1_IP=${D1_IP:-""}           # D 第 1 台机器的通信 IPv4
+MODEL_PATH=${MODEL_PATH:-"/home/weights/GLM-5.2-w8a8"} # 本机 GLM-5.2 ModelSlim 权重目录，例如 /models/GLM-5.2
+P_IP=${P_IP:-"61.47.19.69"}             # P 机器实际绑定的、其他节点可达的通信 IPv4
+D0_IP=${D0_IP:-"61.47.19.70"}           # D 第 0 台机器的通信 IPv4（也是 D rendezvous / HTTP 地址）
+D1_IP=${D1_IP:-"61.47.19.71"}           # D 第 1 台机器的通信 IPv4
 
 # ==================== 通常不用改：按需确认容量和模型能力 ====================
 COMM_IFACE=${COMM_IFACE:-""} # auto 时留空：从匹配 IP 自动找网卡；显式角色入口需填写
 ENABLE_MTP=${ENABLE_MTP:-0}  # 仅当 checkpoint 含 NextN 权重时设为 1；三台一致
 MTP_DRAFT_QUANTIZATION=${MTP_DRAFT_QUANTIZATION:-unquant}
-CONTEXT_LENGTH=${CONTEXT_LENGTH:-16384}
+CONTEXT_LENGTH=${CONTEXT_LENGTH:-180000}
 MEM_FRACTION_STATIC=${MEM_FRACTION_STATIC:-0.8}
 HOST_POOL_GIB=${HOST_POOL_GIB:-48} # 仅 P，每 rank 的 GiB；16 rank 共 768 GiB，需额外装载/系统内存
 EXECUTION_SLOTS=${EXECUTION_SLOTS:-""} # 仅 P，留空自动计算两个整层 bank 的槽数
-CHUNKED_PREFILL_SIZE=${CHUNKED_PREFILL_SIZE:-8192} # 仅 P
-P_MAX_RUNNING_REQUESTS=${P_MAX_RUNNING_REQUESTS:-16}
+CHUNKED_PREFILL_SIZE=${CHUNKED_PREFILL_SIZE:-65536} # 仅 P
+P_MAX_RUNNING_REQUESTS=${P_MAX_RUNNING_REQUESTS:-64}
 D_MAX_RUNNING_REQUESTS=${D_MAX_RUNNING_REQUESTS:-128}
 # MAX_RUNNING_REQUESTS 环境变量可覆盖本机对应角色的并发值；一般不必设置。
 export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
