@@ -148,7 +148,7 @@ python3 test/manual/test_ascend_glm_offload_formats.py --device 0
 
 ## GLM-5.2：单机 P 卸载 + 两机 D
 
-[serve_glm52_pd.sh](serve_glm52_pd.sh) 提供 `prefill`、`decode`、`router` 三个入口。原混部脚本和未指定 `mode` 的 offload 配置保持原有行为。新模式只卸载 P 主模型的全部 routed experts；dense、attention、shared experts 和 MTP draft 常驻。D 不配置 offload。
+[serve_glm52_pd.sh](serve_glm52_pd.sh) 默认根据本机 IP 自动选择 P、D0 或 D1，三台机器使用同一份脚本、同一条启动命令。另保留 `prefill`、`decode` 显式入口和独立的 `router` 入口。原混部脚本和未指定 `mode` 的 offload 配置保持原有行为。新模式只卸载 P 主模型的全部 routed experts；dense、attention、shared experts 和 MTP draft 常驻。D 不配置 offload。
 
 并行划分沿用 [GLM-5.2 A3 PD 手册](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/tutorials/glm_5_2#prefill-decode-disaggregation-deployment)，D 扩为两台组成一个实例。脚本使用当前分支的 `--attn-dp-size`，与手册的 `--dp-size N --enable-dp-attention` 对应。
 
@@ -161,39 +161,78 @@ P 复用现有双 bank 逐层预取及 W13/W2 独立等待，关闭图和 overla
 
 ### 启动
 
-三台机器需要相同版本的代码和兼容依赖，checkpoint 内容和 MTP 开关一致。在每台机器设置以下环境变量；`COMM_IFACE` 是**本机**承载通信地址的真实网卡，不能照抄混部脚本中的 `lo`：
+三台机器需要相同版本的代码和兼容依赖，checkpoint 内容和 MTP 开关一致。先修改脚本顶部标出的四个必填项：`MODEL_PATH`、`P_IP`、`D0_IP`、`D1_IP`，再将同一份脚本放到三台机器。IP 必须是对应主机实际绑定且互通的通信网 IPv4，不填主机名、NAT 地址或 `127.0.0.1`。模型在三台机器的路径相同时，配置可以完全相同；路径不同则在对应机器用环境变量覆盖 `MODEL_PATH`。
+
+所有配置仍支持环境变量优先覆盖，不想修改脚本时，可在三台机器设置同一组变量。以下地址仅为示例，必须替换为实际值：
 
 ```bash
 export MODEL_PATH=/models/GLM-5.2-ModelSlim
 export P_IP=10.0.0.11
 export D0_IP=10.0.0.12
-export COMM_IFACE=eth0
-export ENABLE_MTP=0
+export D1_IP=10.0.0.13
 ```
 
-先启动 P，然后在 D0、D1 上分别启动同一 Decode 实例：
+先在每台机器运行同一条预检命令，确认输出的角色、D rank 和通信网卡符合预期：
 
 ```bash
-# P 主机
-HOST_POOL_GIB=48 bash scripts/moe_offload/serve_glm52_pd.sh prefill
+bash scripts/moe_offload/serve_glm52_pd.sh --dry-run
+```
 
-# D0 主机
-NODE_RANK=0 bash scripts/moe_offload/serve_glm52_pd.sh decode
+然后在 P、D0、D1 上分别运行**完全相同**的启动命令，可先启动 P，再启动两台 D：
 
-# D1 主机
-NODE_RANK=1 bash scripts/moe_offload/serve_glm52_pd.sh decode
+```bash
+bash scripts/moe_offload/serve_glm52_pd.sh
+# 显式写 auto 与无参等价：bash scripts/moe_offload/serve_glm52_pd.sh auto
+```
 
-# P/D ready 后，在可连接 P、D0 的主机运行；此角色无须模型与 NPU 环境
+自动模式读取 Linux `ip -j -4 addr show up`，在所有已启用网卡的本机 IPv4 中精确匹配配置地址，不依赖地址枚举顺序或三台机器的网卡名称相同：
+
+| 匹配到的本机地址 | 角色 | `NODE_RANK` | `COMM_IFACE` |
+| --- | --- | --- | --- |
+| `P_IP` | `prefill` | 0 | 承载该 IP 的本机网卡 |
+| `D0_IP` | `decode` | 0 | 承载该 IP 的本机网卡 |
+| `D1_IP` | `decode` | 1 | 承载该 IP 的本机网卡 |
+
+通常无须设置 `NODE_RANK` 或 `COMM_IFACE`。三个配置 IP 重复、本机没有匹配地址、本机匹配多个角色，或已有 `NODE_RANK` 与识别结果冲突时，脚本拒绝启动；清理旧部署遗留的环境变量后重试。若显式设置 `COMM_IFACE`，该网卡必须持有匹配到的本机 IP；不能使用混部脚本中的 `lo`。自动模式需要 Linux `ip` 命令支持 JSON 输出。容器内启动时，其网络命名空间必须能看到所配置的本机 IP；只看到容器私网地址时无法据此识别宿主机角色。
+
+P/D ready 后，在能连接 P、D0 的主机单独启动 Router：
+
+```bash
 bash scripts/moe_offload/serve_glm52_pd.sh router
 ```
 
-Router 只登记 `D0_IP`，D1 通过共同的 `D0_IP:DIST_PORT` 加入 32-rank 实例，不是第二个 Decode 服务。默认 P HTTP 为 8000、bootstrap 为 8998、D HTTP 为 8003、D rendezvous 为 5000、Router 为 6688；可分别用 `P_PORT`、`BOOTSTRAP_PORT`、`D_PORT`、`DIST_PORT`、`ROUTER_PORT` 覆盖，关联节点须保持一致。
+Router 无须匹配本机 IP，也不要求模型或 NPU 环境；需要安装 Router 的软件依赖，并配置 `P_IP`、`D0_IP` 和关联端口。Router 只登记 `D0_IP`，D1 通过共同的 `D0_IP:DIST_PORT` 加入 32-rank 实例，不是第二个 Decode 服务。默认 P HTTP 为 8000、bootstrap 为 8998、D HTTP 为 8003、D rendezvous 为 5000、Router 为 6688；可分别用 `P_PORT`、`BOOTSTRAP_PORT`、`D_PORT`、`DIST_PORT`、`ROUTER_PORT` 覆盖，关联节点须保持一致。
 
 三台 `ASCEND_MF_STORE_URL` 默认均为 `tcp://$P_IP:24707`（可用 `MF_STORE_PORT` 改端口或显式覆盖 URL）。这个 KV store 与 D 的 rendezvous 是两个独立端口。当前 PD 默认使用 SDMA；安装版本支持时可设置 `ASCEND_MF_TRANSFER_PROTOCOL` 选择其他协议。部署前需确认 A3 fabric 支持所选跨机协议，普通 IP 可达不等于 SDMA 可达。
 
 脚本默认使用本机 16 个 die；可用 `ASCEND_RT_VISIBLE_DEVICES` 指定另一个含 16 个不同设备 ID 的列表。P 会复用既有 MemFabric 搬运扩展和 native ACL 构建流程。Ascend 环境安装位置不同，可设置 `CANN_ENV`、`ATB_ENV`、`CUSTOMIZE_ENV`、`CUSTOM_TRANSFORMER_ENV`。`RUNTIME_DIR` 放构建缓存，`LOG_DIR` 放本次日志和 P 的 `offload.json`，默认均在 `/tmp` 下；两者须为绝对路径。切换依赖版本时使用新的 `RUNTIME_DIR`。
 
+旧的显式入口继续可用，此时手工指定本机 `COMM_IFACE`，Decode 还须指定 `NODE_RANK`；只要求 `P_IP`、`D0_IP`，不要求 `D1_IP`，也不执行自动角色识别。下列网卡名称必须按各机器实际情况替换：
+
+```bash
+# P 主机
+COMM_IFACE=eth0 bash scripts/moe_offload/serve_glm52_pd.sh prefill
+# D0 主机
+COMM_IFACE=eth0 NODE_RANK=0 bash scripts/moe_offload/serve_glm52_pd.sh decode
+# D1 主机
+COMM_IFACE=eth0 NODE_RANK=1 bash scripts/moe_offload/serve_glm52_pd.sh decode
+```
+
 ### 配置与容量
+
+| 类别 | 参数 | 需要自己配置的内容 |
+| --- | --- | --- |
+| 自动模式必填 | `MODEL_PATH` | 本机 GLM-5.2 ModelSlim checkpoint 目录，必须含 `config.json`；三台 checkpoint 内容一致。 |
+| 自动模式必填 | `P_IP`、`D0_IP`、`D1_IP` | 三台机器的通信网 IPv4；全组使用同一份映射，三个 IP 不得重复。 |
+| 通常自动 | `NODE_RANK`、`COMM_IFACE` | 无参 / `auto` 自动识别；显式入口才需要手工设置。自动模式中的手工覆盖必须与本机识别结果一致。 |
+| 通常沿用默认 | `P_PORT=8000`、`D_PORT=8003`、`BOOTSTRAP_PORT=8998`、`DIST_PORT=5000`、`ROUTER_PORT=6688`、`MF_STORE_PORT=24707` | 仅端口冲突或组网要求变化时修改；关联节点和 Router 配置一致。 |
+| 通常沿用默认 | `ASCEND_RT_VISIBLE_DEVICES`、`ASCEND_MF_STORE_URL` | 默认使用本机 0–15 共 16 个 die；KV store 默认 `tcp://$P_IP:24707`，三台指向同一地址。 |
+| 容量需确认 | `HOST_POOL_GIB=48`、`EXECUTION_SLOTS` | 仅 P 生效。前者为每 rank 的 Host 池，整机默认 768 GiB，另留装载和系统内存；后者默认自动满足双 bank，通常不填。 |
+| 容量需确认 | `CONTEXT_LENGTH=16384`、`CHUNKED_PREFILL_SIZE=8192`、`MEM_FRACTION_STATIC=0.8` | 按上下文、Host/HBM 余量及实测吞吐调整；chunk 仅 P 使用。 |
+| 容量需确认 | `P_MAX_RUNNING_REQUESTS=16`、`D_MAX_RUNNING_REQUESTS=128` | 可在同一份脚本中分别配置 P、D 并发。旧 `MAX_RUNNING_REQUESTS` 优先覆盖当前机器的值，通常留空。 |
+| 模型能力需确认 | `ENABLE_MTP=0`、`MTP_DRAFT_QUANTIZATION=unquant` | 启用前确认 checkpoint 含对应 draft 权重，P、D0、D1 保持一致，并预留常驻 draft 显存。 |
+| 非标准依赖路径 | `CANN_ENV`、`ATB_ENV`、`CUSTOMIZE_ENV`、`CUSTOM_TRANSFORMER_ENV` | 依赖未安装在脚本默认 `/usr/local/Ascend/...` 路径时，填写实际环境脚本路径。 |
+| 按需修改 | `RUNTIME_DIR`、`LOG_DIR`、`MAX_JOBS=4` | 构建缓存和日志默认放 `/tmp`；目录必须是绝对路径，切换依赖版本时更换构建缓存目录。`MAX_JOBS` 控制 P 的扩展构建并发。 |
 
 P 自动生成最小配置，不读取混部的热点 profile：
 
@@ -212,18 +251,18 @@ P 自动生成最小配置，不读取混部的热点 profile：
 
 `HOST_POOL_GIB=48` 是 **每 rank** 的初始预算，P 整机预留 768 GiB，此外还需 checkpoint 装载、常驻对象和系统内存。GLM-5.2 的 75 个 routed MoE 层在 W8 下仅权重本体约 42.1875 GiB/rank，元数据与分配对齐另计；loader 会按实际格式检查预算。W4 不能仅用 W8 总预算除以二，尤其要计入 per-group 元数据。D 无此 Host 池。
 
-保守起点为 `CONTEXT_LENGTH=16384`、P `CHUNKED_PREFILL_SIZE=8192`、P `MAX_RUNNING_REQUESTS=16`、D `MAX_RUNNING_REQUESTS=128`、`MEM_FRACTION_STATIC=0.8`。P 的 chunk 参数会按 Attention DP4 归一为每 DP 2048。每一个 chunk 都重新搬运全部 routed 专家；双 bank 重叠搬运与计算，不减少搬运字节数。先测 P 吞吐与 D 等待比例，再增加 chunk 或并发，不能直接套用手册的大 chunk。
+保守起点为 `CONTEXT_LENGTH=16384`、P `CHUNKED_PREFILL_SIZE=8192`、`P_MAX_RUNNING_REQUESTS=16`、`D_MAX_RUNNING_REQUESTS=128`、`MEM_FRACTION_STATIC=0.8`。已有 `MAX_RUNNING_REQUESTS` 仍可在单机覆盖对应角色的默认值；复制公共配置时通常留空。P 的 chunk 参数会按 Attention DP4 归一为每 DP 2048。每一个 chunk 都重新搬运全部 routed 专家；双 bank 重叠搬运与计算，不减少搬运字节数。先测 P 吞吐与 D 等待比例，再增加 chunk 或并发，不能直接套用手册的大 chunk。
 
 MTP 默认关闭，因为 checkpoint 可能不包含 NextN 权重。需要时在 **P、D0、D1 同时**设置 `ENABLE_MTP=1`；脚本复用 `glm52_mtp_config.py`，先读取配置和 safetensors 头部验证 MTP。默认 `MTP_DRAFT_QUANTIZATION=unquant`，必须确实包含浮点 draft。参数沿用 PD 手册：P NEXTN steps=1 / topk=1 / draft tokens=2，D steps=3 / topk=1 / draft tokens=4；draft 始终常驻。若实际使用受支持的量化 draft，三台统一显式设置 `MTP_DRAFT_QUANTIZATION=modelslim`。
 
 ### 预检与设备验收
 
-给任一入口增加 `--dry-run`，只做本地配置 / MTP 头部检查，并显示 P JSON 与完整启动命令；不加载模型、不 source CANN、不构建扩展、不创建日志或配置文件：
+给任一入口增加 `--dry-run`，只做本地 IP 识别（自动模式）、配置 / MTP 头部检查，并显示角色、通信网卡、P JSON 与完整启动命令；不加载模型、不 source CANN、不构建扩展、不创建日志或配置文件：
 
 ```bash
-bash scripts/moe_offload/serve_glm52_pd.sh prefill --dry-run
-NODE_RANK=0 bash scripts/moe_offload/serve_glm52_pd.sh decode --dry-run
-NODE_RANK=1 bash scripts/moe_offload/serve_glm52_pd.sh decode --dry-run
+# P、D0、D1 都执行同一条，亦可写 auto --dry-run
+bash scripts/moe_offload/serve_glm52_pd.sh --dry-run
+# Router 仍显式指定，不执行本机 IP 识别
 bash scripts/moe_offload/serve_glm52_pd.sh router --dry-run
 ```
 
