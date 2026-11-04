@@ -1,4 +1,4 @@
-"""Exercise the real PD launcher with only stdlib, a fake ip command and dry-run."""
+"""Exercise the real PD launcher with only stdlib, mocked interfaces and no network commands and dry-run."""
 
 import json
 import shlex
@@ -28,26 +28,39 @@ class TestGlm52PdLauncher(unittest.TestCase):
         self.root = Path(temporary.name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        # A closed PATH makes missing-ip tests independent of the host OS and
+        # A closed PATH excludes ip/ifconfig/hostname on every test host and
         # prevents inherited model/fabric/Ascend configuration affecting results.
         for name, executable in (
-            ("python3", sys.executable),
             ("dirname", shutil.which("dirname")),
             ("date", shutil.which("date")),
             ("cat", shutil.which("cat")),
         ):
             (self.bin / name).symlink_to(executable)
-        self.ip = self.bin / "ip"
-        self.ip.write_text(
+        python = self.bin / "python3"
+        python.write_text(
             f"#!{sys.executable}\n"
-            "import os, pathlib, sys\n"
-            "assert sys.argv[1:] == ['-j', '-4', 'addr', 'show', 'up']\n"
-            "pathlib.Path(os.environ['STUB_IP_CALLS']).write_text('called')\n"
-            "print(os.environ['STUB_IP_RESULT'])\n"
-            "sys.exit(int(os.environ.get('STUB_IP_EXIT', '0')))\n",
+            "import json, os, pathlib, sys\n"
+            "if len(sys.argv) > 1 and sys.argv[1].endswith('/pd_node.py'):\n"
+            "    sys.path.insert(0, str(pathlib.Path(sys.argv[1]).parent))\n"
+            "    import pd_node\n"
+            "    from unittest.mock import patch\n"
+            "    def enumerate_interfaces():\n"
+            "        pathlib.Path(os.environ['STUB_ENUM_CALLS']).touch()\n"
+            "        if os.environ.get('STUB_ENUM_ERROR'):\n"
+            "            raise OSError(os.environ['STUB_ENUM_ERROR'])\n"
+            "        local = {}\n"
+            "        for interface in json.loads(os.environ['STUB_INTERFACES']):\n"
+            "            for info in interface.get('addr_info', []):\n"
+            "                if info.get('family') == 'inet':\n"
+            "                    local.setdefault(info['local'], set()).add(interface['ifname'])\n"
+            "        return local\n"
+            "    with patch.object(pd_node, 'local_ipv4_interfaces', side_effect=enumerate_interfaces):\n"
+            "        pd_node.main(sys.argv[2:])\n"
+            "    sys.exit(0)\n"
+            f"os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])\n",
             encoding="utf-8",
         )
-        self.ip.chmod(0o755)
+        python.chmod(0o755)
         self.model = self.root / "model with spaces"
         self.model.mkdir()
         (self.model / "config.json").write_text(
@@ -70,12 +83,12 @@ class TestGlm52PdLauncher(unittest.TestCase):
             "D1_IP": _IPS[2],
             "RUNTIME_DIR": str(self.root / "runtime"),
             "LOG_DIR": str(self.root / "logs"),
-            "STUB_IP_CALLS": str(self.calls),
+            "STUB_ENUM_CALLS": str(self.calls),
         }
         self._set_local(_IPS[0])
 
     def _set_local(self, *addresses):
-        self.env["STUB_IP_RESULT"] = json.dumps(
+        self.env["STUB_INTERFACES"] = json.dumps(
             [
                 _interface("lo", "127.0.0.1"),
                 _interface("management0", "192.168.99.20"),
@@ -146,7 +159,7 @@ class TestGlm52PdLauncher(unittest.TestCase):
         cases = (
             (("192.168.99.21",), {}, "exactly one local node IP match"),
             ((_IPS[0], _IPS[1]), {}, "exactly one local node IP match"),
-            ((_IPS[0],), {"D0_IP": _IPS[0]}, "three distinct node addresses"),
+            ((_IPS[0],), {"D0_IP": _IPS[0]}, "distinct node addresses"),
             ((_IPS[2],), {"NODE_RANK": "0"}, "conflicts with detected D1_IP"),
             ((_IPS[0],), {"COMM_IFACE": "management0"}, "does not own detected IP"),
             ((_IPS[0],), {"D1_IP": "invalid"}, "Set D1_IP to a valid node IPv4"),
@@ -167,19 +180,20 @@ class TestGlm52PdLauncher(unittest.TestCase):
         )
         self._assert_option(command, "--node-rank", 1)
 
-    def test_missing_ip_reports_explicit_role_fallback(self):
-        self.ip.unlink()
+    def test_native_enumeration_failure_is_reported(self):
+        result = self._run(overrides={"STUB_ENUM_ERROR": "simulated failure"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Cannot identify local PD node", result.stderr)
+        self.assertIn("simulated failure", result.stderr)
+
+    def test_same_ip_on_multiple_interfaces_needs_override(self):
+        interfaces = json.loads(self.env["STUB_INTERFACES"])
+        interfaces.append(_interface("other0", _IPS[0]))
+        self.env["STUB_INTERFACES"] = json.dumps(interfaces)
         result = self._run()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("requires Linux iproute2", result.stderr)
-        self.assertIn("explicit role with COMM_IFACE", result.stderr)
-
-    def test_failed_or_invalid_ip_output_is_rejected(self):
-        for overrides in ({"STUB_IP_EXIT": "1"}, {"STUB_IP_RESULT": "not JSON"}):
-            with self.subTest(overrides=overrides):
-                result = self._run(overrides=overrides)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("Cannot read local IPv4 addresses", result.stderr)
+        self.assertIn("multiple interfaces", result.stderr)
+        self._command(self._run(overrides={"COMM_IFACE": "bond0"}))
 
     def test_explicit_roles_do_not_require_d1_or_scan_addresses(self):
         for role, rank in (("prefill", "0"), ("decode", "0"), ("decode", "1")):
@@ -191,7 +205,7 @@ class TestGlm52PdLauncher(unittest.TestCase):
                             "D1_IP": "",
                             "COMM_IFACE": "explicit0",
                             "NODE_RANK": rank,
-                            "STUB_IP_EXIT": "99",
+                            "STUB_ENUM_ERROR": "must not enumerate",
                         },
                     )
                 )
@@ -203,7 +217,11 @@ class TestGlm52PdLauncher(unittest.TestCase):
         command = self._command(
             self._run(
                 "router",
-                overrides={"MODEL_PATH": "", "D1_IP": "", "STUB_IP_EXIT": "99"},
+                overrides={
+                    "MODEL_PATH": "",
+                    "D1_IP": "",
+                    "STUB_ENUM_ERROR": "must not enumerate",
+                },
             )
         )
         self.assertIn("sglang_router.launch_router", command)

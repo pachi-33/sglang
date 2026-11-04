@@ -48,21 +48,27 @@ class TestGlm52PdBaselineLauncher(unittest.TestCase):
             "and os.environ.get('STUB_MTP_OK') == '1':\n"
             "    pathlib.Path(os.environ['STUB_MTP_CALL']).write_text(json.dumps(sys.argv[1:]))\n"
             "    sys.exit(0)\n"
+            "if len(sys.argv) > 1 and sys.argv[1].endswith('/pd_node.py'):\n"
+            "    sys.path.insert(0, str(pathlib.Path(sys.argv[1]).parent))\n"
+            "    import pd_node\n"
+            "    from unittest.mock import patch\n"
+            "    def enumerate_interfaces():\n"
+            "        pathlib.Path(os.environ['STUB_ENUM_CALLS']).touch()\n"
+            "        if os.environ.get('STUB_ENUM_ERROR'):\n"
+            "            raise OSError(os.environ['STUB_ENUM_ERROR'])\n"
+            "        local = {}\n"
+            "        for interface in json.loads(os.environ['STUB_INTERFACES']):\n"
+            "            for info in interface.get('addr_info', []):\n"
+            "                if info.get('family') == 'inet':\n"
+            "                    local.setdefault(info['local'], set()).add(interface['ifname'])\n"
+            "        return local\n"
+            "    with patch.object(pd_node, 'local_ipv4_interfaces', side_effect=enumerate_interfaces):\n"
+            "        pd_node.main(sys.argv[2:])\n"
+            "    sys.exit(0)\n"
             f"os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])\n",
             encoding="utf-8",
         )
         python.chmod(0o755)
-        self.ip = self.bin / "ip"
-        self.ip.write_text(
-            f"#!{sys.executable}\n"
-            "import os, pathlib, sys\n"
-            "assert sys.argv[1:] == ['-j', '-4', 'addr', 'show', 'up']\n"
-            "pathlib.Path(os.environ['STUB_IP_CALL']).touch()\n"
-            "print(os.environ['STUB_IP_RESULT'])\n"
-            "sys.exit(int(os.environ.get('STUB_IP_EXIT', '0')))\n",
-            encoding="utf-8",
-        )
-        self.ip.chmod(0o755)
         self.model = self.root / "model with spaces"
         self.model.mkdir()
         (self.model / "config.json").write_text(
@@ -86,7 +92,7 @@ class TestGlm52PdBaselineLauncher(unittest.TestCase):
             **dict(zip(("P0_IP", "P1_IP", "D0_IP", "D1_IP"), _IPS)),
             "CANN_ENV": str(environment),
             "ATB_ENV": str(environment),
-            "STUB_IP_CALL": str(self.root / "ip-called"),
+            "STUB_ENUM_CALLS": str(self.root / "enum-called"),
             "STUB_MTP_CALL": str(self.root / "mtp-called"),
             "RUNTIME_DIR": str(self.root / "unused-offload-runtime"),
         }
@@ -94,7 +100,7 @@ class TestGlm52PdBaselineLauncher(unittest.TestCase):
         self._local(_IPS[0])
 
     def _local(self, *addresses):
-        self.env["STUB_IP_RESULT"] = json.dumps(
+        self.env["STUB_INTERFACES"] = json.dumps(
             [
                 _interface("lo", "127.0.0.1"),
                 _interface("management0", "192.168.99.20"),
@@ -209,7 +215,7 @@ class TestGlm52PdBaselineLauncher(unittest.TestCase):
     def test_invalid_identity_and_capacity_fail_before_launch(self):
         cases = (
             ((_IPS[0],), {"P1_IP": "invalid"}, "Set P1_IP"),
-            ((_IPS[0],), {"P1_IP": _IPS[0]}, "four distinct"),
+            ((_IPS[0],), {"P1_IP": _IPS[0]}, "distinct node addresses"),
             (("192.168.99.21",), {}, "exactly one local node IP match"),
             ((_IPS[0], _IPS[2]), {}, "exactly one local node IP match"),
             ((_IPS[1],), {"NODE_RANK": "0"}, "conflicts with detected P1_IP"),
@@ -251,7 +257,6 @@ class TestGlm52PdBaselineLauncher(unittest.TestCase):
         self.assertNotIn("Command:", result.stdout)
 
     def test_router_registers_only_instance_leaders(self):
-        self.ip.unlink()
         for dry in (True, False):
             with self.subTest(dry=dry):
                 command = self._command(
@@ -271,7 +276,7 @@ class TestGlm52PdBaselineLauncher(unittest.TestCase):
                 self._option(command, "--decode", f"http://{_IPS[2]}:8003")
                 self.assertEqual(command.count("--prefill"), 1)
                 self.assertEqual(command.count("--decode"), 1)
-                self.assertFalse((self.root / "ip-called").exists())
+                self.assertFalse((self.root / "enum-called").exists())
 
 
 if __name__ == "__main__":

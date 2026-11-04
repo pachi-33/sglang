@@ -185,7 +185,7 @@ bash scripts/moe_offload/serve_glm52_pd.sh
 # 显式写 auto 与无参等价：bash scripts/moe_offload/serve_glm52_pd.sh auto
 ```
 
-自动模式读取 Linux `ip -j -4 addr show up`，在所有已启用网卡的本机 IPv4 中精确匹配配置地址，不依赖地址枚举顺序或三台机器的网卡名称相同：
+自动模式通过 Python 标准库调用系统 `getifaddrs` 接口，在所有已启用网卡的本机 IPv4 中精确匹配配置地址，不依赖地址枚举顺序或三台机器的网卡名称相同：
 
 | 匹配到的本机地址 | 角色 | `NODE_RANK` | `COMM_IFACE` |
 | --- | --- | --- | --- |
@@ -193,7 +193,7 @@ bash scripts/moe_offload/serve_glm52_pd.sh
 | `D0_IP` | `decode` | 0 | 承载该 IP 的本机网卡 |
 | `D1_IP` | `decode` | 1 | 承载该 IP 的本机网卡 |
 
-通常无须设置 `NODE_RANK` 或 `COMM_IFACE`。三个配置 IP 重复、本机没有匹配地址、本机匹配多个角色，或已有 `NODE_RANK` 与识别结果冲突时，脚本拒绝启动；清理旧部署遗留的环境变量后重试。若显式设置 `COMM_IFACE`，该网卡必须持有匹配到的本机 IP；不能使用混部脚本中的 `lo`。自动模式需要 Linux `ip` 命令支持 JSON 输出。容器内启动时，其网络命名空间必须能看到所配置的本机 IP；只看到容器私网地址时无法据此识别宿主机角色。
+通常无须设置 `NODE_RANK` 或 `COMM_IFACE`。三个配置 IP 重复、本机没有匹配地址、本机匹配多个角色，或已有 `NODE_RANK` 与识别结果冲突时，脚本拒绝启动；清理旧部署遗留的环境变量后重试。若显式设置 `COMM_IFACE`，该网卡必须持有匹配到的本机 IP；不能使用混部脚本中的 `lo`。无需安装 `ip`、`ifconfig` 或 `hostname` 命令，也不需要额外 Python 包。两份脚本共用同目录的 `pd_node.py`，复制脚本时须一并保留该文件。容器内启动时，其网络命名空间必须能看到所配置的本机 IP；只看到容器私网地址时无法据此识别宿主机角色。
 
 P/D ready 后，在能连接 P、D0 的主机单独启动 Router：
 
@@ -293,7 +293,7 @@ export D0_IP=10.0.0.13
 export D1_IP=10.0.0.14
 ```
 
-四个 IP 填各主机实际绑定、彼此可达的通信网 IPv4，示例地址必须替换。默认通过 `ip -j -4 addr show up` 精确匹配所有本机地址，自动确定角色、组内 rank 和网卡：P0/P1 分别为 Prefill rank 0/1，D0/D1 分别为 Decode rank 0/1。`NODE_RANK` 和 `COMM_IFACE` 通常不用填写；已有覆盖若与识别结果冲突，会在启动前报错。IP 重复、没有匹配或本机同时匹配多个节点也会报错。容器必须能看到所配置的本机 IP，例如使用教程的 host 网络。
+四个 IP 填各主机实际绑定、彼此可达的通信网 IPv4，示例地址必须替换。默认通过同目录 `pd_node.py` 使用 Python 标准库和系统 `getifaddrs` 精确匹配所有本机 IPv4 地址（包括同网卡的多个地址），无需 `ip`、`ifconfig` 或 `hostname`，自动确定角色、组内 rank 和网卡：P0/P1 分别为 Prefill rank 0/1，D0/D1 分别为 Decode rank 0/1。`NODE_RANK` 和 `COMM_IFACE` 通常不用填写；已有覆盖若与识别结果冲突，会在启动前报错。IP 重复、没有匹配或本机同时匹配多个节点也会报错。容器必须能看到所配置的本机 IP，例如使用教程的 host 网络。
 
 四台先执行同一条预检命令，确认角色、rank、通信网卡和 rendezvous 地址：
 
@@ -344,3 +344,5 @@ python3 test/registered/unit/offloading/test_glm52_pd_baseline_launcher.py -v
 ```
 
 测试以模拟 IP 和伪服务进程覆盖四个节点的参数、组内 rank、两组 rendezvous、常驻配置、环境设置、Router、MTP 参数和错误配置；不运行 NPU 算子。`--dry-run` 也只检查本机配置与 MTP 头部，不能替代四机数值、KV 通信、HBM 容量和性能验收。
+
+网卡枚举与角色识别的独立检查：`python3 test/registered/unit/offloading/test_pd_node.py -v`。启动契约测试的 PATH 不包含网络命令；底层检查覆盖 Linux/macOS 地址结构、多 IPv4、接口状态、歧义检测和原生资源释放。

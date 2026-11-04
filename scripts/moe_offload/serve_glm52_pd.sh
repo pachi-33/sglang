@@ -69,71 +69,15 @@ done
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 SGLANG_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
+export PYTHONDONTWRITEBYTECODE=1
 [[ -n ${P_IP:-} && -n ${D0_IP:-} ]] || fail "Set P_IP and D0_IP to reachable node IPs"
 if [[ $ROLE == auto ]]; then
-  # 不取 hostname -I 的第一个地址：多网卡 / bond / VLAN 必须精确匹配配置 IP。
-  if ! node_info=$(python3 - "$P_IP" "$D0_IP" "$D1_IP" "${NODE_RANK:-}" "$COMM_IFACE" <<'PY_NODE'
-import ipaddress
-import json
-import subprocess
-import sys
-
-
-def fail(message):
-    sys.exit(f"ERROR: {message}")
-
-
-names = ("P_IP", "D0_IP", "D1_IP")
-addresses = sys.argv[1:4]
-for name, value in zip(names, addresses):
-    try:
-        address = ipaddress.IPv4Address(value)
-    except ipaddress.AddressValueError:
-        fail(f"Set {name} to a valid node IPv4 address (got {value!r})")
-    if address.is_loopback or address.is_unspecified or address.is_multicast or value == "255.255.255.255":
-        fail(f"{name} must be a reachable, non-loopback unicast IPv4 address")
-if len(set(addresses)) != 3:
-    fail("P_IP, D0_IP and D1_IP must be three distinct node addresses")
-try:
-    result = subprocess.run(
-        ["ip", "-j", "-4", "addr", "show", "up"],
-        check=True, capture_output=True, text=True,
-    )
-    interfaces = json.loads(result.stdout)
-except FileNotFoundError:
-    fail("Auto role detection requires Linux iproute2 (ip); install it or use an explicit role with COMM_IFACE")
-except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
-    fail(f"Cannot read local IPv4 addresses with iproute2: {exc}")
-
-local = {}
-for interface in interfaces:
-    name = interface["ifname"]
-    if name == "lo":
-        continue
-    for info in interface.get("addr_info", []):
-        if info.get("family") == "inet":
-            local.setdefault(info["local"], set()).add(name)
-matches = [index for index, address in enumerate(addresses) if address in local]
-if len(matches) != 1:
-    found = ", ".join(f"{names[index]}={addresses[index]}" for index in matches) or "none"
-    fail(f"Expected exactly one local node IP match, found {found}; check configuration and container host networking")
-index = matches[0]
-role, rank = (("prefill", "0"), ("decode", "0"), ("decode", "1"))[index]
-node_ip = addresses[index]
-rank_override, iface_override = sys.argv[4:6]
-if rank_override and rank_override != rank:
-    fail(f"NODE_RANK={rank_override} conflicts with detected {names[index]} (rank {rank}); unset NODE_RANK")
-if iface_override:
-    if iface_override not in local[node_ip]:
-        fail(f"COMM_IFACE={iface_override} does not own detected IP {node_ip}")
-    iface = iface_override
-else:
-    if len(local[node_ip]) != 1:
-        fail(f"IP {node_ip} belongs to multiple interfaces; set COMM_IFACE to one of {sorted(local[node_ip])}")
-    iface = next(iter(local[node_ip]))
-print(role, rank, node_ip, iface, sep="\n")
-PY_NODE
-  ); then
+  # 通过 Python 标准库调用系统接口，枚举全部 IPv4；不需要 ip / ifconfig / hostname。
+  if ! node_info=$(python3 "$SCRIPT_DIR/pd_node.py" \
+    --node P_IP "$P_IP" prefill 0 \
+    --node D0_IP "$D0_IP" decode 0 \
+    --node D1_IP "$D1_IP" decode 1 \
+    --node-rank "${NODE_RANK:-}" --comm-iface "$COMM_IFACE"); then
     fail "Automatic node identification failed; no server was started"
   fi
   {
@@ -147,7 +91,6 @@ fi
 RUNTIME_DIR=${RUNTIME_DIR:-/tmp/sglang-glm52-pd-$ROLE-runtime}
 LOG_DIR=${LOG_DIR:-/tmp/sglang-glm52-pd-$ROLE-$(date +%Y%m%d_%H%M%S)-$$}
 [[ $RUNTIME_DIR == /* && $LOG_DIR == /* ]] || fail "RUNTIME_DIR and LOG_DIR must be absolute paths"
-export PYTHONDONTWRITEBYTECODE=1
 
 # Build commands before preparing any accelerator environment. Dry-run needs
 # only Python's standard library and never loads torch_npu, CANN or the model.
