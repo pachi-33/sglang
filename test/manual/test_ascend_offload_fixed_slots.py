@@ -15,9 +15,119 @@ from sglang.srt.offloading.moe.npu.storage import MemFabricHostPool
 from sglang.srt.offloading.moe.state import ResidencyState
 
 
-def main():
+def check_component_metadata(device):
+    """Compile both production kernels; interpreter mode misses constexpr ABI bugs.
+
+    The explicit W8/W4 maps failed on Triton-Ascend 3.2.2 when the map was a
+    constexpr tuple: its frontend cannot subscript that wrapper. No model
+    weights, MemFabric allocation or native ACL extension are needed here.
+    """
+    import triton
+
+    from sglang.srt.offloading.moe.npu.small_batch_kernels import (
+        prepare_fixed_copies,
+        prepare_packed_copies,
+    )
+
+    experts, stride, start = 7, 23, 5
+    layouts = (
+        ("legacy-all", 6, tuple(range(6)), False, False),
+        ("legacy-w8", 6, (0, 1, 3, 4), True, False),
+        ("w8", 6, (0, 1, 3, 4), True, True),
+        ("w4-channel", 8, (0, 1, 3, 4, 5, 7), True, True),
+        ("w4-group", 12, (0, 3, 4, 6, 9, 10), True, True),
+    )
+    for label, total, selected, skip, explicit in layouts:
+        table = (
+            torch.arange(total * stride, dtype=torch.int64, device=device)
+            .reshape(total, stride)
+            .add_(2**40)
+        )
+        lengths = (
+            torch.arange(total * experts, dtype=torch.int32, device=device)
+            .reshape(total, experts)
+            .add_(100)
+        )
+        select = torch.tensor(selected, dtype=torch.int64, device=device)
+        expected_sources = table.index_select(0, select)[:, start : start + experts]
+        expected_lengths = lengths.index_select(0, select)
+        mapping = {}
+        if explicit:
+            bits = max(1, (total - 1).bit_length())
+            mapping = dict(
+                COMPONENT_MAP=sum(c << (p * bits) for p, c in enumerate(selected)),
+                COMPONENT_BITS=bits,
+            )
+        for cumulative in (False, True):
+            for enabled_value in (False, True):
+                for values in ([3, 0, 2, 1, 0, 4, 0], [0] * experts, [-1] + [0] * 6):
+                    counts = torch.tensor(values, dtype=torch.int64, device=device)
+                    raw = counts.cumsum(0) if cumulative else counts
+                    bad = min(values) < 0
+                    for fixed in (False, True):
+                        error = torch.zeros((), dtype=torch.int32, device=device)
+                        enabled = torch.tensor(enabled_value, device=device)
+                        access = torch.full(
+                            (stride,), 7, dtype=torch.int64, device=device
+                        )
+                        out_counts = torch.full_like(counts, -1)
+                        out_sources = torch.full(
+                            (len(selected), experts),
+                            -1,
+                            dtype=torch.int64,
+                            device=device,
+                        )
+                        out_lengths = torch.full_like(expected_lengths, -1)
+                        args = [raw, error, enabled, access, table]
+                        if fixed:
+                            args += [lengths, out_counts, out_sources, out_lengths]
+                            kernel = prepare_fixed_copies
+                        else:
+                            args += [out_counts, out_sources]
+                            kernel = prepare_packed_copies
+                        kernel[(1,)](
+                            *args,
+                            EXPERTS=experts,
+                            SOURCE_STRIDE=stride,
+                            START=start,
+                            COMPONENT_COUNT=len(selected),
+                            SKIP_OFFSETS=skip,
+                            CUMULATIVE=cumulative,
+                            BLOCK=triton.next_power_of_2(experts),
+                            **mapping,
+                        )
+                        torch.npu.synchronize()
+                        torch.testing.assert_close(out_sources, expected_sources)
+                        expected_counts = raw if fixed else counts
+                        if bad:
+                            expected_counts = torch.zeros_like(expected_counts)
+                        torch.testing.assert_close(out_counts, expected_counts)
+                        expected_access = torch.full_like(access, 7)
+                        if enabled_value and not bad:
+                            expected_access[start : start + experts] += counts
+                        torch.testing.assert_close(access, expected_access)
+                        if fixed:
+                            torch.testing.assert_close(
+                                out_lengths,
+                                torch.where(
+                                    (counts > 0)[None, :] & (not bad),
+                                    expected_lengths,
+                                    0,
+                                ),
+                            )
+                        assert error.item() == int(bad), (label, cumulative, fixed)
+    print(
+        "PASS: JIT W8/W4 component maps, legacy defaults, counts and fault masks",
+        flush=True,
+    )
+
+
+def main(*, metadata_only=False):
     torch.npu.set_device(0)
     device = torch.device("npu:0")
+    check_component_metadata(device)
+    if metadata_only:
+        return
     from sglang.srt.model_loader.loader import device_loading_context
 
     module = torch.nn.Module()
@@ -94,6 +204,9 @@ def main():
     owner.quant_info = object()
     owner.execution = SimpleNamespace(
         tensors={name: destination[c] for c, name in enumerate(names)}
+    )
+    owner.format = SimpleNamespace(
+        layouts={name: SimpleNamespace(runtime_name=name) for name in names}
     )
     owner._init_copy_plan(names)
     owner._publish_sources()
@@ -308,6 +421,8 @@ def main():
                 Groups=groups,
                 ExecutionKeys=keys,
                 KEY_START=layer * n,
+                COMPONENT_MAP=owner.fused_component_map,
+                COMPONENT_BITS=owner.fused_component_bits,
             )
         graphs[layer] = graph
     torch.npu.synchronize()
@@ -336,4 +451,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--metadata-only", action="store_true")
+    args = parser.parse_args()
+    main(metadata_only=args.metadata_only)
