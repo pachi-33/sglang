@@ -438,6 +438,62 @@ class TestAscendPrefillWeights(CustomTestCase):
         weights.weights(4, inputs)
         self.assertEqual(inputs.expert_tokens.tolist(), [0, 0, 0, 0])
 
+    def test_prefill_only_counts_need_no_lfu_state(self):
+        weights = object.__new__(AscendPrefillWeights)
+        weights.counts = torch.empty(4, dtype=torch.int64)
+        context = _Context()
+        weights.owner = SimpleNamespace(
+            local_experts=4,
+            error=torch.zeros((), dtype=torch.int32),
+            state=None,
+            catalog=SimpleNamespace(key=lambda layer, expert: expert),
+            context=context,
+        )
+        weights.quant_info = (object(), object())
+        weights.pipeline = SimpleNamespace(acquire=lambda layer, ctx: 0)
+        inputs = SimpleNamespace(
+            expert_tokens=torch.tensor([0, 3, 3, 5]), group_list_type=0
+        )
+        original = inputs.expert_tokens
+        self.assertIs(weights.weights(0, inputs), weights.quant_info[0])
+        self.assertEqual(inputs.expert_tokens.tolist(), [0, 3, 0, 2])
+        self.assertEqual(inputs.group_list_type, 1)
+        self.assertIs(context.resources[0], original)
+        weights.owner.error.fill_(1)
+        weights.weights(0, inputs)
+        self.assertEqual(inputs.expert_tokens.tolist(), [0, 0, 0, 0])
+
+    def test_prefill_count_kernel_without_usage_checks_invalid_and_padded_groups(self):
+        from sglang.srt.offloading.moe.npu.small_batch_kernels import (
+            prepare_prefill_counts as kernel,
+        )
+
+        for raw, cumulative, expected, failed in (
+            ([2, 0, 3], False, [2, 0, 3], False),
+            ([2, 2, 5], True, [2, 0, 3], False),
+            ([0, 0, 0], True, [0, 0, 0], False),
+            ([2, -1, 3], False, [0, 0, 0], True),
+            ([2, 1, 5], True, [0, 0, 0], True),
+        ):
+            with self.subTest(raw=raw, cumulative=cumulative):
+                counts = torch.tensor(raw, dtype=torch.int64)
+                error = torch.zeros((), dtype=torch.int32)
+                output = torch.full((5,), -9, dtype=torch.int64)
+                kernel[(1,)](
+                    counts,
+                    error,
+                    None,
+                    None,
+                    output[1:4],
+                    EXPERTS=3,
+                    CUMULATIVE=cumulative,
+                    BLOCK=4,
+                    TRACK_USAGE=False,
+                )
+                self.assertEqual(counts.tolist(), raw)
+                self.assertEqual(output.tolist(), [-9, *expected, -9])
+                self.assertEqual(error.item(), int(failed))
+
     def test_count_kernel_preserves_padding_and_latches_invalid_groups(self):
         # Three experts exercise the masked fourth lane. Invalid counts must
         # stop every group, including after a later valid layer is submitted.
@@ -894,7 +950,10 @@ class TestAscendPrefillIntegration(CustomTestCase):
 
         context, copy = _Context(), _Stream()
         banks, submitted = [torch.tensor([0]), torch.tensor([99])], []
+        from sglang.srt.offloading.moe.npu.execution_mode import CachedExecution
+
         owner = object.__new__(AscendOpsOffloader)
+        owner.execution_mode = CachedExecution()
         owner.ready, owner.step, owner.decode_active_rows = True, 0, None
         owner.weight_copy_stream = copy
         owner.execution_keys = None
@@ -1103,8 +1162,10 @@ class TestAscendPrefillIntegration(CustomTestCase):
 
     def test_decode_keeps_packed_preparation_and_w2_event(self):
         from sglang.srt.offloading.moe.npu.ascend_ops import AscendOpsOffloader
+        from sglang.srt.offloading.moe.npu.execution_mode import CachedExecution
 
         owner = object.__new__(AscendOpsOffloader)
+        owner.execution_mode = CachedExecution()
         owner.ready = True
         owner._prepare_fused = Mock(return_value="packed decode weights")
         owner.prefill = SimpleNamespace(

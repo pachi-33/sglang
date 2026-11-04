@@ -19,7 +19,12 @@ def get_model_id(hf_config):
     )
 
 
-def build_expert_catalog(hf_config, ep_size, ep_rank):
+def build_expert_catalog(hf_config, ep_size, ep_rank, *, offload_all_routed=False):
+    """Keep model layer identities while selecting routed-weight residency.
+
+    Mixed serving retains its resident prefix; a dedicated prefill worker can
+    stream every routed layer through the same execution banks.
+    """
     model_id = get_model_id(hf_config)
     layer_count = hf_config.num_hidden_layers
     if type(layer_count) is not int or layer_count <= 0:
@@ -37,6 +42,8 @@ def build_expert_catalog(hf_config, ep_size, ep_rank):
     else:
         layer_ids = range(layer_count)
         resident_ids = set(range(max(3, getattr(hf_config, "num_hash_layers", 0))))
+    if offload_all_routed:
+        resident_ids = set()
     catalog = ExpertCatalog(
         tuple(
             ExpertLayerSpec(

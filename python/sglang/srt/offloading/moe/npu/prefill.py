@@ -242,16 +242,24 @@ class AscendPrefillWeights:
             raise ValueError("Prefill requires one int64 count per local expert")
         if runner_input.group_list_type not in (0, 1):
             raise ValueError("Unsupported prefill group list type")
+        # A dedicated prefill worker has no residency/usage state. Keep the
+        # same count validation kernel, compiling out the optional observation.
+        state = owner.state
         start = owner.catalog.key(layer, 0)
         prepare_prefill_counts[(1,)](
             counts,
             owner.error,
-            owner.state.update_enabled,
-            owner.state.step_access_count[start : start + owner.local_experts],
+            state.update_enabled if state is not None else None,
+            (
+                state.step_access_count[start : start + owner.local_experts]
+                if state is not None
+                else None
+            ),
             self.counts,
             EXPERTS=owner.local_experts,
             CUMULATIVE=runner_input.group_list_type == 0,
             BLOCK=triton.next_power_of_2(owner.local_experts),
+            TRACK_USAGE=state is not None,
         )
         runner_input.expert_tokens, runner_input.group_list_type = self.counts, 1
         # Keep the dispatch-owned input alive through asynchronous consumption.

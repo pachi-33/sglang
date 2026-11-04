@@ -68,6 +68,7 @@ def prepare_prefill_counts(
     EXPERTS: tl.constexpr,
     CUMULATIVE: tl.constexpr,
     BLOCK: tl.constexpr,
+    TRACK_USAGE: tl.constexpr = True,
 ):
     """Keep full-layer expert order; normalize counts and observe usage once."""
     e = tl.arange(0, BLOCK)
@@ -81,9 +82,10 @@ def prepare_prefill_counts(
     tl.store(Error, error)
     count = tl.where(error == 0, count, 0)
     tl.store(OutCounts + e, count, inside)
-    accesses = tl.load(Access + e, inside, 0)
-    enabled = tl.load(Enabled) != 0
-    tl.store(Access + e, accesses + tl.where(enabled, count, 0), inside)
+    if TRACK_USAGE:
+        accesses = tl.load(Access + e, inside, 0)
+        enabled = tl.load(Enabled) != 0
+        tl.store(Access + e, accesses + tl.where(enabled, count, 0), inside)
 
 
 @triton.jit

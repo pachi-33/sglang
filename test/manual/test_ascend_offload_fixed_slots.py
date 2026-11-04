@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import torch
 
 from sglang.srt.offloading.moe.npu.ascend_ops import AscendOpsOffloader, _Context
+from sglang.srt.offloading.moe.npu.execution_mode import CachedExecution
 from sglang.srt.offloading.moe.npu.native_acl import get_native_acl
 from sglang.srt.offloading.moe.npu.storage import MemFabricHostPool
 from sglang.srt.offloading.moe.state import ResidencyState
@@ -122,10 +123,42 @@ def check_component_metadata(device):
     )
 
 
+def check_prefill_only_metadata(device):
+    """Compile the no-usage specialization with absent cache pointers on NPU."""
+    from sglang.srt.offloading.moe.npu.small_batch_kernels import (
+        prepare_prefill_counts,
+    )
+
+    for cumulative in (False, True):
+        for values in ([2, 0, 3], [0, 0, 0], [2, -1, 3]):
+            counts = torch.tensor(values, dtype=torch.int64, device=device)
+            raw = counts.cumsum(0) if cumulative else counts
+            error = torch.zeros((), dtype=torch.int32, device=device)
+            output = torch.full((5,), -9, dtype=torch.int64, device=device)
+            prepare_prefill_counts[(1,)](
+                raw,
+                error,
+                None,
+                None,
+                output[1:4],
+                EXPERTS=3,
+                CUMULATIVE=cumulative,
+                BLOCK=4,
+                TRACK_USAGE=False,
+            )
+            torch.npu.synchronize()
+            bad = min(values) < 0
+            expected = [0, 0, 0] if bad else values
+            assert output.cpu().tolist() == [-9, *expected, -9]
+            assert error.item() == int(bad)
+    print("PASS: JIT prefill counts without Hot/LFU pointers", flush=True)
+
+
 def main(*, metadata_only=False):
     torch.npu.set_device(0)
     device = torch.device("npu:0")
     check_component_metadata(device)
+    check_prefill_only_metadata(device)
     if metadata_only:
         return
     from sglang.srt.model_loader.loader import device_loading_context
@@ -163,6 +196,7 @@ def main(*, metadata_only=False):
     hot = host[:, [2, 6]].to(device)
     destination = torch.zeros_like(host, device=device)
     owner = object.__new__(AscendOpsOffloader)
+    owner.execution_mode = CachedExecution()
     owner.device, owner.ready, owner.local_experts, owner.hot_slots = device, True, n, h
     owner.copy_capacity = n
     owner.direct_hot, owner.execution_keys = False, None

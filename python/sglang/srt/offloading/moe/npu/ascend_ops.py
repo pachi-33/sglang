@@ -5,17 +5,16 @@ stably packs active experts into one execution bank; eager prefill alternates
 complete layers across two bank views. Cache publication follows the whole forward.
 """
 
-import json
 import logging
 import math
 from contextlib import contextmanager
-from pathlib import Path
 
 import torch
 
 from sglang.srt.distributed.parallel_state import get_moe_ep_group
 from sglang.srt.runtime_context import (
     get_device,
+    get_disagg,
     get_exec,
     get_parallel,
     get_schedule,
@@ -26,13 +25,14 @@ from sglang.srt.utils.offloader import BaseOffloader
 from ...transfer import EventCompletion, TransferTicket
 from ..config import Phase
 from ..execution import CacheUpdateCoordinator, ExpertWeightAccess
-from ..periodic_lfu import PeriodicLFUConfig, PeriodicLFUPolicy
 from ..residency import TensorResidencyOps
 from ..resources import ResourceKind
 from ..state import ResidencyState
+from .execution_mode import CachedExecution, PrefillOnlyExecution
 from .format import ExpertLayerStorage
 from .model_adapter import build_expert_catalog, get_model_id, get_quant_spec
 from .native_acl import get_native_acl
+from .options import AscendOffloadOptions
 from .storage import MemFabricHostPool
 from .transfer import (
     MemFabricAddressCatalog,
@@ -95,50 +95,31 @@ class AscendOpsOffloader(BaseOffloader):
                 "Initial fixed-slot offload requires trivial expert placement and does not support EPLB, redundant experts, or batch overlap"
             )
         self.model_id = get_model_id(hf_config)
-        cfg = json.loads(Path(path).read_text())
-        allowed = {
-            "cache_ratio",
-            "host_pool_gib",
-            "offline_stats_path",
-            "offline_model_id",
-            "native_extension_directory",
-            "decode_mask_capacity",
-            "execution_slots",
-            "update_interval",
-            "min_usage",
-            "replacement_min_gain",
-            "max_swaps",
-            "usage_decay",
-        }
-        if not isinstance(cfg, dict) or set(cfg) - allowed:
-            raise ValueError(
-                "Unknown offload configuration keys; experimental switches are not supported"
-            )
-        self.cfg, self.hf_config = cfg, hf_config
-        ratio = cfg.get("cache_ratio", 0.25 if self.model_id == "GLM-5.2" else 0.28125)
-        if (
-            not isinstance(ratio, (int, float))
-            or not math.isfinite(ratio)
-            or not 0 < ratio <= 1
-        ):
-            raise ValueError("cache_ratio must be in (0, 1]")
-        self.catalog = build_expert_catalog(hf_config, p.moe_ep_size, p.moe_ep_rank)
+        self.options = AscendOffloadOptions.from_path(
+            path,
+            model_id=self.model_id,
+            disaggregation_mode=get_disagg().disaggregation_mode,
+        )
+        self.cfg, self.hf_config = self.options.values, hf_config
+        self.execution_mode = (
+            PrefillOnlyExecution() if self.options.prefill_only else CachedExecution()
+        )
+        self.catalog = build_expert_catalog(
+            hf_config,
+            p.moe_ep_size,
+            p.moe_ep_rank,
+            offload_all_routed=self.options.prefill_only,
+        )
         self.local_experts = self.catalog.offloaded_layers[0].local_experts
         self.copy_capacity = self.local_experts
-        self.execution_slots = cfg.get("execution_slots", self.local_experts)
-        if type(self.execution_slots) is not int:
-            raise ValueError("execution_slots must be an integer")
-        # MemFabric batches use at most 256 entries on A3. Larger local expert
-        # counts need explicit chunking; never overrun the native metadata UB.
+        self.execution_slots = self.cfg.get(
+            "execution_slots",
+            self.execution_mode.default_execution_slots(self.local_experts),
+        )
+        # Packed copies use at most 256 local experts on A3.
         if self.copy_capacity > 256:
             raise ValueError("Packed expert copies support at most 256 local experts")
-        self.hot_slots = int(self.catalog.num_experts * ratio)
-        if self.hot_slots < 1:
-            raise ValueError("The initial implementation requires a nonempty Hot cache")
-        if self.hot_slots > 1280 or self.catalog.num_experts > 8192:
-            raise ValueError(
-                "Cache maintenance supports at most 1280 Hot slots and 8192 expert keys per rank"
-            )
+        self.execution_mode.configure(self, path)
         from .prefill import whole_layer_bank_layout
 
         whole_layer_bank_layout(
@@ -149,29 +130,6 @@ class AscendOpsOffloader(BaseOffloader):
         self.format = self.host_pool = None
         self.ready = False
         self.step = 0
-        profile = cfg.get("offline_stats_path")
-        if profile and not Path(profile).is_absolute():
-            profile = str(Path(path).resolve().parent / profile)
-        self.policy = PeriodicLFUPolicy(
-            PeriodicLFUConfig(
-                offline_stats_path=profile,
-                **{
-                    k: cfg[k]
-                    for k in (
-                        "update_interval",
-                        "min_usage",
-                        "replacement_min_gain",
-                        "max_swaps",
-                        "usage_decay",
-                    )
-                    if k in cfg
-                },
-            ),
-            self.catalog,
-        )
-        self.initial_keys = self.policy.initial_keys(
-            self.hot_slots, cfg.get("offline_model_id", self.model_id)
-        )
 
     def prepare_layer(self, layer, num_experts, hidden_size, intermediate_size, attrs):
         spec = self.catalog.layer(layer.layer_id)
@@ -244,6 +202,13 @@ class AscendOpsOffloader(BaseOffloader):
             raise RuntimeError("Not all planned expert layers were intercepted")
         for storage in self.storages.values():
             storage.require_sealed()
+        self.execution_mode.post_init(self)
+
+    @staticmethod
+    def _new_context():
+        return _Context()
+
+    def _init_cached_runtime(self):
         # The physical-slot GMM API accepts at most 1024 weight groups.
         # Extra execution slots retain the packed path: direct Hot addressing
         # expects the Hot bank to start immediately after the local experts.
@@ -413,7 +378,7 @@ class AscendOpsOffloader(BaseOffloader):
 
         if get_is_extend_in_batch():
             return self.prefill.weights(layer_id, runner_input)
-        return self._prepare_fused(layer_id, runner_input)
+        return self.execution_mode.prepare_decode_weights(self, layer_id, runner_input)
 
     def _launch_copies(self, layer_id, copies):
         ready, first, second = self.copy_events[layer_id]
@@ -699,8 +664,11 @@ class AscendOpsOffloader(BaseOffloader):
                 f"Expert offload device fault (all EP ranks stopped): {code}"
             )
 
-    @contextmanager
     def forward_scope(self, forward_batch=None):
+        return self.execution_mode.forward_scope(self, forward_batch)
+
+    @contextmanager
+    def _cached_forward_scope(self, forward_batch=None):
         if not self.ready:
             yield
             return

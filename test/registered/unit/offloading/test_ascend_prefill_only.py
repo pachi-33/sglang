@@ -1,0 +1,490 @@
+"""Dedicated P-worker lifecycle contracts with CPU stream boundaries.
+
+The production facade, execution strategy and prefetch pipeline run unchanged;
+only device allocation, stream/event submission and host copies are replaced.
+"""
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+import torch
+
+from sglang.srt.offloading.moe.npu import ascend_ops
+from sglang.srt.offloading.moe.npu.execution_mode import (
+    CachedExecution,
+    PrefillOnlyExecution,
+)
+from sglang.srt.offloading.moe.npu.prefill import (
+    AscendPrefillWeights,
+    LayerPrefetchPipeline,
+    PrefillLayerTransfer,
+)
+from sglang.srt.offloading.moe.resources import ResourceKind
+from sglang.test.ci.ci_register import register_cpu_ci
+from sglang.test.test_utils import CustomTestCase
+
+register_cpu_ci(est_time=2, suite="base-a-test-cpu")
+
+
+class _Command:
+    def __init__(self, dependencies, action):
+        self.dependencies, self.action, self.done = dependencies, action, False
+
+    def run(self):
+        if not self.done:
+            for dependency in self.dependencies:
+                dependency.run()
+            self.action()
+            self.done = True
+
+
+class _Stream:
+    def __init__(self):
+        self.tail = None
+
+    def enqueue(self, action, extra=()):
+        dependencies = tuple(extra) + (() if self.tail is None else (self.tail,))
+        self.tail = _Command(dependencies, action)
+
+    def wait_stream(self, stream):
+        if stream.tail is not None:
+            self.enqueue(lambda: None, (stream.tail,))
+
+
+class _Completion:
+    def __init__(self, command):
+        self.command = command
+
+    def wait_on(self, stream):
+        if self.command is not None:
+            stream.enqueue(lambda: None, (self.command,))
+
+    def synchronize(self):
+        if self.command is not None:
+            self.command.run()
+
+
+class _Context:
+    def __init__(self):
+        self.compute_stream = _Stream()
+        self.invocation_id = object()
+        self.resources = []
+
+    def retain(self, value):
+        self.resources.append(value)
+
+    def record_compute_completion(self):
+        return SimpleNamespace(completion=_Completion(self.compute_stream.tail))
+
+
+class TestPrefillOnlyRuntime(CustomTestCase):
+    @staticmethod
+    def _batch(*, global_extend=True, local_idle=False, local_extend=True):
+        return SimpleNamespace(
+            is_extend_in_batch=global_extend,
+            forward_mode=SimpleNamespace(
+                is_idle=lambda: local_idle,
+                is_extend_without_speculative=lambda: local_extend,
+            ),
+        )
+
+    @staticmethod
+    def _owner(*, fail_copy=None):
+        owner = object.__new__(ascend_ops.AscendOpsOffloader)
+        owner.execution_mode = PrefillOnlyExecution()
+        owner.ready, owner.step = True, 0
+        owner.state = owner.hot = owner.decode_active_rows = None
+        owner.error = torch.zeros((), dtype=torch.int32)
+        owner.weight_copy_stream = _Stream()
+        owner._check_error = Mock()
+        context = _Context()
+        owner._new_context = Mock(return_value=context)
+        submitted, completed = [], []
+        weights = object.__new__(AscendPrefillWeights)
+        owner.prefill, weights.owner = weights, owner
+        weights.borrows_hot = weights.hot_dirty = False
+
+        def load(layer, bank, ctx):
+            submitted.append(layer)
+            ctx.retain((layer, bank))
+            stream = owner.weight_copy_stream
+            stream.enqueue(lambda: completed.append((layer, "w13")))
+            first = SimpleNamespace(completion=_Completion(stream.tail))
+            stream.enqueue(lambda: completed.append((layer, "w2")))
+            if layer == fail_copy:
+                raise RuntimeError("partial H2D submission")
+            return PrefillLayerTransfer(
+                first, SimpleNamespace(completion=_Completion(stream.tail))
+            )
+
+        weights.pipeline = LayerPrefetchPipeline(
+            (0, 2, 4), load=load, copy_stream=owner.weight_copy_stream
+        )
+        return owner, context, submitted, completed
+
+    def _consume_layers(self, owner, context, completed):
+        for layer in (0, 2, 4):
+            owner.start_prefill_layer(layer)
+            owner.prefill.pipeline.acquire(layer, context)
+            owner.prefill.pipeline.wait_for_w2(layer, context)
+            context.compute_stream.enqueue(
+                lambda layer=layer: completed.append((layer, "combine"))
+            )
+            owner.prefill.finish_layer(layer)
+
+    def test_all_attention_ranks_follow_global_prefill_and_first_layer_is_streamed(
+        self,
+    ):
+        for local_idle, local_extend in ((False, True), (True, False), (False, False)):
+            with self.subTest(local_idle=local_idle, local_extend=local_extend):
+                owner, context, submitted, completed = self._owner()
+                batch = self._batch(local_idle=local_idle, local_extend=local_extend)
+                with owner.forward_scope(batch):
+                    self.assertEqual(submitted, [0, 2])
+                    self.assertEqual(completed, [])
+                    self._consume_layers(owner, context, completed)
+                    self.assertTrue(context.resources)
+                self.assertEqual(submitted, [0, 2, 4])
+                self.assertEqual(
+                    [layer for layer, phase in completed if phase == "combine"],
+                    [0, 2, 4],
+                )
+                self.assertLess(
+                    completed.index((0, "combine")), completed.index((4, "w13"))
+                )
+                self.assertEqual(context.resources, [])
+                self.assertIsNone(owner.prefill.pipeline.invocation_id)
+                owner._check_error.assert_called_once()
+
+    def test_unexpected_global_idle_is_rejected_without_copies_or_error_collective(
+        self,
+    ):
+        owner, _, submitted, completed = self._owner()
+        with self.assertRaisesRegex(ValueError, "globally extending"):
+            with owner.forward_scope(self._batch(global_extend=False, local_idle=True)):
+                self.fail("Unexpected global idle entered the model")
+        self.assertEqual(submitted, [])
+        self.assertEqual(completed, [])
+        owner._check_error.assert_not_called()
+
+    def test_decode_is_rejected_before_model_or_weight_submission(self):
+        owner, _, submitted, completed = self._owner()
+        with self.assertRaisesRegex((RuntimeError, ValueError), "[Pp]refill|decode"):
+            with owner.forward_scope(
+                self._batch(global_extend=False, local_extend=False)
+            ):
+                self.fail("A P-only worker entered a decode model forward")
+        self.assertEqual(submitted, [])
+        self.assertEqual(completed, [])
+        with patch(
+            "sglang.srt.layers.dp_attention.get_is_extend_in_batch", return_value=False
+        ):
+            with self.assertRaisesRegex(
+                (RuntimeError, ValueError), "[Pp]refill|decode"
+            ):
+                owner.prepare_weights(0, object())
+
+    def test_partial_initial_prefetch_drains_before_reset_and_resource_release(self):
+        owner, context, submitted, completed = self._owner(fail_copy=2)
+        with self.assertRaisesRegex(RuntimeError, "partial H2D submission"):
+            with owner.forward_scope(self._batch()):
+                self.fail("Model entered after a failed initial prefetch")
+        self.assertEqual(submitted, [0, 2])
+        self.assertEqual(completed, [(0, "w13"), (0, "w2"), (2, "w13"), (2, "w2")])
+        self.assertEqual(context.resources, [])
+        self.assertIsNone(owner.prefill.pipeline.invocation_id)
+        self.assertEqual(owner.prefill.pipeline.ready, {})
+        owner._check_error.assert_not_called()
+
+    def test_model_failure_drains_and_allows_a_fresh_forward(self):
+        owner, context, submitted, completed = self._owner()
+        with self.assertRaisesRegex(RuntimeError, "model failure"):
+            with owner.forward_scope(self._batch()):
+                raise RuntimeError("model failure")
+        self.assertEqual(len(completed), 4)
+        self.assertEqual(context.resources, [])
+        self.assertIsNone(owner.prefill.pipeline.invocation_id)
+        next_context = _Context()
+        owner._new_context.return_value = next_context
+        with owner.forward_scope(self._batch()):
+            self._consume_layers(owner, next_context, completed)
+        self.assertEqual(submitted, [0, 2, 0, 2, 4])
+        self.assertEqual(next_context.resources, [])
+        owner._check_error.assert_called_once()
+
+    def test_incomplete_forward_is_rejected_and_pending_copies_are_drained(self):
+        owner, context, _, completed = self._owner()
+        with self.assertRaisesRegex(RuntimeError, "every offloaded"):
+            with owner.forward_scope(self._batch()):
+                pass
+        self.assertEqual(len(completed), 4)
+        self.assertEqual(context.resources, [])
+        self.assertIsNone(owner.prefill.pipeline.invocation_id)
+        owner._check_error.assert_not_called()
+
+    def test_device_error_still_retires_forward_resources(self):
+        owner, context, _, completed = self._owner()
+        owner._check_error.side_effect = RuntimeError("invalid expert count")
+        with self.assertRaisesRegex(RuntimeError, "invalid expert count"):
+            with owner.forward_scope(self._batch()):
+                self._consume_layers(owner, context, completed)
+        self.assertEqual(context.resources, [])
+        self.assertIsNone(owner.prefill.pipeline.invocation_id)
+        self.assertEqual(len(completed), 9)
+
+
+class TestPrefillOnlyConfiguration(CustomTestCase):
+    def test_attention_tp4_dp4_is_supported_without_a_decode_dp_ep_requirement(self):
+        from sglang.srt.offloading.moe.npu import execution_mode
+
+        mode, owner = PrefillOnlyExecution(), SimpleNamespace()
+        parallel = SimpleNamespace(tp_size=16, attn_dp_size=4, attn_cp_size=1)
+        graphs = SimpleNamespace(
+            prefill=SimpleNamespace(backend="disabled"),
+            decode=SimpleNamespace(backend="disabled"),
+        )
+        with (
+            patch.object(execution_mode, "get_parallel", return_value=parallel),
+            patch.object(
+                execution_mode,
+                "get_exec",
+                return_value=SimpleNamespace(
+                    graph=SimpleNamespace(cuda_graph_config=graphs)
+                ),
+            ),
+            patch.object(
+                execution_mode.envs.SGLANG_SCHEDULER_SKIP_ALL_GATHER,
+                "get",
+                return_value=False,
+            ),
+        ):
+            mode.configure(owner, "unused.json")
+        self.assertEqual(owner.hot_slots, 0)
+        self.assertEqual(mode.default_execution_slots(16), 32)
+        self.assertFalse(hasattr(owner, "policy"))
+
+    def test_graphs_cp_and_unsynchronized_dp_fail_before_allocation(self):
+        from sglang.srt.offloading.moe.npu import execution_mode
+
+        for cp, dp, prefill_graph, decode_graph, skip_sync in (
+            (2, 4, "disabled", "disabled", False),
+            (1, 3, "disabled", "disabled", False),
+            (1, 4, "piecewise", "disabled", False),
+            (1, 4, "disabled", "native", False),
+            (1, 4, "disabled", "disabled", True),
+        ):
+            with self.subTest(
+                cp=cp,
+                dp=dp,
+                prefill=prefill_graph,
+                decode=decode_graph,
+                skip_sync=skip_sync,
+            ):
+                parallel = SimpleNamespace(tp_size=16, attn_dp_size=dp, attn_cp_size=cp)
+                graphs = SimpleNamespace(
+                    prefill=SimpleNamespace(backend=prefill_graph),
+                    decode=SimpleNamespace(backend=decode_graph),
+                )
+                with (
+                    patch.object(execution_mode, "get_parallel", return_value=parallel),
+                    patch.object(
+                        execution_mode,
+                        "get_exec",
+                        return_value=SimpleNamespace(
+                            graph=SimpleNamespace(cuda_graph_config=graphs)
+                        ),
+                    ),
+                    patch.object(
+                        execution_mode.envs.SGLANG_SCHEDULER_SKIP_ALL_GATHER,
+                        "get",
+                        return_value=skip_sync,
+                    ),
+                    self.assertRaises(ValueError),
+                ):
+                    PrefillOnlyExecution().configure(SimpleNamespace(), "unused.json")
+
+
+class TestOffloadModeWiring(CustomTestCase):
+    @staticmethod
+    def _construct(values, disaggregation_mode):
+        from sglang.srt.offloading.moe.npu import execution_mode
+
+        config = SimpleNamespace(
+            model_type="glm_moe_dsa",
+            architectures=["GlmMoeDsaForCausalLM"],
+            num_hidden_layers=78,
+            first_k_dense_replace=3,
+            moe_layer_freq=1,
+            n_routed_experts=256,
+        )
+        parallel = SimpleNamespace(
+            tp_size=16,
+            moe_ep_size=16,
+            moe_ep_rank=0,
+            moe_tp_size=1,
+            pp_size=1,
+            nnodes=1,
+            attn_dp_size=4,
+            attn_cp_size=1,
+        )
+        execution = SimpleNamespace(
+            moe=SimpleNamespace(
+                moe_a2a_backend="ascend_ops",
+                enable_eplb=False,
+                ep_num_redundant_experts=0,
+                init_expert_location="trivial",
+            ),
+            overlap=SimpleNamespace(
+                enable_two_batch_overlap=False,
+                enable_single_batch_overlap=False,
+            ),
+            graph=SimpleNamespace(
+                cuda_graph_config=SimpleNamespace(
+                    prefill=SimpleNamespace(backend="disabled"),
+                    decode=SimpleNamespace(backend="disabled"),
+                )
+            ),
+        )
+        cpu = torch.device("cpu")
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            path = directory / "offload.json"
+            path.write_text(json.dumps(values))
+            (directory / "profile.json").write_text(
+                json.dumps(
+                    {
+                        "model_id": "GLM-5.2",
+                        "layers": {},
+                    }
+                )
+            )
+            with (
+                patch.object(ascend_ops, "get_parallel", return_value=parallel),
+                patch.object(execution_mode, "get_parallel", return_value=parallel),
+                patch.object(ascend_ops, "get_exec", return_value=execution),
+                patch.object(execution_mode, "get_exec", return_value=execution),
+                patch.object(
+                    ascend_ops, "get_device", return_value=SimpleNamespace(gpu_id=0)
+                ),
+                patch.object(
+                    ascend_ops,
+                    "get_disagg",
+                    return_value=SimpleNamespace(
+                        disaggregation_mode=disaggregation_mode
+                    ),
+                ),
+                patch.object(
+                    ascend_ops,
+                    "get_schedule",
+                    return_value=SimpleNamespace(disable_overlap_schedule=True),
+                ),
+                patch.object(
+                    execution_mode.envs.SGLANG_SCHEDULER_SKIP_ALL_GATHER,
+                    "get",
+                    return_value=False,
+                ),
+                patch.object(torch, "device", return_value=cpu),
+            ):
+                return ascend_ops.AscendOpsOffloader(config, path)
+
+    def test_prefill_configuration_selects_all_routed_layers_and_two_banks(self):
+        owner = self._construct(
+            {"mode": "prefill_only", "host_pool_gib": 48}, "prefill"
+        )
+        self.assertIsInstance(owner.execution_mode, PrefillOnlyExecution)
+        self.assertEqual(len(owner.catalog.offloaded_layers), 75)
+        self.assertEqual(owner.catalog.offloaded_layers[0].layer_id, 3)
+        self.assertEqual(owner.catalog.num_experts, 1200)
+        self.assertEqual(owner.local_experts, 16)
+        self.assertEqual(owner.execution_slots, 32)
+        self.assertEqual(owner.hot_slots, 0)
+        self.assertFalse(hasattr(owner, "policy"))
+        self.assertIsNone(owner.format)
+        self.assertIsNone(owner.host_pool)
+        self.assertFalse(owner.ready)
+
+    def test_existing_mixed_configuration_keeps_resident_prefix_and_lfu(self):
+        owner = self._construct({"offline_stats_path": "profile.json"}, "null")
+        self.assertIsInstance(owner.execution_mode, CachedExecution)
+        self.assertTrue(owner.catalog.layer(3).resident)
+        self.assertEqual(len(owner.catalog.offloaded_layers), 74)
+        self.assertEqual(owner.catalog.offloaded_layers[0].layer_id, 4)
+        self.assertEqual(owner.catalog.num_experts, 1184)
+        self.assertEqual(owner.execution_slots, 16)
+        self.assertEqual(owner.hot_slots, 296)
+        self.assertEqual(len(owner.initial_keys), 296)
+        self.assertEqual(owner.policy.config.update_interval, 4)
+        self.assertFalse(owner.ready)
+
+
+class TestPrefillOnlyInitialization(CustomTestCase):
+    @staticmethod
+    def _owner():
+        owner = object.__new__(ascend_ops.AscendOpsOffloader)
+        owner.execution_mode = PrefillOnlyExecution()
+        owner.device, owner.model_id = torch.device("cpu"), "GLM-5.2"
+        owner.local_experts = owner.copy_capacity = 4
+        owner.execution_slots, owner.hot_slots = 8, 0
+        owner.catalog = SimpleNamespace(
+            num_experts=12,
+            offloaded_layers=tuple(SimpleNamespace(layer_id=i) for i in (0, 2, 4)),
+        )
+        owner.storages = {i: SimpleNamespace(require_sealed=Mock()) for i in (0, 2, 4)}
+        owner.format = SimpleNamespace(
+            allocate_bank=Mock(return_value=object()), expert_nbytes=256
+        )
+        owner.host_pool = SimpleNamespace(used_bytes=3072)
+        owner._capture_cache_tails = Mock(
+            side_effect=AssertionError("cache graphs on P")
+        )
+        owner._init_copy_plan = Mock(side_effect=AssertionError("decode copies on P"))
+        owner._new_context = Mock(return_value=_Context())
+        return owner
+
+    def test_only_execution_bank_is_allocated_without_decode_or_cache_state(self):
+        owner = self._owner()
+        with (
+            patch.object(torch, "npu", SimpleNamespace(Stream=Mock()), create=True),
+            patch(
+                "sglang.srt.offloading.moe.npu.prefill.AscendPrefillWeights"
+            ) as weights,
+        ):
+            owner.post_init()
+        owner.format.allocate_bank.assert_called_once_with(
+            8, ResourceKind.EXECUTION_WEIGHTS, "ascend.execution"
+        )
+        for storage in owner.storages.values():
+            storage.require_sealed.assert_called_once()
+        weights.assert_called_once_with(owner)
+        self.assertTrue(owner.ready)
+        self.assertIsNone(owner.hot)
+        self.assertIsNone(owner.state)
+        self.assertIsNone(owner.decode_active_rows)
+        self.assertIsNone(owner.decode_row_mask(128))
+        self.assertFalse(owner.direct_hot)
+        owner._capture_cache_tails.assert_not_called()
+        owner._init_copy_plan.assert_not_called()
+        for name in ("addresses", "policy_state", "cache_update", "cache_tail_graphs"):
+            self.assertFalse(hasattr(owner, name), name)
+
+    def test_unsealed_or_missing_layers_fail_before_device_allocation(self):
+        for unsealed in (False, True):
+            with self.subTest(unsealed=unsealed):
+                owner = self._owner()
+                if unsealed:
+                    owner.storages[2].require_sealed.side_effect = RuntimeError(
+                        "unsealed"
+                    )
+                else:
+                    del owner.storages[2]
+                with self.assertRaises(RuntimeError):
+                    owner.post_init()
+                owner.format.allocate_bank.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

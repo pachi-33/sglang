@@ -145,3 +145,88 @@ python3 test/manual/test_ascend_glm_offload_formats.py --device 0
 ```
 
 该脚本使用合成 checkpoint 分片，检查 resident 与 offload Host repack / ACL reload 后的投影结果，覆盖 W8、W4 per-channel 和 per-group；不需要下载模型。它不替代四 rank 的模型加载、长短请求、空 DP rank、prefill→decode、缓存维护和 Graph replay 验证。整模型验收还应与关闭 offload 时的同一量化 checkpoint 对照输出和精度，再评估 TTFT/TPOT。
+
+## GLM-5.2：单机 P 卸载 + 两机 D
+
+[serve_glm52_pd.sh](serve_glm52_pd.sh) 提供 `prefill`、`decode`、`router` 三个入口。原混部脚本和未指定 `mode` 的 offload 配置保持原有行为。新模式只卸载 P 主模型的全部 routed experts；dense、attention、shared experts 和 MTP draft 常驻。D 不配置 offload。
+
+并行划分沿用 [GLM-5.2 A3 PD 手册](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/model-deployment/tutorials/glm_5_2#prefill-decode-disaggregation-deployment)，D 扩为两台组成一个实例。脚本使用当前分支的 `--attn-dp-size`，与手册的 `--dp-size N --enable-dp-attention` 对应。
+
+| 角色 | 机器 / die | TP | Attention DP / TP | MoE EP / TP | 专家通信 |
+| --- | --- | --- | --- | --- | --- |
+| P | 一台 A3 / 16 | 16 | 4 / 4 | 16 / 1 | Ascend Ops AllToAllV |
+| D | 两台 A3 / 32 | 32 | 32 / 1 | 32 / 1 | DeepEP low_latency |
+
+P 复用现有双 bank 逐层预取及 W13/W2 独立等待，关闭图和 overlap schedule；D 保留 Decode Graph。P 使用当前已接入 offload 的 Ascend Ops 后端，未切换为手册的 DeepEP normal。当前方案不启用 KV cache sharding，P Attention TP4 与 D Attention TP1 的 KV 交接沿用现有 PD 传输实现。
+
+### 启动
+
+三台机器需要相同版本的代码和兼容依赖，checkpoint 内容和 MTP 开关一致。在每台机器设置以下环境变量；`COMM_IFACE` 是**本机**承载通信地址的真实网卡，不能照抄混部脚本中的 `lo`：
+
+```bash
+export MODEL_PATH=/models/GLM-5.2-ModelSlim
+export P_IP=10.0.0.11
+export D0_IP=10.0.0.12
+export COMM_IFACE=eth0
+export ENABLE_MTP=0
+```
+
+先启动 P，然后在 D0、D1 上分别启动同一 Decode 实例：
+
+```bash
+# P 主机
+HOST_POOL_GIB=48 bash scripts/moe_offload/serve_glm52_pd.sh prefill
+
+# D0 主机
+NODE_RANK=0 bash scripts/moe_offload/serve_glm52_pd.sh decode
+
+# D1 主机
+NODE_RANK=1 bash scripts/moe_offload/serve_glm52_pd.sh decode
+
+# P/D ready 后，在可连接 P、D0 的主机运行；此角色无须模型与 NPU 环境
+bash scripts/moe_offload/serve_glm52_pd.sh router
+```
+
+Router 只登记 `D0_IP`，D1 通过共同的 `D0_IP:DIST_PORT` 加入 32-rank 实例，不是第二个 Decode 服务。默认 P HTTP 为 8000、bootstrap 为 8998、D HTTP 为 8003、D rendezvous 为 5000、Router 为 6688；可分别用 `P_PORT`、`BOOTSTRAP_PORT`、`D_PORT`、`DIST_PORT`、`ROUTER_PORT` 覆盖，关联节点须保持一致。
+
+三台 `ASCEND_MF_STORE_URL` 默认均为 `tcp://$P_IP:24707`（可用 `MF_STORE_PORT` 改端口或显式覆盖 URL）。这个 KV store 与 D 的 rendezvous 是两个独立端口。当前 PD 默认使用 SDMA；安装版本支持时可设置 `ASCEND_MF_TRANSFER_PROTOCOL` 选择其他协议。部署前需确认 A3 fabric 支持所选跨机协议，普通 IP 可达不等于 SDMA 可达。
+
+脚本默认使用本机 16 个 die；可用 `ASCEND_RT_VISIBLE_DEVICES` 指定另一个含 16 个不同设备 ID 的列表。P 会复用既有 MemFabric 搬运扩展和 native ACL 构建流程。Ascend 环境安装位置不同，可设置 `CANN_ENV`、`ATB_ENV`、`CUSTOMIZE_ENV`、`CUSTOM_TRANSFORMER_ENV`。`RUNTIME_DIR` 放构建缓存，`LOG_DIR` 放本次日志和 P 的 `offload.json`，默认均在 `/tmp` 下；两者须为绝对路径。切换依赖版本时使用新的 `RUNTIME_DIR`。
+
+### 配置与容量
+
+P 自动生成最小配置，不读取混部的热点 profile：
+
+```json
+{
+  "mode": "prefill_only",
+  "cache_ratio": 0,
+  "host_pool_gib": 48,
+  "native_extension_directory": "/tmp/sglang-glm52-pd-prefill-runtime/native_acl"
+}
+```
+
+`prefill_only` 自动选择全部 routed MoE 层，零 Hot 缓存，也不创建 LFU 或 Decode 缓存维护状态。默认执行槽由 runtime 计算为 `2 × 本 rank 专家数`；256 experts / EP16 时是 32 槽。脚本会从 checkpoint 核验专家数，若显式设置 `EXECUTION_SLOTS`，不得低于双 bank 所需容量。该模式只接受纯 Prefill 角色，误用于 Decode 会在装载前失败。
+
+代码使用两个执行策略：`CachedExecution` 保留混部缓存行为，`PrefillOnlyExecution` 管理 P 的初始化和 forward。两者共用 Host 装载、格式转换和 `LayerPrefetchPipeline`，不修改模型、dispatcher 或 PD 协议。P 要求开启 DP 调度同步，不能设置 `SGLANG_SCHEDULER_SKIP_ALL_GATHER=1`；全局空闲由 scheduler 跳过，局部空 rank 仍参与全局 Prefill。
+
+`HOST_POOL_GIB=48` 是 **每 rank** 的初始预算，P 整机预留 768 GiB，此外还需 checkpoint 装载、常驻对象和系统内存。GLM-5.2 的 75 个 routed MoE 层在 W8 下仅权重本体约 42.1875 GiB/rank，元数据与分配对齐另计；loader 会按实际格式检查预算。W4 不能仅用 W8 总预算除以二，尤其要计入 per-group 元数据。D 无此 Host 池。
+
+保守起点为 `CONTEXT_LENGTH=16384`、P `CHUNKED_PREFILL_SIZE=8192`、P `MAX_RUNNING_REQUESTS=16`、D `MAX_RUNNING_REQUESTS=128`、`MEM_FRACTION_STATIC=0.8`。P 的 chunk 参数会按 Attention DP4 归一为每 DP 2048。每一个 chunk 都重新搬运全部 routed 专家；双 bank 重叠搬运与计算，不减少搬运字节数。先测 P 吞吐与 D 等待比例，再增加 chunk 或并发，不能直接套用手册的大 chunk。
+
+MTP 默认关闭，因为 checkpoint 可能不包含 NextN 权重。需要时在 **P、D0、D1 同时**设置 `ENABLE_MTP=1`；脚本复用 `glm52_mtp_config.py`，先读取配置和 safetensors 头部验证 MTP。默认 `MTP_DRAFT_QUANTIZATION=unquant`，必须确实包含浮点 draft。参数沿用 PD 手册：P NEXTN steps=1 / topk=1 / draft tokens=2，D steps=3 / topk=1 / draft tokens=4；draft 始终常驻。若实际使用受支持的量化 draft，三台统一显式设置 `MTP_DRAFT_QUANTIZATION=modelslim`。
+
+### 预检与设备验收
+
+给任一入口增加 `--dry-run`，只做本地配置 / MTP 头部检查，并显示 P JSON 与完整启动命令；不加载模型、不 source CANN、不构建扩展、不创建日志或配置文件：
+
+```bash
+bash scripts/moe_offload/serve_glm52_pd.sh prefill --dry-run
+NODE_RANK=0 bash scripts/moe_offload/serve_glm52_pd.sh decode --dry-run
+NODE_RANK=1 bash scripts/moe_offload/serve_glm52_pd.sh decode --dry-run
+bash scripts/moe_offload/serve_glm52_pd.sh router --dry-run
+```
+
+CPU 检查和 dry-run 不代表三机 NPU 部署已验证。实机验收先跑相同 checkpoint 的常驻 PD 基线，再启用 P-only，覆盖空 DP rank、零收包、多个 chunk、长短 prompt、并发及 MTP 开关；对比 logits / 首 token / 端到端输出。确认 D0/D1 同属一个实例、D 无权重 H2D，并观察 Host/HBM 峰值、LOCAL offload 与 PD TransferEngine 共存、异常退出清理、TTFT、P tokens/s 和 D TPOT。P 每个完整 chunk 的 W8 权重本体搬运约 675 GiB/整机，H2D 与 PD KV 传输的带宽争用需要单独测量。
+
+本地隔离外围 serving / NPU 依赖后，配置与目录 19 项、纯 P 生命周期 13 项、原预取/dispatcher 31 项和 GLM 格式契约 17 项通过；设备拷贝与 collective 使用测试边界。新增的两个无 usage 计数测试依赖 Triton interpreter，本地主机缺少 Triton，尚未执行。可在目标环境先运行 `python3 test/manual/test_ascend_offload_fixed_slots.py --metadata-only`，它已加入 `TRACK_USAGE=False` 且统计指针为空时的真实 NPU 编译/计数检查，不加载模型权重。

@@ -145,7 +145,12 @@ class TestAscendQuantSelection(CustomTestCase):
             ("EAGLE", 4, "ascend.execution"),
         ):
             with self.subTest(algorithm=algorithm):
+                from sglang.srt.offloading.moe.npu.execution_mode import (
+                    CachedExecution,
+                )
+
                 owner = object.__new__(ascend_ops.AscendOpsOffloader)
+                owner.execution_mode = CachedExecution()
                 owner.catalog = build_expert_catalog(
                     TestAscendModelCatalog._glm(), 4, 0
                 )
