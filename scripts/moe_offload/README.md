@@ -346,3 +346,5 @@ python3 test/registered/unit/offloading/test_glm52_pd_baseline_launcher.py -v
 测试以模拟 IP 和伪服务进程覆盖四个节点的参数、组内 rank、两组 rendezvous、常驻配置、环境设置、Router、MTP 参数和错误配置；不运行 NPU 算子。`--dry-run` 也只检查本机配置与 MTP 头部，不能替代四机数值、KV 通信、HBM 容量和性能验收。
 
 网卡枚举与角色识别的独立检查：`python3 test/registered/unit/offloading/test_pd_node.py -v`。启动契约测试的 PATH 不包含网络命令；底层检查覆盖 Linux/macOS 地址结构、多 IPv4、接口状态、歧义检测和原生资源释放。
+
+MTP 预检兼容 `model.safetensors.index.json`、单个任意命名的 `.safetensors` 和无索引的多个 `.safetensors` 分片。无索引时只扫描权重目录第一层的文件头，不加载 tensor 数据；重复 tensor 名会报错。若提示 `No safetensors weight files found`，检查 `MODEL_PATH` 是否指向实际权重目录。通过文件布局检查后，仍会校验 NextN tensor 是否存在及 draft 量化是否匹配。

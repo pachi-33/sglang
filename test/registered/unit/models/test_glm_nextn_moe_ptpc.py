@@ -456,6 +456,56 @@ class TestGlmMtpCheckpointValidation(CustomTestCase):
                 with self.assertRaisesRegex(ValueError, "Missing floating"):
                     self.validate(root, "modelslim")
 
+    def test_unindexed_named_shards_validate_float_and_quantized_drafts(self):
+        for kind in ("FLOAT", "W8A8_DYNAMIC", "W4A8_DYNAMIC"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as root:
+                config, dtypes, description = self._fixture(kind)
+                self._write(root, config, dtypes, description, indexed=False)
+                path = Path(root)
+                (path / "model.safetensors").rename(path / "export-part-01.safetensors")
+                # A target shard is discovered too, but its integer tensors
+                # must not be mistaken for an unquantized draft.
+                target = {
+                    "model.layers.0.mlp.weight": {
+                        "dtype": "I8",
+                        "shape": [1],
+                        "data_offsets": [0, 1],
+                    }
+                }
+                header = json.dumps(target).encode()
+                (path / "export-part-00.safetensors").write_bytes(
+                    struct.pack("<Q", len(header)) + header + bytes(1)
+                )
+                mode = "unquant" if kind == "FLOAT" else "modelslim"
+                result = self.validate(root, mode)
+                self.assertEqual(result["expert_quantization"], kind)
+                self.assertEqual(
+                    result["checked_shards"],
+                    ["export-part-00.safetensors", "export-part-01.safetensors"],
+                )
+
+    def test_unindexed_duplicate_tensors_are_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            config, dtypes, description = self._fixture()
+            self._write(root, config, dtypes, description, indexed=False)
+            path = Path(root)
+            (path / "duplicate.safetensors").write_bytes(
+                (path / "model.safetensors").read_bytes()
+            )
+            with self.assertRaisesRegex(ValueError, "Duplicate tensor"):
+                self.validate(root)
+
+    def test_missing_safetensors_reports_the_model_directory(self):
+        with tempfile.TemporaryDirectory() as root:
+            config, dtypes, description = self._fixture()
+            self._write(root, config, dtypes, description, indexed=False)
+            (Path(root) / "model.safetensors").unlink()
+            with self.assertRaisesRegex(
+                ValueError, "No safetensors weight files"
+            ) as error:
+                self.validate(root)
+            self.assertIn(str(Path(root).resolve()), str(error.exception))
+
     def test_missing_mtp_and_integer_weights_without_metadata_fail_closed(self):
         for mutation in (
             "no_mtp",

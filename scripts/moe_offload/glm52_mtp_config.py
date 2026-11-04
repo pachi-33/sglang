@@ -60,14 +60,26 @@ class _Checkpoint:
             ):
                 raise ValueError(f"Invalid weight_map in {index_path}")
         else:
-            path = root / "model.safetensors"
-            if not path.is_file():
+            # Match the server's safetensors loader: local exports need not
+            # have an index or use the canonical single-file name.
+            paths = sorted(
+                path for path in root.glob("*.safetensors") if path.is_file()
+            )
+            if not paths:
                 raise ValueError(
-                    "Bundled MTP validation needs model.safetensors.index.json "
-                    "or model.safetensors"
+                    f"No safetensors weight files found in {root}; "
+                    "check MODEL_PATH points to the directory containing the weights"
                 )
-            self.headers[path.name] = _read_header(path)
-            self.weight_map = {name: path.name for name in self.headers[path.name]}
+            self.weight_map = {}
+            for path in paths:
+                header = self.headers[path.name] = _read_header(path)
+                for name in header:
+                    if name in self.weight_map:
+                        raise ValueError(
+                            f"Duplicate tensor {name} in {self.weight_map[name]} "
+                            f"and {path.name}; use one consistent checkpoint export"
+                        )
+                    self.weight_map[name] = path.name
 
     def tensor(self, name):
         shard = self.weight_map[name]
@@ -88,7 +100,8 @@ class _Checkpoint:
 def validate_mtp_checkpoint(model_path, draft_quantization="unquant"):
     """Return a summary or raise ValueError for an unsupported bundled draft.
 
-    Only MTP shard headers are opened for indexed checkpoints. The default
+    Only MTP shard headers are opened for indexed checkpoints; unindexed
+    exports are discovered by scanning their safetensors headers. The default
     accepts actual floating tensors, including checkpoints without a ModelSlim
     description; absence of a description alone never implies floating weights.
     """
