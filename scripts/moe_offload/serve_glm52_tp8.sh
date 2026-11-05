@@ -125,7 +125,7 @@ exec python3 -u -m sglang.launch_server \
   --device npu --base-gpu-id 0 --host 127.0.0.1 --port "$SERVER_PORT" \
   --dist-init-addr "127.0.0.1:$DIST_PORT" --trust-remote-code \
   --attention-backend ascend --page-size 128 \
-  --tp-size 8 --attn-dp-size 2 --ep-size 8 \
+  --tp-size 8 --attn-dp-size 8 --ep-size 8 \
   --moe-a2a-backend ascend_ops --deepep-mode auto \
   --moe-ascend-ops-config '{"prefill":"alltoallv","decode":"low_latency"}' \
   --load-format safetensors --quantization modelslim --kv-cache-dtype bfloat16 \
