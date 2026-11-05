@@ -11,6 +11,7 @@ import torch
 import triton.language as tl
 from triton.runtime.interpreter import InterpretedFunction
 
+from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
 from sglang.srt.offloading.moe.npu.prefill import (
     AscendPrefillWeights,
     LayerPrefetchPipeline,
@@ -1409,13 +1410,19 @@ class TestAscendPrefillIntegration(CustomTestCase):
             context = _Context()
             previous_submitted = list(submitted)
             owner.decode_active_rows = torch.ones(16, dtype=torch.bool)
+            owner.decode_row_indices = torch.arange(16, dtype=torch.int32)
+            valid_rows = torch.tensor(6, dtype=torch.int32)
+            mask_context = ForwardContext(
+                attn_backend=None, moe_num_token_non_padded=lambda: valid_rows
+            )
             verify = SimpleNamespace(
                 is_extend_in_batch=False,
                 batch_size=1,
                 input_ids=torch.arange(6),
                 forward_mode=SimpleNamespace(is_idle=lambda: False),
             )
-            with owner.forward_scope(verify):
+            with owner.forward_scope(verify), forward_context(mask_context):
+                owner.decode_row_mask(16)
                 self.assertEqual(
                     owner.decode_active_rows.tolist(), [True] * 6 + [False] * 10
                 )
@@ -1427,7 +1434,9 @@ class TestAscendPrefillIntegration(CustomTestCase):
                 input_ids=torch.arange(6),
                 forward_mode=SimpleNamespace(is_idle=lambda: True),
             )
-            with owner.forward_scope(idle):
+            valid_rows.zero_()
+            with owner.forward_scope(idle), forward_context(mask_context):
+                owner.decode_row_mask(16)
                 self.assertFalse(owner.decode_active_rows.any().item())
             self.assertEqual(submitted, previous_submitted)
 

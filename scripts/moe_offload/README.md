@@ -26,11 +26,14 @@ python3 scripts/moe_offload/test_requests.py --bench
 以下“已验证”指合入前的 Ascend Ops 基线或上游测试；整层 prefill 与 Hot 直算的本次兼容合入尚待 NPU 验收。
 
 - 已验证 A3、DeepSeek V4 Flash ModelSlim W8A8、TP=EP=Attention DP=4；MoE TP、CP、PP 均为 1。要求专家形状一致、量化 offset 为零。
+- 单机混部允许 Attention DP 小于 EP，例如 `--tp-size 16 --attn-dp-size 8 --ep-size 16`；Attention DP 须整除 TP，仍要求 TP=EP、MoE TP=1、CP=1、PP=1。Decode mask 在 MC2 dispatch 时读取 runner 已按实际输入布局和 padded bucket 换算的本地有效行数，不再从原始 `input_ids` 长度推断。mask 原地更新并被图捕获，dispatch/combine 共用同一缓冲；本地零有效行的 rank 仍参与专家通信和计算。此扩展通过 CPU 契约检查，Attention TP>1 的完整 NPU 数值和图回放仍需实机验收。
 - 原固定槽路径已验证请求并发 1～8、28.125%/50% 缓存及 MTP 开关；MTP 使用 EAGLE steps=2、topk=1、draft tokens=3。基础回归不替代完整精度评测。
 - 新增 Decode Hot 直算与执行槽复用：四 rank、无 MTP、`execution_slots` 等于本地专家数且 Hot 加执行槽不超过 1024 时自动启用；默认 28.125% 缓存满足条件。其他配置（包括额外 execution 槽）保留本地已有的 packed 搬运路径，无需额外开关。上游快速对照主要改善 BS1/4，BS8 可能略慢；不保证所有 batch 都加速。
 - 共享专家、最前面的 `max(3, num_hash_layers)` 层和 MTP draft 权重常驻。Host 预算每 rank 64 GiB，四 rank 合计 256 GiB。
 - 每 rank 上限为 256 个本地专家、1280 个 Hot 槽、8192 个专家 key；有效行 mask 默认容纳 128 个本地 padded/验证 token，不等于请求 BS。
 - 不支持与 EPLB、冗余专家、batch overlap、模块 CPU offloader 或 MemFabric HiCache 同时使用。
+
+Attention TP>1 的混部配置须保留默认 Attention TP gather，不能设置 `--disable-attn-tp-gather`：该 opt-out 会让 runner 保留整组有效数，而 padded MoE 边界仍可能切分行，当前在初始化时明确拒绝该组合。Decode 的 `SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK` 是每 rank 的 MC2 补齐宽度，非零时须容纳本地 MoE 输入，且不能超过 offload JSON 的 `decode_mask_capacity`（默认 128）；设为 0 时使用本地输入行数。MTP 按候选 token 行数计算，不能用请求数代替。CPU 回归：`python3 test/registered/unit/offloading/test_ascend_decode_mask.py -v`，覆盖不均匀 DP、尾部零有效行、不同 bucket、复制布局、候选行数、稳定缓冲和 MC2 dispatch/combine 的 mask 交接。
 
 ## 保留的实现
 

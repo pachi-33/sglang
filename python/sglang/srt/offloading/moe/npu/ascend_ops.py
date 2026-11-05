@@ -12,6 +12,10 @@ from contextlib import contextmanager
 import torch
 
 from sglang.srt.distributed.parallel_state import get_moe_ep_group
+from sglang.srt.model_executor.forward_context import (
+    get_forward_context,
+    has_forward_context,
+)
 from sglang.srt.runtime_context import (
     get_device,
     get_disagg,
@@ -329,17 +333,7 @@ class AscendOpsOffloader(BaseOffloader):
         self._check_error()
         self.context.resources.clear()
         self.state.update_enabled.fill_(False)  # warmup/capture never trains LFU
-        self.decode_active_rows = None
-        parallel = get_parallel()
-        if parallel.attn_dp_size != parallel.moe_ep_size or parallel.attn_cp_size != 1:
-            raise ValueError("Decode row mask requires attention DP=EP and CP=1")
-        capacity = self.cfg.get("decode_mask_capacity", 128)
-        if type(capacity) is not int or capacity <= 0:
-            raise ValueError("decode_mask_capacity must be positive")
-        # Allocated before capture; every graph keeps this same address.
-        self.decode_active_rows = torch.zeros(
-            capacity, dtype=torch.bool, device=self.device
-        )
+        self._init_decode_mask()
         from .prefill import AscendPrefillWeights
 
         self.prefill = AscendPrefillWeights(self)
@@ -361,12 +355,48 @@ class AscendOpsOffloader(BaseOffloader):
     def _retain(self, value):
         self.context.retain(value)
 
+    def _init_decode_mask(self):
+        parallel = get_parallel()
+        if parallel.attn_cp_size != 1:
+            raise ValueError("Decode row mask requires attention CP=1")
+        if parallel.tp_size > parallel.attn_dp_size and parallel.disable_attn_tp_gather:
+            # That opt-out leaves the runner count replicated, while a padded
+            # MoE boundary can still split rows over attention TP.
+            raise ValueError(
+                "Mixed offload with attention TP>1 requires attention-TP gather; "
+                "remove --disable-attn-tp-gather"
+            )
+        capacity = self.cfg.get("decode_mask_capacity", 128)
+        if type(capacity) is not int or capacity <= 0:
+            raise ValueError("decode_mask_capacity must be positive")
+        # Every captured bucket shares these allocations. Only contents change.
+        self.decode_row_indices = torch.arange(
+            capacity, dtype=torch.int32, device=self.device
+        )
+        self.decode_active_rows = torch.zeros(
+            capacity, dtype=torch.bool, device=self.device
+        )
+
     def decode_row_mask(self, padded_bs):
         if self.decode_active_rows is None:
             return None
         if padded_bs > self.decode_active_rows.numel():
             raise ValueError("MC2 padded batch exceeds decode_mask_capacity")
-        return self.decode_active_rows[:padded_bs]
+        get_bound = (
+            get_forward_context().moe_num_token_non_padded
+            if has_forward_context()
+            else None
+        )
+        bound = get_bound() if get_bound is not None else None
+        if bound is None:
+            raise RuntimeError("Decode row mask requires a MoE-local valid token count")
+        mask = self.decode_active_rows[:padded_bs]
+        # Resolve after eager padding / graph bucket selection, exactly as top-k
+        # does. The comparison is captured, so replay reads the updated LOCAL
+        # count without a host read or a Python callback. A zero-source rank
+        # still participates in MC2 and may receive other ranks' expert work.
+        torch.lt(self.decode_row_indices[:padded_bs], bound, out=mask)
+        return mask
 
     def start_prefill_layer(self, layer_id):
         self.prefill.pipeline.start(layer_id, self.context)
@@ -673,20 +703,6 @@ class AscendOpsOffloader(BaseOffloader):
             yield
             return
         self.context = _Context()
-        if self.decode_active_rows is not None:
-            if forward_batch is None:
-                raise ValueError(
-                    "Decode padding mask requires the original forward batch"
-                )
-            live = (
-                0
-                if forward_batch.forward_mode.is_idle()
-                else forward_batch.input_ids.numel()
-            )
-            self.decode_active_rows.fill_(False)
-            self.decode_active_rows[: min(live, self.decode_active_rows.numel())].fill_(
-                True
-            )
         self.state.step_access_count.zero_()
         self.state.update_enabled.fill_(True)
         try:
