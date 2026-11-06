@@ -8,7 +8,7 @@ MODEL_PATH=${MODEL_PATH:-/home/weights/GLM-5.2-w8a8}
 export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
 SERVER_PORT=${SERVER_PORT:-30000}
 DIST_PORT=${DIST_PORT:-29500}
-CACHE_RATIO=${CACHE_RATIO:-0.283}
+CACHE_RATIO=${CACHE_RATIO:-0.20}
 ENABLE_MTP=${ENABLE_MTP:-0}
 # GLM 的仓库部署配置使用 BF16 draft；主模型 W4/W8 不决定 draft 的量化。
 MTP_DRAFT_QUANTIZATION=${MTP_DRAFT_QUANTIZATION:-unquant}
@@ -125,15 +125,15 @@ exec python3 -u -m sglang.launch_server \
   --device npu --base-gpu-id 0 --host 127.0.0.1 --port "$SERVER_PORT" \
   --dist-init-addr "127.0.0.1:$DIST_PORT" --trust-remote-code \
   --attention-backend ascend --page-size 128 \
-  --tp-size 16 --attn-dp-size 8 --ep-size 16 \
+  --tp-size 16 --attn-dp-size 1 --ep-size 16 \
   --moe-a2a-backend ascend_ops --deepep-mode auto \
   --moe-ascend-ops-config '{"prefill":"alltoallv","decode":"low_latency"}' \
   --load-format safetensors --quantization modelslim --kv-cache-dtype bfloat16 \
   --enable-dp-lm-head --disable-shared-experts-fusion --disable-overlap-schedule \
-  --mem-fraction-static 0.75 --context-length 256000 --max-total-tokens 256000 \
-  --chunked-prefill-size 65536 --max-prefill-tokens 65536 \
-  --max-running-requests 8 --prefill-max-requests 8 \
+  --mem-fraction-static 0.60 --context-length 256000 --max-total-tokens 256000 \
+  --chunked-prefill-size 65536 --max-prefill-tokens 524288 \
+  --max-running-requests 128 --prefill-max-requests 128 \
   --cuda-graph-backend-decode full --cuda-graph-backend-prefill disabled \
-  --cuda-graph-bs-decode 1 2 4 8 --cuda-graph-max-bs-decode 8 \
+  --cuda-graph-bs-decode 16 --cuda-graph-max-bs-decode 16 \
   --moe-offload-config "$LOG_DIR/offload.json" "${extra[@]}" \
-  --disable-radix-cache --skip-server-warmup --watchdog-timeout 600 --log-level info
+  --skip-server-warmup --watchdog-timeout 600 --log-level info
