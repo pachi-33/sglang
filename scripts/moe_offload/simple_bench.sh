@@ -61,6 +61,8 @@ COMMON_ARGS=(
     --warmup-requests 0
     --request-rate inf
     --seed "$SEED"
+    --extra-request-body '{"bootstrap_host":"2.2.2.2","bootstrap_room":0}'
+    --cache-report
 )
 
 cat <<EOF
@@ -91,8 +93,7 @@ if (( PREFIX_LEN > 0 )); then
         --gsp-prompts-per-group "$CACHE_REQUESTS" \
         --gsp-question-len 0 \
         --gsp-output-len 1 \
-        --max-concurrency "$CACHE_REQUESTS" \
-        --extra-request-body '{"bootstrap_host":"2.2.2.2","bootstrap_room":0}'
+        --max-concurrency "$CACHE_REQUESTS"
 else
     echo "[1/2] 目标共享前缀长度为 0，跳过创建缓存"
 fi
@@ -127,5 +128,4 @@ python -m sglang.bench_serving \
     --gsp-prompts-per-group "$NUM_REQUESTS" \
     --gsp-question-len "$QUESTION_LEN" \
     --gsp-output-len "$OUTPUT_LEN" \
-    --max-concurrency "$CONCURRENCY" \
-    --extra-request-body '{"bootstrap_host":"2.2.2.2","bootstrap_room":0}'
+    --max-concurrency "$CONCURRENCY"
