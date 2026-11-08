@@ -12,6 +12,7 @@ from contextlib import contextmanager
 import torch
 
 from sglang.srt.distributed.parallel_state import get_moe_ep_group
+from sglang.srt.distributed.utils import get_pp_indices
 from sglang.srt.model_executor.forward_context import (
     get_forward_context,
     has_forward_context,
@@ -75,13 +76,26 @@ class _Context:
 class AscendOpsOffloader(BaseOffloader):
     def __init__(self, hf_config, path):
         p = get_parallel()
+        self.model_id = get_model_id(hf_config)
+        self.options = AscendOffloadOptions.from_path(
+            path,
+            model_id=self.model_id,
+            disaggregation_mode=get_disagg().disaggregation_mode,
+        )
+        self.cfg, self.hf_config = self.options.values, hf_config
+        self.execution_mode = (
+            PrefillOnlyExecution() if self.options.prefill_only else CachedExecution()
+        )
         if (
             p.tp_size != p.moe_ep_size
             or p.moe_tp_size != 1
-            or p.pp_size != 1
+            or p.moe_dp_size != 1
             or p.nnodes != 1
         ):
-            raise ValueError("Expert offload requires single-stage TP=EP and MoE TP=1")
+            raise ValueError(
+                "Expert offload requires single-node stage TP=EP and MoE TP=DP=1"
+            )
+        self.execution_mode.validate_topology(self)
         if get_exec().moe.moe_a2a_backend != "ascend_ops":
             raise ValueError("Expert offload currently requires Ascend Ops")
         if not get_schedule().disable_overlap_schedule:
@@ -98,21 +112,13 @@ class AscendOpsOffloader(BaseOffloader):
             raise ValueError(
                 "Initial fixed-slot offload requires trivial expert placement and does not support EPLB, redundant experts, or batch overlap"
             )
-        self.model_id = get_model_id(hf_config)
-        self.options = AscendOffloadOptions.from_path(
-            path,
-            model_id=self.model_id,
-            disaggregation_mode=get_disagg().disaggregation_mode,
-        )
-        self.cfg, self.hf_config = self.options.values, hf_config
-        self.execution_mode = (
-            PrefillOnlyExecution() if self.options.prefill_only else CachedExecution()
-        )
+        self.layer_range = self._stage_layer_range(hf_config, p)
         self.catalog = build_expert_catalog(
             hf_config,
             p.moe_ep_size,
             p.moe_ep_rank,
             offload_all_routed=self.options.prefill_only,
+            layer_range=self.layer_range,
         )
         self.local_experts = self.catalog.offloaded_layers[0].local_experts
         self.copy_capacity = self.local_experts
@@ -135,6 +141,42 @@ class AscendOpsOffloader(BaseOffloader):
         self.ready = False
         self.step = 0
 
+        logger.info(
+            "Ascend expert offload: mode=%s pp=%d/%d layers=[%d,%d) "
+            "ep=%d/%d routed_layers=%d local_experts=%d",
+            self.options.mode,
+            p.pp_rank if p.pp_size > 1 else 0,
+            p.pp_size,
+            *self.layer_range,
+            p.moe_ep_rank,
+            p.moe_ep_size,
+            len(self.catalog.offloaded_layers),
+            self.local_experts,
+        )
+
+    @staticmethod
+    def _stage_layer_range(hf_config, parallel):
+        """Use the model's PP partition, rejecting empty/inverted stages early."""
+        count = hf_config.num_hidden_layers
+        if type(count) is not int or count <= 0:
+            raise ValueError("num_hidden_layers must be a positive integer")
+        rank = parallel.pp_rank if parallel.pp_size > 1 else 0
+        if not 0 <= rank < parallel.pp_size:
+            raise ValueError("Invalid PP rank for expert offload")
+        spans = [
+            get_pp_indices(count, i, parallel.pp_size) for i in range(parallel.pp_size)
+        ]
+        previous = 0
+        for start, end in spans:
+            if start != previous or not 0 <= start < end <= count:
+                raise ValueError(
+                    "Expert offload requires nonempty contiguous PP stages"
+                )
+            previous = end
+        if previous != count:
+            raise ValueError("Expert offload PP partition must cover the model")
+        return spans[rank]
+
     def prepare_layer(self, layer, num_experts, hidden_size, intermediate_size, attrs):
         spec = self.catalog.layer(layer.layer_id)
         if spec.resident:
@@ -145,6 +187,7 @@ class AscendOpsOffloader(BaseOffloader):
                 "use --disable-shared-experts-fusion"
             )
         quant_spec = get_quant_spec(layer.w13_scheme, layer.w2_scheme)
+        self.execution_mode.validate_quantization(self, quant_spec)
         if self.model_id != "GLM-5.2" and quant_spec.kind != "w8a8":
             raise ValueError(
                 "DeepSeek V4 offload currently supports ModelSlim W8A8 only"

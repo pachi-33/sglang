@@ -93,7 +93,7 @@ class TestPrefillOnlyRuntime(CustomTestCase):
         )
 
     @staticmethod
-    def _owner(*, fail_copy=None):
+    def _owner(*, fail_copy=None, layer_ids=(0, 2, 4)):
         owner = object.__new__(ascend_ops.AscendOpsOffloader)
         owner.execution_mode = PrefillOnlyExecution()
         owner.ready, owner.step = True, 0
@@ -122,12 +122,12 @@ class TestPrefillOnlyRuntime(CustomTestCase):
             )
 
         weights.pipeline = LayerPrefetchPipeline(
-            (0, 2, 4), load=load, copy_stream=owner.weight_copy_stream
+            layer_ids, load=load, copy_stream=owner.weight_copy_stream
         )
         return owner, context, submitted, completed
 
     def _consume_layers(self, owner, context, completed):
-        for layer in (0, 2, 4):
+        for layer in owner.prefill.pipeline.layer_ids:
             owner.start_prefill_layer(layer)
             owner.prefill.pipeline.acquire(layer, context)
             owner.prefill.pipeline.wait_for_w2(layer, context)
@@ -236,6 +236,19 @@ class TestPrefillOnlyRuntime(CustomTestCase):
         self.assertIsNone(owner.prefill.pipeline.invocation_id)
         self.assertEqual(len(completed), 9)
 
+    def test_stage_local_sequence_restarts_at_bank_zero_for_each_chunk(self):
+        for layers in ((3, 4, 5), (18, 19, 20), (38, 40, 42), (62, 63, 64)):
+            with self.subTest(layers=layers):
+                owner, context, submitted, completed = self._owner(layer_ids=layers)
+                for _ in range(2):
+                    with owner.forward_scope(self._batch()):
+                        self.assertEqual(owner.prefill.pipeline.current, 0)
+                        self.assertEqual(context.resources[0], (layers[0], 0))
+                        self._consume_layers(owner, context, completed)
+                    self.assertEqual(context.resources, [])
+                    self.assertIsNone(owner.prefill.pipeline.invocation_id)
+                self.assertEqual(submitted, list(layers) * 2)
+
 
 class TestPrefillOnlyConfiguration(CustomTestCase):
     def test_attention_tp4_dp4_is_supported_without_a_decode_dp_ep_requirement(self):
@@ -267,11 +280,10 @@ class TestPrefillOnlyConfiguration(CustomTestCase):
         self.assertEqual(mode.default_execution_slots(16), 32)
         self.assertFalse(hasattr(owner, "policy"))
 
-    def test_graphs_cp_and_unsynchronized_dp_fail_before_allocation(self):
+    def test_graphs_and_unsynchronized_dp_fail_before_allocation(self):
         from sglang.srt.offloading.moe.npu import execution_mode
 
         for cp, dp, prefill_graph, decode_graph, skip_sync in (
-            (2, 4, "disabled", "disabled", False),
             (1, 3, "disabled", "disabled", False),
             (1, 4, "piecewise", "disabled", False),
             (1, 4, "disabled", "native", False),
@@ -310,7 +322,14 @@ class TestPrefillOnlyConfiguration(CustomTestCase):
 
 class TestOffloadModeWiring(CustomTestCase):
     @staticmethod
-    def _construct(values, disaggregation_mode):
+    def _construct(
+        values,
+        disaggregation_mode,
+        *,
+        parallel_changes=None,
+        model_changes=None,
+        speculative_algorithm=None,
+    ):
         from sglang.srt.offloading.moe.npu import execution_mode
 
         config = SimpleNamespace(
@@ -326,11 +345,24 @@ class TestOffloadModeWiring(CustomTestCase):
             moe_ep_size=16,
             moe_ep_rank=0,
             moe_tp_size=1,
+            moe_dp_size=1,
             pp_size=1,
+            pp_rank=0,
             nnodes=1,
+            dp_size=1,
             attn_dp_size=4,
             attn_cp_size=1,
+            attn_tp_size=4,
+            enable_prefill_cp=False,
+            disable_attn_tp_gather=False,
+            cp_strategy=None,
+            enable_cp_tp_group_sharing=False,
+            enable_dsa_cache_layer_split=False,
+            enable_kv_cache_sharding=False,
+            cp_kv_layout=None,
         )
+        parallel.__dict__.update(parallel_changes or {})
+        config.__dict__.update(model_changes or {})
         execution = SimpleNamespace(
             moe=SimpleNamespace(
                 moe_a2a_backend="ascend_ops",
@@ -367,6 +399,13 @@ class TestOffloadModeWiring(CustomTestCase):
                 patch.object(execution_mode, "get_parallel", return_value=parallel),
                 patch.object(ascend_ops, "get_exec", return_value=execution),
                 patch.object(execution_mode, "get_exec", return_value=execution),
+                patch.object(
+                    execution_mode,
+                    "get_spec",
+                    return_value=SimpleNamespace(
+                        speculative_algorithm=speculative_algorithm
+                    ),
+                ),
                 patch.object(
                     ascend_ops, "get_device", return_value=SimpleNamespace(gpu_id=0)
                 ),
@@ -419,6 +458,131 @@ class TestOffloadModeWiring(CustomTestCase):
         self.assertEqual(len(owner.initial_keys), 296)
         self.assertEqual(owner.policy.config.update_interval, 4)
         self.assertFalse(owner.ready)
+
+    @staticmethod
+    def _pipeline_parallel(**changes):
+        values = dict(
+            tp_size=4,
+            moe_ep_size=4,
+            pp_size=4,
+            attn_dp_size=1,
+            attn_cp_size=4,
+            attn_tp_size=1,
+            enable_prefill_cp=True,
+            cp_strategy="zigzag",
+        )
+        values.update(changes)
+        return values
+
+    def test_stage_catalogs_match_model_partition_before_device_allocation(self):
+        from sglang.srt.offloading.moe.npu import execution_mode
+
+        for cp in (1, 4):
+            for rank, span in enumerate(((0, 18), (18, 38), (38, 62), (62, 78))):
+                with (
+                    self.subTest(cp=cp, rank=rank),
+                    patch.dict(
+                        "os.environ", {"SGLANG_PP_LAYER_PARTITION": "18,20,24,16"}
+                    ),
+                ):
+                    owner = self._construct(
+                        {"mode": "prefill_only"},
+                        "prefill",
+                        parallel_changes=self._pipeline_parallel(
+                            pp_rank=rank,
+                            attn_cp_size=cp,
+                            attn_tp_size=4 // cp,
+                            enable_prefill_cp=cp > 1,
+                        ),
+                    )
+                    self.assertEqual(owner.layer_range, span)
+                    self.assertEqual(
+                        [s.layer_id for s in owner.catalog.offloaded_layers],
+                        list(range(max(3, span[0]), span[1])),
+                    )
+                    self.assertEqual(owner.local_experts, 64)
+                    self.assertEqual(owner.execution_slots, 128)
+                    self.assertEqual(owner.hot_slots, 0)
+                    self.assertIsNone(owner.host_pool)
+                    self.assertIsNone(owner.format)
+                    self.assertIsInstance(
+                        owner.execution_mode, execution_mode.PrefillOnlyExecution
+                    )
+
+    def test_unsupported_pipeline_topologies_fail_before_native_resources(self):
+        cases = (
+            dict(pp_size=2),
+            dict(tp_size=8, moe_ep_size=8),
+            dict(moe_ep_size=16),
+            dict(moe_dp_size=2),
+            dict(nnodes=2),
+            dict(dp_size=2),
+            dict(attn_dp_size=2),
+            dict(attn_cp_size=2),
+            dict(attn_tp_size=2),
+            dict(cp_strategy="interleave"),
+            dict(enable_prefill_cp=False),
+            dict(disable_attn_tp_gather=True),
+            dict(enable_cp_tp_group_sharing=True),
+            dict(enable_dsa_cache_layer_split=True),
+            dict(enable_kv_cache_sharding=True),
+            dict(cp_kv_layout="sharded"),
+            dict(pp_rank=4),
+        )
+        for changes in cases:
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self._construct(
+                    {"mode": "prefill_only"},
+                    "prefill",
+                    parallel_changes=self._pipeline_parallel(**changes),
+                )
+        for model, algorithm in (("deepseek_v4", None), ("glm_moe_dsa", "EAGLE")):
+            with (
+                self.subTest(model=model, algorithm=algorithm),
+                self.assertRaises(ValueError),
+            ):
+                self._construct(
+                    {"mode": "prefill_only"},
+                    "prefill",
+                    parallel_changes=self._pipeline_parallel(),
+                    model_changes=dict(model_type=model),
+                    speculative_algorithm=algorithm,
+                )
+
+    def test_mixed_mode_still_rejects_pipeline_and_cp(self):
+        for changes in (self._pipeline_parallel(), dict(attn_cp_size=4)):
+            with (
+                self.subTest(changes=changes),
+                self.assertRaisesRegex(ValueError, "Mixed"),
+            ):
+                self._construct({}, "null", parallel_changes=changes)
+
+    def test_bad_or_dense_only_partition_is_rejected_before_host_allocation(self):
+        for partition in ("18,-1,45,16", "18,20,24", "0,38,24,16", "2,20,24,32"):
+            with (
+                self.subTest(partition=partition),
+                patch.dict("os.environ", {"SGLANG_PP_LAYER_PARTITION": partition}),
+                self.assertRaises(ValueError),
+            ):
+                self._construct(
+                    {"mode": "prefill_only"},
+                    "prefill",
+                    parallel_changes=self._pipeline_parallel(),
+                )
+
+    def test_pipelined_prefill_rejects_w4_before_format_allocation(self):
+        from sglang.srt.offloading.moe.npu import execution_mode
+        from sglang.srt.offloading.moe.npu.model_adapter import ExpertQuantSpec
+
+        owner = SimpleNamespace()
+        with patch.object(
+            execution_mode, "get_parallel", return_value=SimpleNamespace(pp_size=4)
+        ):
+            with self.assertRaisesRegex(ValueError, "W8A8"):
+                PrefillOnlyExecution().validate_quantization(
+                    owner, ExpertQuantSpec("w4a8")
+                )
+            PrefillOnlyExecution().validate_quantization(owner, ExpertQuantSpec("w8a8"))
 
 
 class TestPrefillOnlyInitialization(CustomTestCase):
