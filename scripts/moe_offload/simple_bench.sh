@@ -3,18 +3,18 @@ set -euo pipefail
 
 # ==================== 主要配置 ====================
 HOST="127.0.0.1"
-PORT=30000
-# PORT=6688
-KV_CACHE_HIT_RATE=0.00                 # 0~1；0.90=90%，1.0=原参考的全共享前缀
+# PORT=30000
+PORT=6688
+KV_CACHE_HIT_RATE=0.90                 # 0~1；0.90=90%，1.0=原参考的全共享前缀
 # MODEL="/home/weights/DeepSeek-V4-Flash-0731-w8a8"
 MODEL="/home/weights/GLM-5.2-w8a8"
-CONCURRENCY=16                      # 正式压测的客户端并发上限
+CONCURRENCY=6                      # 正式压测的客户端并发上限
 
 # ==================== 测试规模 ====================
-INPUT_LEN=36000                       # 目标总输入长度：共享前缀 + 独立问题
+INPUT_LEN=128000                       # 目标总输入长度：共享前缀 + 独立问题
 OUTPUT_LEN=1
-NUM_REQUESTS=16                       # 正式压测总请求数，与并发上限不同
-CACHE_REQUESTS=16                       # 创建缓存阶段的请求数和并发上限
+NUM_REQUESTS=6                       # 正式压测总请求数，与并发上限不同
+CACHE_REQUESTS=1                       # 创建缓存阶段的请求数和并发上限
 
 # 每次运行使用新种子，减少复用上轮问题缓存的干扰；两阶段共用它。
 SEED=$(python -c 'import secrets; print(secrets.randbits(32))')
@@ -108,6 +108,18 @@ echo "[2/2] 开始正式压测"
 #     "with_stack":false,
 #     "record_shapes":false
 #   }'
+
+curl --noproxy '*' -X POST \
+  http://61.47.19.68:8000/start_profile \
+  -H "Content-Type: application/json" \
+  -d '{
+    "output_dir": "/home/y00951466/pd_test/sglang/scripts/moe_offload/tmp/sglang_profile/prefill-1402",
+    "num_steps": 10,
+    "profile_by_stage": true,
+    "activities": ["CPU", "GPU"],
+    "with_stack": false,
+    "record_shapes": false
+  }'
 
 python -m sglang.bench_serving \
     "${COMMON_ARGS[@]}" \
