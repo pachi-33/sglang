@@ -44,6 +44,57 @@ curl -sS http://127.0.0.1:8000/generate \
 
 其他机器发请求时，将 URL 中 `127.0.0.1` 换成 P 机器可达的实际 IP。`bootstrap_host=2.2.2.2` 是源码中的 **fake 测试标记**，保持这个值，不换成真实 IP。仅设置输出长度为 1 不能自动绕过 PD 握手。
 
+如果要在独立 P 上测试跨请求 prefix KV cache，在启动服务前显式打开测试开关：
+
+```bash
+export SGLANG_TEST_FAKE_PREFILL_RADIX_CACHE=1
+bash scripts/moe_offload/serve_glm52_prefill_pp4_cp4.sh
+```
+
+开关默认关闭，仅影响 Prefill 模式下使用 `bootstrap_host=2.2.2.2` 的请求。打开后，此类请求计算出的 P 侧 KV 可以写入本地 radix cache；fake sender 仍然不会发送 KV，也不需要 D。请求仍须携带 `bootstrap_room`。服务启动时的 fake 预热请求也受此开关影响，因此它适用于隔离的基准测试进程。
+
+测试命中时，等待预热请求**成功完成**后，再发相同 token 前缀的请求；通过响应 `meta_info.cached_tokens` 或服务日志 `#cached-token` 观察实际命中。`--page-size 128` 会按页对齐缓存，实际命中数不一定恰好等于目标前缀长度。普通 Prefill / fake Decode 默认行为，以及 embedding override 请求的缓存保护保持不变。
+
+如果用 `scripts/moe_offload/simple_bench.sh` 直连这个独立 P，在 `COMMON_ARGS` 中加入以下两项，并将其地址、端口和输入长度改成当前 P 服务配置：
+
+```bash
+--extra-request-body '{"bootstrap_host":"2.2.2.2","bootstrap_room":0}'
+--cache-report
+```
+
+脚本中的 `KV_CACHE_HIT_RATE` 是生成共享前缀的目标比例。真正的命中率由服务返回的 cached token 数决定；请求失败、KV 容量不足或生成的前缀不同都会影响结果。使用真实 PD Router 测试时不要附加 fake bootstrap 字段。`simple_bench.sh` 内的 `start_profile` 使用独立的固定地址，执行该步骤前也需改成实际 P 服务地址或跳过它。
+
+可先发送两个共用 512 个 token 前缀的请求，检查第二个请求的缓存计数（将 URL 换成实际 P 服务地址）：
+
+```bash
+python3 - <<'PY_SMOKE'
+import json
+import random
+import urllib.request
+
+url = "http://127.0.0.1:8000/generate"
+rng = random.SystemRandom()
+prefix = [rng.randrange(100, 3000) for _ in range(512)]
+for index in range(2):
+    body = {
+        "input_ids": prefix + [10 + index] * 128,
+        "sampling_params": {"temperature": 0, "max_new_tokens": 1, "ignore_eos": True},
+        "bootstrap_host": "2.2.2.2", "bootstrap_room": 0, "stream": False,
+    }
+    request = urllib.request.Request(
+        url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(request, timeout=600) as response:
+        result = json.load(response)
+    meta = result.get("meta_info", {})
+    if result.get("error") or (meta.get("finish_reason") or {}).get("type") == "abort":
+        raise RuntimeError(result)
+    print(f"request={index + 1} prompt_tokens={meta.get('prompt_tokens')} cached_tokens={meta.get('cached_tokens')}")
+PY_SMOKE
+```
+
+在缓存开启、没有驱逐且 KV 充足的情况下，第二个请求应能看到非零命中；这个测试使用 page 对齐的共享前缀。若依旧为零，请核对环境变量是否在启动 P 前设置，以及实际服务是否使用当前代码。
+
 第一个 token 在 prefill 结束后由 logits 采样产生，不需要 decode forward。长输入仍可包含多个 prefill chunk。极短输入可能回退到不切 CP 的路径；验收 CP4 时用目标长度输入，并检查 forward / CP 元数据。与同拓扑常驻结果比较 token ID / logits，确认只输出 1 token、没有本请求的 decode forward，且连续请求结束后 KV / metadata / bank 正常回收。
 
 本配置需要目标 NPU 上的数值、PP/CP 通信和性能验收。Fake sender 不传输真实 KV，独立 P 测试通过不代表真实 P→D 传输、D 多 token 生成或 Router 联调已经通过。
