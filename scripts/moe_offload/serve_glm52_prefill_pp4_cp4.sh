@@ -137,6 +137,8 @@ if dry == "0":
     (Path(logs) / "offload.json").write_text(json.dumps(output, indent=2) + "\n")
 PY_CONFIG
 
+export SGLANG_TEST_FAKE_PREFILL_RADIX_CACHE=1
+
 command=("$PYTHON_BIN" -u -m sglang.launch_server
   --model-path "$MODEL_PATH" --served-model-name glm52-prefill-offload
   --device npu --base-gpu-id 0 --attention-backend ascend --quantization modelslim
