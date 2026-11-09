@@ -262,12 +262,17 @@ class AscendRunnerCore(MoeRunnerCore):
         group_list_type = runner_input.group_list_type
         # Activation uses logical expert counts; GMM may address physical slots.
         activation_tokens = expert_tokens
+        offloaded_prefill = owner is not None and get_is_extend_in_batch()
         if owner is not None and group_list_type == 2:
-            activation_tokens = owner.fused_counts
+            if offloaded_prefill:
+                activation_tokens = owner.prefill.counts
+                activation_group_type = 1
+            else:
+                activation_tokens = owner.fused_counts
         else:
             activation_group_type = group_list_type
 
-        if owner is not None and get_is_extend_in_batch():
+        if offloaded_prefill:
             if running_state.get("deepep_empty_receive"):
                 # DeepEP normal can allocate a dummy row for an empty receive.
                 # Preserve its shape for combine without reading the dummy data.

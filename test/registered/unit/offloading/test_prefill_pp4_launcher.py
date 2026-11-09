@@ -50,6 +50,7 @@ class TestPrefillPP4Launcher(unittest.TestCase):
             HOST_POOL_GIB="64",
             P_MOE_A2A_BACKEND="ascend_ops",
             EXECUTION_SLOTS="",
+            PREFILL_RESIDENT_RATIO="0",
             SGLANG_PP_LAYER_PARTITION="18,20,24,16",
             ASCEND_RT_VISIBLE_DEVICES=",".join(map(str, range(16))),
             CONTEXT_LENGTH="16384",
@@ -135,6 +136,20 @@ class TestPrefillPP4Launcher(unittest.TestCase):
         }.items():
             self.assertEqual(command[command.index(flag) + 1], value)
         self.assertNotIn("--moe-ascend-ops-config", command)
+
+    def test_partial_residency_reports_stage_sizes_and_respects_budget(self):
+        result = self._run(PREFILL_RESIDENT_RATIO="0.25", P_MOE_A2A_BACKEND="deepep")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config, _ = json.JSONDecoder().raw_decode(result.stdout)
+        self.assertEqual(config["prefill_resident_ratio"], 0.25)
+        self.assertNotIn("execution_slots", config)
+        self.assertIn(
+            "16/64; HBM slots/rank by stage: [336, 416, 480, 352]", result.stdout
+        )
+
+        result = self._run(PREFILL_RESIDENT_RATIO="0.25", EXECUTION_SLOTS="479")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("at least 480", result.stderr)
 
     def test_rejects_insufficient_slots_and_host_before_startup(self):
         for settings, message in (

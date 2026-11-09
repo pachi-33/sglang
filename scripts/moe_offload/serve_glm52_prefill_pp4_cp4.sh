@@ -9,7 +9,8 @@ MODEL_PATH=${MODEL_PATH:-/home/weights/GLM-5.2-w8a8} # 本机 GLM-5.2 ModelSlim 
 
 # ==================== 按容量调整 ====================
 HOST_POOL_GIB=${HOST_POOL_GIB:-56} # 每 rank；16 rank 预留 1024 GiB，另留系统/加载内存
-EXECUTION_SLOTS=${EXECUTION_SLOTS:-""} # 留空使用 2 × 每 rank 专家数；256 专家时为 128
+PREFILL_RESIDENT_RATIO=${PREFILL_RESIDENT_RATIO:-0} # P 每层本地 routed experts 的常驻比例
+EXECUTION_SLOTS=${EXECUTION_SLOTS:-""} # P 每 rank 权重槽位上限，留空按 PP stage 计算
 export SGLANG_PP_LAYER_PARTITION=${SGLANG_PP_LAYER_PARTITION:-18,20,24,16}
 CONTEXT_LENGTH=${CONTEXT_LENGTH:-180000}
 CHUNKED_PREFILL_SIZE=${CHUNKED_PREFILL_SIZE:-16384}
@@ -77,7 +78,7 @@ export PYTHONDONTWRITEBYTECODE=1
 
 # Preflight uses only the Python standard library. Runtime storage checks use
 # the actual quantization layout; the optional weight estimate below is W8 only.
-"$PYTHON_BIN" - "$MODEL_PATH" "$HOST_POOL_GIB" "$EXECUTION_SLOTS" \
+"$PYTHON_BIN" - "$MODEL_PATH" "$HOST_POOL_GIB" "$EXECUTION_SLOTS" "$PREFILL_RESIDENT_RATIO" "$SGLANG_ROOT" \
   "$RUNTIME_DIR" "$LOG_DIR" "$DRY_RUN" "$SGLANG_PP_LAYER_PARTITION" \
   "$ASCEND_RT_VISIBLE_DEVICES" "$CONTEXT_LENGTH" "$CHUNKED_PREFILL_SIZE" \
   "$MAX_PREFILL_TOKENS" "$MAX_RUNNING_REQUESTS" "$MEM_FRACTION_STATIC" \
@@ -88,8 +89,9 @@ import math
 import sys
 from itertools import accumulate
 from pathlib import Path
+from runpy import run_path
 
-(model, host, slots, runtime, logs, dry, partition, devices,
+(model, host, slots, resident_ratio, root, runtime, logs, dry, partition, devices,
  context, chunk, prefill, requests, fraction, *ports_and_ip) = sys.argv[1:]
 for port in ports_and_ip[:-1]:
     if not port.isdecimal() or not 1 <= int(port) <= 65535:
@@ -126,17 +128,33 @@ counts = [sum(i >= first and i % frequency == 0 for i in range(start, end))
           for start, end in zip(bounds, bounds[1:])]
 if not all(counts):
     raise ValueError("Each PP stage must contain at least one routed MoE layer")
-required_slots = 2 * experts // 4
-if slots and (not slots.isdecimal() or int(slots) < required_slots):
-    raise ValueError(f"EXECUTION_SLOTS must be at least {required_slots} for two full local-layer banks")
+local_experts = experts // 4
+options = run_path(str(Path(root) / "python/sglang/srt/offloading/moe/npu/options.py"))
+ratio = options["parse_prefill_resident_ratio"](float(resident_ratio))
+if slots and (not slots.isdecimal() or int(slots) <= 0):
+    raise ValueError("EXECUTION_SLOTS must be a positive integer")
+slot_budget = int(slots) if slots else None
+stage_layouts = [
+    options["prefill_weight_slots"](local_experts, layers, ratio, slot_budget)
+    for layers in counts
+]
+resident = stage_layouts[0][0]
 output = {
     "mode": "prefill_only", "cache_ratio": 0,
-    "execution_slots": int(slots) if slots else required_slots,
     "host_pool_gib": int(host),
     "native_extension_directory": str(Path(runtime) / "native_acl"),
 }
+if ratio:
+    output["prefill_resident_ratio"] = ratio
+if slot_budget is not None:
+    output["execution_slots"] = slot_budget
+elif not resident:
+    output["execution_slots"] = stage_layouts[0][1]
 print(json.dumps(output, indent=2))
 print(f"Stage routed layers: {counts}; experts/rank/layer: {experts // 4}")
+if ratio:
+    print(f"Prefill resident experts/rank/layer: {resident}/{local_experts}; "
+          f"HBM slots/rank by stage: {[allocated for _, allocated in stage_layouts]}")
 hidden, intermediate = cfg.get("hidden_size"), cfg.get("moe_intermediate_size")
 if type(hidden) is int and hidden > 0 and type(intermediate) is int and intermediate > 0:
     rank_layer_bytes = 3 * hidden * intermediate * (experts // 4)

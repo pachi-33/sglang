@@ -4,6 +4,7 @@ The production facade, execution strategy and prefetch pipeline run unchanged;
 only device allocation, stream/event submission and host copies are replaced.
 """
 
+import ctypes
 import json
 import tempfile
 import unittest
@@ -556,6 +557,7 @@ class TestOffloadModeWiring(CustomTestCase):
         execution = SimpleNamespace(
             moe=SimpleNamespace(
                 moe_a2a_backend="ascend_ops",
+                moe_ascend_ops_config=None,
                 moe_runner_backend="auto",
                 deepep_mode="normal",
                 enable_eplb=False,
@@ -663,6 +665,45 @@ class TestOffloadModeWiring(CustomTestCase):
         owner.execution_mode.validate_quantization(owner, ExpertQuantSpec("w8a8"))
         with self.assertRaisesRegex(ValueError, "W8A8"):
             owner.execution_mode.validate_quantization(owner, ExpertQuantSpec("w4a8"))
+
+    def test_partial_residency_uses_stage_budget_for_both_dispatchers(self):
+        values = {
+            "mode": "prefill_only",
+            "prefill_resident_ratio": 0.25,
+            "execution_slots": 480,
+        }
+        with patch.dict(
+            "os.environ",
+            {
+                "SGLANG_PP_LAYER_PARTITION": "18,20,24,16",
+                "MOE_EXPERT_TOKEN_NUMS_TYPE": "1",
+                "SGLANG_ZBAL_LOCAL_MEM_SIZE": "0",
+            },
+        ):
+            for backend in ("ascend_ops", "deepep"):
+                with self.subTest(backend=backend):
+                    owner = self._construct(
+                        values,
+                        "prefill",
+                        parallel_changes=self._pipeline_parallel(pp_rank=3),
+                        moe_changes={"moe_a2a_backend": backend},
+                    )
+                    self.assertEqual(owner.execution_mode.resident_experts, 16)
+                    self.assertEqual(owner.execution_slots, 352)
+                    self.assertIsNone(owner.host_pool)
+            with self.assertRaisesRegex(ValueError, "at least 480"):
+                self._construct(
+                    {**values, "execution_slots": 479},
+                    "prefill",
+                    parallel_changes=self._pipeline_parallel(pp_rank=2),
+                )
+            with self.assertRaisesRegex(ValueError, "requires Ascend Ops alltoallv"):
+                self._construct(
+                    values,
+                    "prefill",
+                    parallel_changes=self._pipeline_parallel(pp_rank=3),
+                    moe_changes={"moe_ascend_ops_config": '{"prefill":"allgather"}'},
+                )
 
     def test_deepep_rejects_incompatible_modes_and_counts(self):
         for mode in ("auto", "low_latency"):
@@ -867,7 +908,7 @@ class TestPrefillOnlyInitialization(CustomTestCase):
         )
         for storage in owner.storages.values():
             storage.require_sealed.assert_called_once()
-        weights.assert_called_once_with(owner)
+        weights.assert_called_once_with(owner, resident_experts=0)
         self.assertTrue(owner.ready)
         self.assertIsNone(owner.hot)
         self.assertIsNone(owner.state)
@@ -878,6 +919,87 @@ class TestPrefillOnlyInitialization(CustomTestCase):
         owner._init_copy_plan.assert_not_called()
         for name in ("addresses", "policy_state", "cache_update", "cache_tail_graphs"):
             self.assertFalse(hasattr(owner, name), name)
+
+    def test_resident_bytes_survive_cold_bank_reuse_across_chunks(self):
+        from sglang.srt.offloading.moe.npu.format import ExpertBank
+
+        owner = self._owner()
+        owner.execution_mode.resident_experts = 1
+        owner.execution_slots = 9
+        layers = tuple(owner.storages)
+        names = ("w13_weight", "w13_weight_scale", "w2_weight", "w2_weight_scale")
+        owner.format.layouts = {name: SimpleNamespace(nbytes=1) for name in names}
+        owner.format.adapter = SimpleNamespace(native_acl=object())
+        owner.format.quant_info = lambda tensors: tensors
+        tensors = {name: torch.zeros((9, 1), dtype=torch.uint8) for name in names}
+        owner.format.allocate_bank.return_value = ExpertBank(
+            owner.format, tensors, 9, ResourceKind.EXECUTION_WEIGHTS, "test"
+        )
+        for index, layer in enumerate(layers):
+            owner.storages[layer].component_capabilities = {
+                name: tuple(
+                    SimpleNamespace(nbytes=1, value=32 * component + 4 * index + e + 1)
+                    for e in range(4)
+                )
+                for component, name in enumerate(names)
+            }
+
+        copy_stream = _Stream()
+        copy_stream.synchronize = lambda: _Completion(copy_stream.tail).synchronize()
+        host_ops = Mock()
+
+        def submit(plan, bank, stream):
+            owner.context.retain(plan)
+            for region in plan.regions:
+                stream.enqueue(
+                    lambda r=region: ctypes.memset(
+                        r.destination.address, r.source.value, r.nbytes
+                    )
+                )
+            return SimpleNamespace(completion=_Completion(stream.tail))
+
+        host_ops.materialize_into.side_effect = submit
+        with (
+            patch.object(
+                torch,
+                "npu",
+                SimpleNamespace(Stream=lambda **kw: copy_stream),
+                create=True,
+            ),
+            patch(
+                "sglang.srt.offloading.moe.npu.native_acl.AclHostTransferOps",
+                return_value=host_ops,
+            ),
+        ):
+            owner.post_init()
+
+        self.assertEqual(host_ops.materialize_into.call_count, 2 * len(layers))
+        self.assertEqual(owner.context.resources, [])
+        self.assertEqual([bank.capacity for bank in owner.prefill.banks], [3, 3])
+        owner._new_context = _Context
+        owner._check_error = Mock()
+        for _ in range(2):
+            with owner.forward_scope(TestPrefillOnlyRuntime._batch()):
+                for index, layer in enumerate(layers):
+                    owner.start_prefill_layer(layer)
+                    bank = owner.prefill.pipeline.acquire(layer, owner.context)
+                    owner.prefill.pipeline.wait_for_w2(layer, owner.context)
+                    _Completion(owner.context.compute_stream.tail).synchronize()
+                    cold_start = len(layers) + bank * 3
+                    for name in names:
+                        expected = [
+                            source.value
+                            for source in owner.storages[layer].component_capabilities[
+                                name
+                            ]
+                        ]
+                        self.assertEqual(tensors[name][index, 0].item(), expected[0])
+                        self.assertEqual(
+                            tensors[name][cold_start : cold_start + 3, 0].tolist(),
+                            expected[1:],
+                        )
+                    owner.prefill.finish_layer(layer)
+        self.assertEqual(host_ops.materialize_into.call_count, 6 * len(layers))
 
     def test_unsealed_or_missing_layers_fail_before_device_allocation(self):
         for unsealed in (False, True):

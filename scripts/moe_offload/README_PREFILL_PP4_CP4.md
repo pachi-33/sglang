@@ -21,6 +21,15 @@ P_MOE_A2A_BACKEND=deepep bash scripts/moe_offload/serve_glm52_prefill_pp4_cp4.sh
 
 默认使用 `ascend_ops`。选择 `deepep` 时，启动参数为 `--moe-a2a-backend deepep --deepep-mode normal --deepep-dispatcher-output-dtype int8`，通信使用 stage 内 EP group。适配范围为 GLM-5.2 ModelSlim W8A8 的 eager `prefill_only`，要求 `SGLANG_ZBAL_LOCAL_MEM_SIZE=0` 和逐专家计数 `MOE_EXPERT_TOKEN_NUMS_TYPE=1`。权重依旧通过 ACL 双 bank 预取，计算按 W13 / W2 就绪事件读权重，combine 提交并接回计算流后才复用 bank。
 
+P 支持用 `PREFILL_RESIDENT_RATIO` 配置层内常驻比例，默认 0，取值范围为 [0, 1)。每层常驻前 floor(本地专家数 × 比例) 个专家，启动时用 ACL 搬入固定 HBM 槽。每个 chunk 仅预取其余专家，仍按 W13、W2 分开提交。此选项用于 GLM-5.2 ModelSlim W8A8、EP4 的 `prefill_only`，支持 Ascend Ops alltoallv 和 DeepEP normal。
+
+~~~bash
+PREFILL_RESIDENT_RATIO=0.25 EXECUTION_SLOTS=480 P_MOE_A2A_BACKEND=deepep \
+  bash scripts/moe_offload/serve_glm52_prefill_pp4_cp4.sh --dry-run
+~~~
+
+去掉 `--dry-run` 后启动。默认 PP 分区下，比例 0.25 会在每张 NPU 每层常驻 16 个专家，并为 48 个冷专家保留双 bank。PP0 至 PP3 分别需要 336、416、480、352 个权重槽。启用常驻时，`EXECUTION_SLOTS` 是每张 NPU 的总权重槽位上限。留空由各 stage 计算最小容量。显存占用会在 KV pool 定容前计入，Host 权重池仍保留完整权重。
+
 P 的 DeepEP 分轮参数初值沿用基线的 `72` 轮、每 rank 每轮 `1024` token 和 long-seq combine。可用 `DEEPEP_NORMAL_LONG_SEQ_ROUND`、`DEEPEP_NORMAL_LONG_SEQ_PER_ROUND_TOKENS`、`DEEPEP_NORMAL_COMBINE_ENABLE_LONG_SEQ` 和 `DEEPEP_HCCL_BUFFSIZE` 覆盖，默认通信 buffer 配置为 1024 MB。目标设备上的 16K chunk 容量、数值和性能需实测。[DeepEP-Ascend 参数说明](https://github.com/sgl-project/sgl-kernel-npu/blob/main/python/deep_ep/README.md#environment-variables)
 
 按需设置：
@@ -124,7 +133,7 @@ D 正常启动时还会按该基线将本机 CPU governor 设为 `performance`�
 
 - `MODEL_PATH`：每台本地的 GLM-5.2 ModelSlim **W8A8** 权重目录；三台 checkpoint 内容一致。启动前激活安装了 SGLang 和 NPU 依赖的 Python 环境；非默认环境可设置 `PYTHON_BIN`，脚本自动将当前仓库的 `python` 目录加入 `PYTHONPATH`。
 - `P_IP`、`D0_IP`、`D1_IP`：三台机器实际绑定、互相可达的通信 IPv4，三份配置保持一致。脚本通过 `pd_node.py` 自动匹配本机 IP 和网卡，不依赖 `ip`、`ifconfig`。容器内须能看到这些 IP。
-- P 的 `HOST_POOL_GIB` 默认为每 rank 56 GiB，16 rank 合计 896 GiB；系统、模型加载和其他进程还需要额外内存。启动前会依据 checkpoint 的尺寸做 W8 权重本体估算，运行时还会按实际格式检查。`SGLANG_PP_LAYER_PARTITION` 默认 `18,20,24,16`，需与模型层数相符；`EXECUTION_SLOTS` 留空时为两个完整本地专家层。
+- P 的 `HOST_POOL_GIB` 默认为每 rank 56 GiB，16 rank 合计 896 GiB；系统、模型加载和其他进程还需要额外内存。启动前会依据 checkpoint 的尺寸做 W8 权重本体估算，运行时还会按实际格式检查。`SGLANG_PP_LAYER_PARTITION` 默认 `18,20,24,16`，需与模型层数相符；`EXECUTION_SLOTS` 留空时按 P 的常驻比例和各 stage 层数分配权重槽。
 - 默认 P 的 `CHUNKED_PREFILL_SIZE=8192`、`MAX_PREFILL_TOKENS=8192`、`P_MEM_FRACTION_STATIC=0.6`、`P_MAX_RUNNING_REQUESTS=128`；D 的 `D_MEM_FRACTION_STATIC=0.97`、`D_MAX_RUNNING_REQUESTS=32`。可按容量调整，P/D 的 `CONTEXT_LENGTH` 和模型内容须一致。D 显存比例较高，须在目标机器验证 graph 捕获、KV 传输和实际请求的显存余量。实际 P chunk 会影响搬运次数、性能和峰值内存。
 - 若当前环境已设置通用的 `MEM_FRACTION_STATIC` 或 `MAX_RUNNING_REQUESTS`，它们会优先覆盖当前机器对应角色的默认值；需要基线默认值时请先检查这些环境变量。
 - D 默认的 graph 档位可通过 `D_CUDA_GRAPH_BS="1 2 3"` 调整；原有的 `D_CUDA_GRAPH_MAX_BS` 覆盖方式仍可使用，设置时优先于档位列表。

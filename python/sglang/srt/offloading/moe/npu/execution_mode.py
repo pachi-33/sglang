@@ -18,6 +18,7 @@ from sglang.srt.runtime_context import get_exec, get_parallel, get_spec
 
 from ..periodic_lfu import PeriodicLFUConfig, PeriodicLFUPolicy
 from ..resources import ResourceKind
+from .options import prefill_weight_slots
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +84,10 @@ class CachedExecution:
 class PrefillOnlyExecution:
     """Two layer banks, no cache, and no decode state on a fixed P worker."""
 
-    def __init__(self, *, use_deepep=False):
+    def __init__(self, *, use_deepep=False, resident_ratio=0.0):
         self.use_deepep = use_deepep
+        self.resident_ratio = resident_ratio
+        self.resident_experts = 0
 
     @staticmethod
     def default_execution_slots(local_experts):
@@ -158,9 +161,11 @@ class PrefillOnlyExecution:
             )
 
     def validate_quantization(self, owner, quant_spec):
-        if (self.use_deepep or get_parallel().pp_size > 1) and quant_spec.kind != "w8a8":
+        if (
+            self.resident_experts or self.use_deepep or get_parallel().pp_size > 1
+        ) and quant_spec.kind != "w8a8":
             raise ValueError(
-                "DeepEP or pipelined prefill-only offload requires ModelSlim W8A8"
+                "Partial residency, DeepEP or pipelined prefill-only offload requires ModelSlim W8A8"
             )
 
     def configure(self, owner, path):
@@ -180,6 +185,30 @@ class PrefillOnlyExecution:
             raise ValueError(
                 "Prefill-only expert offload requires --disable-cuda-graph"
             )
+        if self.resident_ratio:
+            self.resident_experts, owner.execution_slots = prefill_weight_slots(
+                owner.local_experts,
+                len(owner.catalog.offloaded_layers),
+                self.resident_ratio,
+                owner.cfg.get("execution_slots"),
+            )
+        if self.resident_experts:
+            if (
+                owner.model_id != "GLM-5.2"
+                or parallel.moe_ep_size != 4
+                or get_spec().speculative_algorithm
+            ):
+                raise ValueError(
+                    "Prefill residency requires GLM-5.2 and EP4 without MTP"
+                )
+            if not self.use_deepep:
+                from sglang.srt.layers.moe.utils import AscendOpsConfig
+
+                config = AscendOpsConfig.from_json_str(
+                    get_exec().moe.moe_ascend_ops_config
+                )
+                if config.prefill != "alltoallv":
+                    raise ValueError("Prefill residency requires Ascend Ops alltoallv")
 
     def post_init(self, owner):
         from .prefill import AscendPrefillWeights
@@ -194,18 +223,27 @@ class PrefillOnlyExecution:
         owner.error = torch.zeros((), dtype=torch.int32, device=owner.device)
         owner.weight_copy_stream = torch.npu.Stream(device=owner.device)
         owner.context = owner._new_context()
-        owner.prefill = AscendPrefillWeights(owner)
+        owner.prefill = AscendPrefillWeights(
+            owner, resident_experts=self.resident_experts
+        )
         if self.use_deepep:
             for storage in owner.storages.values():
                 self._bind_deepep_layer(owner, storage.layer)
         owner.ready = True
         logger.info(
             "Ascend prefill-only offload: layers=%d local=%d hot=0 "
-            "execution=%.3f GiB host=%.3f GiB",
+            "execution=%.3f GiB host=%.3f GiB slots=%d resident_per_layer=%d "
+            "cold_slots_per_bank=%d h2d_per_layer=%.3f GiB",
             len(owner.catalog.offloaded_layers),
             owner.local_experts,
             owner.format.expert_nbytes * owner.execution_slots / 1024**3,
             owner.host_pool.used_bytes / 1024**3,
+            owner.execution_slots,
+            self.resident_experts,
+            owner.local_experts - self.resident_experts,
+            owner.format.expert_nbytes
+            * (owner.local_experts - self.resident_experts)
+            / 1024**3,
         )
 
     @staticmethod

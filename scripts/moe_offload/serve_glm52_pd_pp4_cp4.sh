@@ -13,7 +13,8 @@ D1_IP=${D1_IP:-"61.47.19.71"} # D rank 1 的通信 IPv4
 
 # ==================== 按机器容量调整 ====================
 HOST_POOL_GIB=${HOST_POOL_GIB:-56} # 仅 P，每 rank；16 rank 共 896 GiB，另留系统及装载内存
-EXECUTION_SLOTS=${EXECUTION_SLOTS:-""} # 仅 P；留空自动使用双 bank，256 专家时为 128
+PREFILL_RESIDENT_RATIO=${PREFILL_RESIDENT_RATIO:-0} # P 每层本地 routed experts 的常驻比例
+EXECUTION_SLOTS=${EXECUTION_SLOTS:-""} # P 每 rank 权重槽位上限，留空按 PP stage 计算
 PP_PARTITION=${SGLANG_PP_LAYER_PARTITION:-18,20,24,16} # 四个 stage 的层数，总和须等于模型层数
 P_MEM_FRACTION_STATIC=${P_MEM_FRACTION_STATIC:-0.6}
 P_MOE_A2A_BACKEND=${P_MOE_A2A_BACKEND:-ascend_ops} # deepep
@@ -124,7 +125,7 @@ else
 fi
 
 # Dry-run 只读 config.json。正常启动时仅 P 生成 offload.json。
-"$PYTHON_BIN" - "$ROLE" "$MODEL_PATH" "$HOST_POOL_GIB" "$EXECUTION_SLOTS" \
+"$PYTHON_BIN" - "$ROLE" "$MODEL_PATH" "$HOST_POOL_GIB" "$EXECUTION_SLOTS" "$PREFILL_RESIDENT_RATIO" "$SGLANG_ROOT" \
   "$RUNTIME_DIR" "$LOG_DIR" "$DRY_RUN" "$PP_PARTITION" "$ASCEND_RT_VISIBLE_DEVICES" \
   "$CONTEXT_LENGTH" "$CHUNKED_PREFILL_SIZE" "$MAX_PREFILL_TOKENS" "$MAX_RUNNING_REQUESTS" \
   "$MEM_FRACTION_STATIC" "$D_CUDA_GRAPH_BS" "$D_CUDA_GRAPH_MAX_BS" "$D_APPLY_HOST_TUNING" \
@@ -136,8 +137,9 @@ import math
 import sys
 from itertools import accumulate
 from pathlib import Path
+from runpy import run_path
 
-(role, model, host, slots, runtime, logs, dry, partition, devices, context,
+(role, model, host, slots, resident_ratio, root, runtime, logs, dry, partition, devices, context,
  chunk, prefill, requests, fraction, graph_bs, graph_max, host_tuning,
  p_ip, d0_ip, d1_ip, *ports) = sys.argv[1:]
 for port in ports:
@@ -197,16 +199,29 @@ if role == "prefill":
               for start, end in zip(bounds, bounds[1:])]
     if not all(counts):
         raise ValueError("Each PP stage must contain at least one routed MoE layer")
-    required_slots = 2 * experts // ep_size
-    if slots and (not slots.isdecimal() or int(slots) < required_slots):
-        raise ValueError(f"EXECUTION_SLOTS must be at least {required_slots} for two full local-layer banks")
+    local_experts = experts // 4
+    options = run_path(str(Path(root) / "python/sglang/srt/offloading/moe/npu/options.py"))
+    ratio = options["parse_prefill_resident_ratio"](float(resident_ratio))
+    if slots and (not slots.isdecimal() or int(slots) <= 0):
+        raise ValueError("EXECUTION_SLOTS must be a positive integer")
+    slot_budget = int(slots) if slots else None
+    stage_layouts = [
+        options["prefill_weight_slots"](local_experts, layers, ratio, slot_budget)
+        for layers in counts
+    ]
+    resident = stage_layouts[0][0]
     config = {
         "mode": "prefill_only",
         "cache_ratio": 0,
-        "execution_slots": int(slots) if slots else required_slots,
         "host_pool_gib": int(host),
         "native_extension_directory": str(Path(runtime) / "native_acl"),
     }
+    if ratio:
+        config["prefill_resident_ratio"] = ratio
+    if slot_budget is not None:
+        config["execution_slots"] = slot_budget
+    elif not resident:
+        config["execution_slots"] = stage_layouts[0][1]
     hidden, intermediate = cfg.get("hidden_size"), cfg.get("moe_intermediate_size")
     if type(hidden) is int and hidden > 0 and type(intermediate) is int and intermediate > 0:
         rank_layer_bytes = 3 * hidden * intermediate * (experts // ep_size)
@@ -216,6 +231,9 @@ if role == "prefill":
             raise ValueError("HOST_POOL_GIB leaves no room for the largest stage's W8 weights and metadata")
     print(json.dumps(config, indent=2))
     print(f"Stage routed layers: {counts}; experts/rank/layer: {experts // ep_size}")
+    if ratio:
+        print(f"Prefill resident experts/rank/layer: {resident}/{local_experts}; "
+              f"HBM slots/rank by stage: {[allocated for _, allocated in stage_layouts]}")
     print(f"Host pool reservation: {host} GiB/rank, {16 * int(host)} GiB/node; allow extra RAM for loading and the OS")
     if dry == "0":
         Path(logs).mkdir(parents=True, exist_ok=True)

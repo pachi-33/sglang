@@ -196,6 +196,21 @@ class TestGlm52PdPP4Launcher(unittest.TestCase):
         self.assertEqual(config["host_pool_gib"], 56)
         self.assertIn("896 GiB/node", result.stdout)
 
+    def test_partial_residency_preflight_is_prefill_only(self):
+        overrides = {
+            "PREFILL_RESIDENT_RATIO": "0.25",
+            "EXECUTION_SLOTS": "480",
+        }
+        prefill = self.run_launcher(overrides={**overrides, "STUB_LOCAL_IPS": IPS[0]})
+        self.assertEqual(prefill.returncode, 0, prefill.stderr)
+        self.assertIn('"prefill_resident_ratio": 0.25', prefill.stdout)
+        self.assertIn('"execution_slots": 480', prefill.stdout)
+        self.assertIn("HBM slots/rank by stage: [336, 416, 480, 352]", prefill.stdout)
+        decode = self.run_launcher(overrides={**overrides, "STUB_LOCAL_IPS": IPS[1]})
+        self.assertEqual(decode.returncode, 0, decode.stderr)
+        self.assertNotIn("prefill_resident_ratio", decode.stdout)
+        self.assertNotIn("--moe-offload-config", decode.stdout)
+
     def test_decode_uses_two_node_baseline_without_offload_or_cp(self):
         for rank, address in enumerate(IPS[1:]):
             with self.subTest(rank=rank):

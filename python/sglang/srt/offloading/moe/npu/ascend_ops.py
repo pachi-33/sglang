@@ -37,7 +37,7 @@ from .execution_mode import CachedExecution, PrefillOnlyExecution
 from .format import ExpertLayerStorage
 from .model_adapter import build_expert_catalog, get_model_id, get_quant_spec
 from .native_acl import get_native_acl
-from .options import AscendOffloadOptions
+from .options import MAX_PHYSICAL_WEIGHT_GROUPS, AscendOffloadOptions
 from .storage import MemFabricHostPool
 from .transfer import (
     MemFabricAddressCatalog,
@@ -92,7 +92,10 @@ class AscendOpsOffloader(BaseOffloader):
                 "with mode=prefill_only"
             )
         self.execution_mode = (
-            PrefillOnlyExecution(use_deepep=use_deepep)
+            PrefillOnlyExecution(
+                use_deepep=use_deepep,
+                resident_ratio=self.options.prefill_resident_ratio,
+            )
             if self.options.prefill_only
             else CachedExecution()
         )
@@ -140,9 +143,10 @@ class AscendOpsOffloader(BaseOffloader):
         self.execution_mode.configure(self, path)
         from .prefill import whole_layer_bank_layout
 
-        whole_layer_bank_layout(
-            self.local_experts, self.hot_slots, self.execution_slots
-        )
+        if not (self.options.prefill_only and self.execution_mode.resident_experts):
+            whole_layer_bank_layout(
+                self.local_experts, self.hot_slots, self.execution_slots
+            )
         self.device = torch.device("npu", get_device().gpu_id)
         self.storages = {}
         self.format = self.host_pool = None
@@ -273,7 +277,7 @@ class AscendOpsOffloader(BaseOffloader):
             and get_parallel().moe_ep_size == 4
             and not get_spec().speculative_algorithm
             and self.execution_slots == self.copy_capacity
-            and self.copy_capacity + self.hot_slots <= 1024
+            and self.copy_capacity + self.hot_slots <= MAX_PHYSICAL_WEIGHT_GROUPS
         )
         self.execution_keys = None
         if self.direct_hot:
