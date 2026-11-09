@@ -1,4 +1,4 @@
-"""Expert weights for the native Ascend Ops runner.
+"""Expert weights for the Ascend MoE runner.
 
 Communication and token layout stay in the mainline dispatcher/runner. Decode
 stably packs active experts into one execution bank; eager prefill alternates
@@ -83,8 +83,18 @@ class AscendOpsOffloader(BaseOffloader):
             disaggregation_mode=get_disagg().disaggregation_mode,
         )
         self.cfg, self.hf_config = self.options.values, hf_config
+        moe = get_exec().moe
+        backend = moe.moe_a2a_backend
+        use_deepep = backend == "deepep" and self.options.prefill_only
+        if backend != "ascend_ops" and not use_deepep:
+            raise ValueError(
+                "Expert offload requires Ascend Ops; DeepEP is supported only "
+                "with mode=prefill_only"
+            )
         self.execution_mode = (
-            PrefillOnlyExecution() if self.options.prefill_only else CachedExecution()
+            PrefillOnlyExecution(use_deepep=use_deepep)
+            if self.options.prefill_only
+            else CachedExecution()
         )
         if (
             p.tp_size != p.moe_ep_size
@@ -96,16 +106,14 @@ class AscendOpsOffloader(BaseOffloader):
                 "Expert offload requires single-node stage TP=EP and MoE TP=DP=1"
             )
         self.execution_mode.validate_topology(self)
-        if get_exec().moe.moe_a2a_backend != "ascend_ops":
-            raise ValueError("Expert offload currently requires Ascend Ops")
         if not get_schedule().disable_overlap_schedule:
             raise ValueError(
                 "Single execution bank requires --disable-overlap-schedule"
             )
         if (
-            get_exec().moe.enable_eplb
-            or get_exec().moe.ep_num_redundant_experts
-            or get_exec().moe.init_expert_location != "trivial"
+            moe.enable_eplb
+            or moe.ep_num_redundant_experts
+            or moe.init_expert_location != "trivial"
             or get_exec().overlap.enable_two_batch_overlap
             or get_exec().overlap.enable_single_batch_overlap
         ):
@@ -142,9 +150,10 @@ class AscendOpsOffloader(BaseOffloader):
         self.step = 0
 
         logger.info(
-            "Ascend expert offload: mode=%s pp=%d/%d layers=[%d,%d) "
+            "Ascend expert offload: mode=%s a2a=%s pp=%d/%d layers=[%d,%d) "
             "ep=%d/%d routed_layers=%d local_experts=%d",
             self.options.mode,
+            backend,
             p.pp_rank if p.pp_size > 1 else 0,
             p.pp_size,
             *self.layer_range,

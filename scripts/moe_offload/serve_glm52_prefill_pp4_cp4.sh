@@ -16,6 +16,7 @@ CHUNKED_PREFILL_SIZE=${CHUNKED_PREFILL_SIZE:-8192}
 MAX_PREFILL_TOKENS=${MAX_PREFILL_TOKENS:-$CHUNKED_PREFILL_SIZE}
 MAX_RUNNING_REQUESTS=${MAX_RUNNING_REQUESTS:-128}
 MEM_FRACTION_STATIC=${MEM_FRACTION_STATIC:-0.6}
+P_MOE_A2A_BACKEND=${P_MOE_A2A_BACKEND:-ascend_ops}
 export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
 
 # ==================== 服务与单机通信 ====================
@@ -42,6 +43,7 @@ usage() {
 Usage: MODEL_PATH=/models/GLM-5.2-w8a8 $0 [--dry-run]
   --dry-run : 只读模型 config.json、检查配置并打印命令，不加载 NPU 或创建运行文件。
 固定拓扑：单机 PP4 × TP4 / DP1 / CP4 zigzag / stage 内 EP4；关闭 MTP。
+P_MOE_A2A_BACKEND=deepep 可使用 DeepEP normal；默认 ascend_ops。
 请求直发 P 的 /generate，设置 max_new_tokens=1、bootstrap_host=2.2.2.2、bootstrap_room=0。
 不启动 D / Router；真实 PD KV 传输不在这次独立 P 测试范围内。
 EOF
@@ -58,6 +60,17 @@ done
 [[ -f $MODEL_PATH/config.json ]] || fail "Set MODEL_PATH to a local GLM-5.2 ModelSlim W8A8 checkpoint"
 [[ $RUNTIME_DIR == /* && $LOG_DIR == /* ]] || fail "RUNTIME_DIR and LOG_DIR must be absolute paths"
 [[ -n $COMM_IFACE ]] || fail "COMM_IFACE must name a local communication interface"
+case "$P_MOE_A2A_BACKEND" in
+  ascend_ops)
+    moe_args=(--moe-a2a-backend ascend_ops --deepep-mode auto
+      --moe-ascend-ops-config '{"prefill":"alltoallv","decode":"low_latency"}')
+    ;;
+  deepep)
+    moe_args=(--moe-a2a-backend deepep --deepep-mode normal
+      --deepep-dispatcher-output-dtype int8)
+    ;;
+  *) fail "P_MOE_A2A_BACKEND must be ascend_ops or deepep" ;;
+esac
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 SGLANG_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 export PYTHONDONTWRITEBYTECODE=1
@@ -147,8 +160,7 @@ command=("$PYTHON_BIN" -u -m sglang.launch_server
   --nnodes 1 --node-rank 0 --pp-size 4 --tp-size 4 --dp-size 1 --attn-dp-size 1
   --enable-prefill-cp --attn-cp-size 4 --cp-strategy zigzag
   --ep-size 4 --moe-dp-size 1 --moe-dense-tp-size 1
-  --moe-a2a-backend ascend_ops --deepep-mode auto
-  --moe-ascend-ops-config '{"prefill":"alltoallv","decode":"low_latency"}'
+  "${moe_args[@]}"
   --disaggregation-mode prefill --disaggregation-transfer-backend ascend
   --disaggregation-bootstrap-port "$BOOTSTRAP_PORT"
   --disable-overlap-schedule --disable-shared-experts-fusion
@@ -204,6 +216,13 @@ PY_EXT
 
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True SGLANG_SET_CPU_AFFINITY=1
 export HCCL_BUFFSIZE=1024 HCCL_OP_EXPANSION_MODE=AIV
+if [[ $P_MOE_A2A_BACKEND == deepep ]]; then
+  export DEEPEP_HCCL_BUFFSIZE=${DEEPEP_HCCL_BUFFSIZE:-$HCCL_BUFFSIZE}
+  export DEEPEP_NORMAL_LONG_SEQ_ROUND=${DEEPEP_NORMAL_LONG_SEQ_ROUND:-72}
+  export DEEPEP_NORMAL_LONG_SEQ_PER_ROUND_TOKENS=${DEEPEP_NORMAL_LONG_SEQ_PER_ROUND_TOKENS:-1024}
+  export DEEPEP_NORMAL_COMBINE_ENABLE_LONG_SEQ=${DEEPEP_NORMAL_COMBINE_ENABLE_LONG_SEQ:-1}
+  export MOE_EXPERT_TOKEN_NUMS_TYPE=1 DEEP_NORMAL_MODE_USE_INT8_QUANT=1
+fi
 export HCCL_CONNECT_TIMEOUT=300 HCCL_EXEC_TIMEOUT=300 ACL_DEVICE_SYNC_TIMEOUT=300
 export STREAMS_PER_DEVICE=32 INF_NAN_MODE_FORCE_DISABLE=1 TASK_QUEUE_ENABLE=1
 export SGLANG_ENABLE_OVERLAP_PLAN_STREAM=0

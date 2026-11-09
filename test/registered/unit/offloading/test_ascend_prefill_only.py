@@ -7,6 +7,7 @@ only device allocation, stream/event submission and host copies are replaced.
 import json
 import tempfile
 import unittest
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -249,6 +250,194 @@ class TestPrefillOnlyRuntime(CustomTestCase):
                     self.assertIsNone(owner.prefill.pipeline.invocation_id)
                 self.assertEqual(submitted, list(layers) * 2)
 
+    def test_deepep_combine_completion_fences_layer_refill(self):
+        from sglang.srt.batch_overlap import two_batch_overlap
+        from sglang.srt.layers.moe.token_dispatcher import deepep
+
+        owner, context, submitted, completed = self._owner()
+        owner.execution_mode = PrefillOnlyExecution(use_deepep=True)
+        owner.device = torch.device("cpu")
+        owner.local_experts, owner.execution_slots = 4, 8
+        owner.format = SimpleNamespace(allocate_bank=Mock(), expert_nbytes=256)
+        owner.host_pool = SimpleNamespace(used_bytes=3072)
+        layers = owner.prefill.pipeline.layer_ids
+        owner.catalog = SimpleNamespace(
+            offloaded_layers=[SimpleNamespace(layer_id=layer) for layer in layers]
+        )
+        owner.storages = {}
+        comm = _Stream()
+
+        def submit_comm(layer, phase):
+            tail = context.compute_stream.tail
+            comm.enqueue(
+                lambda: completed.append((layer, phase)),
+                () if tail is None else (tail,),
+            )
+            return SimpleNamespace(
+                current_stream_wait=lambda: context.compute_stream.wait_stream(comm)
+            )
+
+        def dispatch(layer, hidden, ids, weights, previous_event):
+            self.assertTrue(owner.prefill.pipeline.started)
+            return hidden, ids, weights, [0] * 4, submit_comm(layer, "dispatch")
+
+        def combine(layer, output, previous_event):
+            return output, submit_comm(layer, "combine")
+
+        with (
+            patch.object(
+                torch,
+                "npu",
+                SimpleNamespace(Stream=Mock(return_value=owner.weight_copy_stream)),
+                create=True,
+            ),
+            patch(
+                "sglang.srt.offloading.moe.npu.prefill.AscendPrefillWeights",
+                return_value=owner.prefill,
+            ),
+            patch.object(
+                two_batch_overlap,
+                "get_moe_a2a_backend",
+                return_value=SimpleNamespace(is_deepep=lambda: True),
+            ),
+            patch.object(two_batch_overlap, "is_tbo_enabled", return_value=False),
+            patch.object(deepep, "get_is_extend_in_batch", return_value=True),
+            patch.object(deepep, "_is_npu", True),
+            patch.object(deepep, "use_deepep", True),
+            patch.object(
+                deepep, "Buffer", SimpleNamespace(capture=lambda: None), create=True
+            ),
+            patch.object(
+                deepep._DeepEPDispatcherImplNormal, "set_deepep_dispatcher_dtype"
+            ),
+        ):
+            for layer in layers:
+                dispatcher = two_batch_overlap.MaybeTboDeepEPDispatcher(
+                    group=object(),
+                    router_topk=2,
+                    num_experts=16,
+                    num_local_experts=4,
+                    hidden_size=4,
+                    deepep_mode=deepep.DeepEPMode.NORMAL,
+                    async_finish=True,
+                )
+                normal = dispatcher._inners[0]._normal_dispatcher
+                normal._dispatch_core = partial(dispatch, layer)
+                normal._combine_core = partial(combine, layer)
+                owner.storages[layer] = SimpleNamespace(
+                    require_sealed=Mock(),
+                    layer=SimpleNamespace(layer_id=layer, dispatcher=dispatcher),
+                )
+            owner.post_init()
+            topk = SimpleNamespace(
+                topk_ids=torch.empty((0, 2), dtype=torch.int32),
+                topk_weights=torch.empty((0, 2)),
+            )
+            for chunk in range(2):
+                completed.clear()
+                batch = self._batch(local_idle=True, local_extend=False)
+                with owner.forward_scope(batch):
+                    for layer in layers:
+                        dispatcher = owner.storages[layer].layer.dispatcher
+                        received = dispatcher.dispatch(
+                            hidden_states=torch.empty((0, 4), dtype=torch.bfloat16),
+                            topk_output=topk,
+                        )
+                        owner.prefill.pipeline.acquire(layer, context)
+                        owner.prefill.pipeline.wait_for_w2(layer, context)
+                        dispatcher.combine(
+                            combine_input=deepep.DeepEPNormalCombineInput(
+                                received.hidden_states,
+                                received.topk_ids,
+                                received.topk_weights,
+                            )
+                        )
+                        if layer == layers[0]:
+                            self.assertNotIn((layer, "combine"), completed)
+                            # Drain the copy stream first to check that the refill
+                            # cannot complete before the queued combine.
+                            owner.weight_copy_stream.tail.run()
+                            self.assertLess(
+                                completed.index((layer, "combine")),
+                                completed.index((layers[2], "w13")),
+                            )
+                self.assertEqual(submitted, list(layers) * (chunk + 1))
+                self.assertEqual(context.resources, [])
+
+
+class TestDeepEPNormalOffloadInputs(CustomTestCase):
+    def test_dummy_receive_row_bypasses_gmm_and_preserves_combine_shape(self):
+        from sglang.srt.layers.moe.moe_runner import ascend
+        from sglang.srt.layers.moe.token_dispatcher.deepep import (
+            DeepEPNormalDispatchOutput,
+        )
+
+        owner = SimpleNamespace(prepare_weights=Mock())
+        config = SimpleNamespace(
+            num_local_experts=4,
+            layer=SimpleNamespace(layer_id=62, _ascend_ops_offloader=owner),
+        )
+        core = object.__new__(ascend.AscendRunnerCore)
+        core.config = config
+        for rows in (0, 1):
+            with self.subTest(rows=rows):
+                state = {}
+                dispatch = DeepEPNormalDispatchOutput(
+                    torch.full((rows, 4), 42, dtype=torch.int8),
+                    torch.empty(rows),
+                    None,
+                    None,
+                    [0, 0, 0, 0],
+                )
+                inputs = ascend.pre_permute_deepep_normal_to_ascend(
+                    dispatch, None, config, state
+                )
+                with patch.object(ascend, "get_is_extend_in_batch", return_value=True):
+                    output = core.run(inputs, None, state)
+                combine = ascend.post_permute_ascend_to_deepep_normal(
+                    output, None, config, state
+                )
+                torch.testing.assert_close(
+                    combine.hidden_states, torch.zeros((rows, 4), dtype=torch.bfloat16)
+                )
+
+    def test_grouped_int8_input_and_metadata_validation(self):
+        from sglang.srt.layers.moe.moe_runner.ascend import (
+            pre_permute_deepep_normal_to_ascend,
+        )
+        from sglang.srt.layers.moe.token_dispatcher.deepep import (
+            DeepEPNormalDispatchOutput,
+        )
+
+        config = SimpleNamespace(
+            num_local_experts=4,
+            layer=SimpleNamespace(_ascend_ops_offloader=object()),
+        )
+        dispatch = DeepEPNormalDispatchOutput(
+            torch.zeros((3, 4), dtype=torch.int8),
+            torch.ones(3),
+            None,
+            None,
+            [2, 0, 1, 0],
+        )
+        inputs = pre_permute_deepep_normal_to_ascend(dispatch, None, config, {})
+        self.assertEqual(inputs.group_list_type, 1)
+        self.assertEqual(inputs.expert_tokens.tolist(), [2, 0, 1, 0])
+        self.assertIs(inputs.hidden_states_scale, dispatch.hidden_states_scale)
+        for bad_dispatch, message in (
+            (
+                dispatch._replace(num_recv_tokens_per_expert=[2, 2, 3, 3]),
+                "expert tokens",
+            ),
+            (dispatch._replace(num_recv_tokens_per_expert=[3]), "local expert"),
+            (dispatch._replace(hidden_states_scale=None), "one scale per row"),
+        ):
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                pre_permute_deepep_normal_to_ascend(bad_dispatch, None, config, {})
+
 
 class TestPrefillOnlyConfiguration(CustomTestCase):
     def test_attention_tp4_dp4_is_supported_without_a_decode_dp_ep_requirement(self):
@@ -328,6 +517,7 @@ class TestOffloadModeWiring(CustomTestCase):
         *,
         parallel_changes=None,
         model_changes=None,
+        moe_changes=None,
         speculative_algorithm=None,
     ):
         from sglang.srt.offloading.moe.npu import execution_mode
@@ -366,6 +556,8 @@ class TestOffloadModeWiring(CustomTestCase):
         execution = SimpleNamespace(
             moe=SimpleNamespace(
                 moe_a2a_backend="ascend_ops",
+                moe_runner_backend="auto",
+                deepep_mode="normal",
                 enable_eplb=False,
                 ep_num_redundant_experts=0,
                 init_expert_location="trivial",
@@ -381,6 +573,7 @@ class TestOffloadModeWiring(CustomTestCase):
                 )
             ),
         )
+        execution.moe.__dict__.update(moe_changes or {})
         cpu = torch.device("cpu")
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -445,6 +638,57 @@ class TestOffloadModeWiring(CustomTestCase):
         self.assertIsNone(owner.format)
         self.assertIsNone(owner.host_pool)
         self.assertFalse(owner.ready)
+
+    def test_deepep_normal_uses_the_same_stage_catalog_and_banks(self):
+        from sglang.srt.offloading.moe.npu.model_adapter import ExpertQuantSpec
+
+        with patch.dict(
+            "os.environ",
+            {
+                "SGLANG_PP_LAYER_PARTITION": "18,20,24,16",
+                "MOE_EXPERT_TOKEN_NUMS_TYPE": "1",
+                "SGLANG_ZBAL_LOCAL_MEM_SIZE": "0",
+            },
+        ):
+            owner = self._construct(
+                {"mode": "prefill_only"},
+                "prefill",
+                parallel_changes=self._pipeline_parallel(pp_rank=3),
+                moe_changes={"moe_a2a_backend": "deepep"},
+            )
+        self.assertEqual(owner.layer_range, (62, 78))
+        self.assertEqual(owner.local_experts, 64)
+        self.assertEqual(owner.execution_slots, 128)
+        self.assertEqual(owner.hot_slots, 0)
+        owner.execution_mode.validate_quantization(owner, ExpertQuantSpec("w8a8"))
+        with self.assertRaisesRegex(ValueError, "W8A8"):
+            owner.execution_mode.validate_quantization(owner, ExpertQuantSpec("w4a8"))
+
+    def test_deepep_rejects_incompatible_modes_and_counts(self):
+        for mode in ("auto", "low_latency"):
+            with (
+                self.subTest(mode=mode),
+                self.assertRaisesRegex(ValueError, "mode normal"),
+            ):
+                self._construct(
+                    {"mode": "prefill_only"},
+                    "prefill",
+                    moe_changes={"moe_a2a_backend": "deepep", "deepep_mode": mode},
+                )
+        with self.assertRaisesRegex(ValueError, "mode=prefill_only"):
+            self._construct({}, "null", moe_changes={"moe_a2a_backend": "deepep"})
+        with (
+            patch.dict(
+                "os.environ",
+                {"MOE_EXPERT_TOKEN_NUMS_TYPE": "0", "SGLANG_ZBAL_LOCAL_MEM_SIZE": "0"},
+            ),
+            self.assertRaisesRegex(ValueError, "MOE_EXPERT_TOKEN_NUMS_TYPE=1"),
+        ):
+            self._construct(
+                {"mode": "prefill_only"},
+                "prefill",
+                moe_changes={"moe_a2a_backend": "deepep"},
+            )
 
     def test_existing_mixed_configuration_keeps_resident_prefix_and_lfu(self):
         owner = self._construct({"offline_stats_path": "profile.json"}, "null")

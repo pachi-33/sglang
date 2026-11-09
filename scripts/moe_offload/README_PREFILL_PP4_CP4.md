@@ -12,6 +12,17 @@ bash scripts/moe_offload/serve_glm52_prefill_pp4_cp4.sh
 
 `--dry-run` 只读取模型 `config.json` 并检查、打印配置；不需要 NPU 依赖，不创建运行文件。正常启动会在 `LOG_DIR` 生成 `offload.json`，使用 `mode=prefill_only`、`cache_ratio=0`、两个完整本地专家层的 bank；256 专家 / EP4 时，默认 `execution_slots=128`。实际格式和容量继续由运行时代码检查。
 
+在安装了与服务器 CANN / torch_npu 匹配的 DeepEP-Ascend 环境中，可以切换 P 的 MoE 通信后端。
+
+```bash
+P_MOE_A2A_BACKEND=deepep bash scripts/moe_offload/serve_glm52_prefill_pp4_cp4.sh --dry-run
+P_MOE_A2A_BACKEND=deepep bash scripts/moe_offload/serve_glm52_prefill_pp4_cp4.sh
+```
+
+默认使用 `ascend_ops`。选择 `deepep` 时，启动参数为 `--moe-a2a-backend deepep --deepep-mode normal --deepep-dispatcher-output-dtype int8`，通信使用 stage 内 EP group。适配范围为 GLM-5.2 ModelSlim W8A8 的 eager `prefill_only`，要求 `SGLANG_ZBAL_LOCAL_MEM_SIZE=0` 和逐专家计数 `MOE_EXPERT_TOKEN_NUMS_TYPE=1`。权重依旧通过 ACL 双 bank 预取，计算按 W13 / W2 就绪事件读权重，combine 提交并接回计算流后才复用 bank。
+
+P 的 DeepEP 分轮参数初值沿用基线的 `72` 轮、每 rank 每轮 `1024` token 和 long-seq combine。可用 `DEEPEP_NORMAL_LONG_SEQ_ROUND`、`DEEPEP_NORMAL_LONG_SEQ_PER_ROUND_TOKENS`、`DEEPEP_NORMAL_COMBINE_ENABLE_LONG_SEQ` 和 `DEEPEP_HCCL_BUFFSIZE` 覆盖，默认通信 buffer 配置为 1024 MB。目标设备上的 16K chunk 容量、数值和性能需实测。[DeepEP-Ascend 参数说明](https://github.com/sgl-project/sgl-kernel-npu/blob/main/python/deep_ep/README.md#environment-variables)
+
 按需设置：
 
 | 环境变量 | 默认值与用途 |
@@ -100,7 +111,7 @@ PY_SMOKE
 
 | 节点 | 部署参数 | 专家权重 |
 | --- | --- | --- |
-| P，一台 A3 / 16 die | PP4 × TP4、DP1、attention DP1 / CP4 zigzag、stage 内 EP4；Ascend Ops alltoallv | routed 专家卸载到 Host，双 bank 逐层预取 |
+| P，一台 A3 / 16 die | PP4 × TP4、DP1、attention DP1 / CP4 zigzag、stage 内 EP4；默认 Ascend Ops alltoallv，可选 DeepEP normal | routed 专家卸载到 Host，双 bank 逐层预取 |
 | D0 + D1，两台 A3 / 32 die | TP32、attention DP32、EP32；DeepEP low_latency；Decode graph 档位为 1、2、3 | 常驻设备，不启用 MoE offload |
 
 本组合固定关闭 MTP：不能设置 `ENABLE_MTP=1`。请先用 `max_new_tokens=1` 验证完整 PD 链路；D 的多 token 生成、P→D 的真实 KV 传输以及并发仍需实机验收。脚本不会启动 fake sender 测试模式。
@@ -124,6 +135,8 @@ D 正常启动时还会按该基线将本机 CPU governor 设为 `performance`�
 bash scripts/moe_offload/serve_glm52_pd_pp4_cp4.sh --dry-run
 bash scripts/moe_offload/serve_glm52_pd_pp4_cp4.sh
 ~~~
+
+也可以在 P 的启动命令前加 `P_MOE_A2A_BACKEND=deepep`，选项只作用于 P。
 
 `--dry-run` 只检查本机配置并打印启动命令；不加载模型、构建扩展或创建运行文件。正常启动时，P 会在 `LOG_DIR` 下生成 `offload.json` 并构建卸载扩展，D 不会生成该文件；日志均为各自 `LOG_DIR/server.log`。`RUNTIME_DIR` 和 `LOG_DIR` 可用绝对路径覆盖。Ascend 软件安装在非默认路径时设置脚本顶部的环境文件路径。
 

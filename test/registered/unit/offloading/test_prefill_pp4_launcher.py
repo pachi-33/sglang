@@ -48,6 +48,7 @@ class TestPrefillPP4Launcher(unittest.TestCase):
             RUNTIME_DIR=str(self.root / "runtime"),
             LOG_DIR=str(self.root / "logs"),
             HOST_POOL_GIB="64",
+            P_MOE_A2A_BACKEND="ascend_ops",
             EXECUTION_SLOTS="",
             SGLANG_PP_LAYER_PARTITION="18,20,24,16",
             ASCEND_RT_VISIBLE_DEVICES=",".join(map(str, range(16))),
@@ -102,6 +103,7 @@ class TestPrefillPP4Launcher(unittest.TestCase):
             "--attn-dp-size": "1",
             "--attn-cp-size": "4",
             "--ep-size": "4",
+            "--moe-a2a-backend": "ascend_ops",
             "--moe-dp-size": "1",
             "--cp-strategy": "zigzag",
             "--disaggregation-mode": "prefill",
@@ -117,6 +119,22 @@ class TestPrefillPP4Launcher(unittest.TestCase):
         self.assertNotIn("--speculative-algorithm", command)
         self.assertNotIn("--enable-dp-lm-head", command)
         self.assertNotIn("sglang_router.launch_router", command)
+
+    def test_deepep_prefill_selects_normal_with_int8_activations(self):
+        result = self._run(P_MOE_A2A_BACKEND="deepep", CHUNKED_PREFILL_SIZE="16384")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config, _ = json.JSONDecoder().raw_decode(result.stdout)
+        self.assertEqual(config["mode"], "prefill_only")
+        self.assertEqual(config["execution_slots"], 128)
+        command = shlex.split(result.stdout.split("Command:", 1)[1])
+        for flag, value in {
+            "--moe-a2a-backend": "deepep",
+            "--deepep-mode": "normal",
+            "--deepep-dispatcher-output-dtype": "int8",
+            "--chunked-prefill-size": "16384",
+        }.items():
+            self.assertEqual(command[command.index(flag) + 1], value)
+        self.assertNotIn("--moe-ascend-ops-config", command)
 
     def test_rejects_insufficient_slots_and_host_before_startup(self):
         for settings, message in (
@@ -134,6 +152,7 @@ class TestPrefillPP4Launcher(unittest.TestCase):
             ({"SGLANG_PP_LAYER_PARTITION": "3,20,24,31"}, "at least one routed"),
             ({"ASCEND_RT_VISIBLE_DEVICES": "0,1,2,3"}, "16 distinct A3"),
             ({"ENABLE_MTP": "1"}, "requires ENABLE_MTP=0"),
+            ({"P_MOE_A2A_BACKEND": "invalid"}, "P_MOE_A2A_BACKEND"),
         ):
             with self.subTest(settings=settings):
                 result = self._run(**settings)

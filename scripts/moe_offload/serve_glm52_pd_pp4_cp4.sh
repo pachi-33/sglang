@@ -16,6 +16,7 @@ HOST_POOL_GIB=${HOST_POOL_GIB:-56} # 仅 P，每 rank；16 rank 共 896 GiB，�
 EXECUTION_SLOTS=${EXECUTION_SLOTS:-""} # 仅 P；留空自动使用双 bank，256 专家时为 128
 PP_PARTITION=${SGLANG_PP_LAYER_PARTITION:-18,20,24,16} # 四个 stage 的层数，总和须等于模型层数
 P_MEM_FRACTION_STATIC=${P_MEM_FRACTION_STATIC:-0.6}
+P_MOE_A2A_BACKEND=${P_MOE_A2A_BACKEND:-ascend_ops} # deepep
 D_MEM_FRACTION_STATIC=${D_MEM_FRACTION_STATIC:-0.97}
 CONTEXT_LENGTH=${CONTEXT_LENGTH:-180000} # P/D 相同
 CHUNKED_PREFILL_SIZE=${CHUNKED_PREFILL_SIZE:-8192} # 仅 P，必须为 128 的倍数
@@ -58,6 +59,7 @@ Usage: $0 [auto|router] [--dry-run]
   router        : P、D ready 后在可达两者的机器上单独运行一次 Router。
 必填：MODEL_PATH、P_IP、D0_IP、D1_IP（在脚本顶部填写或用同名环境变量覆盖）。
 P 使用 PP4 × TP4 / DP1 / CP4 / stage 内 EP4 卸载，D 使用双机 TP32 / DP32 / EP32 常驻。
+P_MOE_A2A_BACKEND=deepep 可在 P 使用 DeepEP normal；默认 ascend_ops。
 固定关闭 MTP；真实 PD 请求发送到 Router 的 ROUTER_PORT，不要携带 fake bootstrap 字段。
 D 正常启动时会按最佳基线调整本机 CPU governor 和 sysctl；可设置 D_APPLY_HOST_TUNING=0 跳过。
 EOF
@@ -105,6 +107,17 @@ LOG_DIR=${LOG_DIR:-/tmp/sglang-glm52-pd-pp4-cp4-$ROLE-${NODE_RANK:-router}-$(dat
 if [[ $ROLE == prefill ]]; then
   MAX_RUNNING_REQUESTS=${MAX_RUNNING_REQUESTS:-$P_MAX_RUNNING_REQUESTS}
   MEM_FRACTION_STATIC=${MEM_FRACTION_STATIC:-$P_MEM_FRACTION_STATIC}
+  case "$P_MOE_A2A_BACKEND" in
+    ascend_ops)
+      moe_args=(--moe-a2a-backend ascend_ops --deepep-mode auto
+        --moe-ascend-ops-config '{"prefill":"alltoallv","decode":"low_latency"}')
+      ;;
+    deepep)
+      moe_args=(--moe-a2a-backend deepep --deepep-mode normal
+        --deepep-dispatcher-output-dtype int8)
+      ;;
+    *) fail "P_MOE_A2A_BACKEND must be ascend_ops or deepep" ;;
+  esac
 else
   MAX_RUNNING_REQUESTS=${MAX_RUNNING_REQUESTS:-$D_MAX_RUNNING_REQUESTS}
   MEM_FRACTION_STATIC=${MEM_FRACTION_STATIC:-$D_MEM_FRACTION_STATIC}
@@ -232,8 +245,7 @@ else
       --nnodes 1 --node-rank 0 --pp-size 4 --tp-size 4 --dp-size 1 --attn-dp-size 1
       --enable-prefill-cp --attn-cp-size 4 --cp-strategy zigzag
       --ep-size 4 --moe-dp-size 1 --moe-dense-tp-size 1
-      --moe-a2a-backend ascend_ops --deepep-mode auto
-      --moe-ascend-ops-config '{"prefill":"alltoallv","decode":"low_latency"}'
+      "${moe_args[@]}"
       --disable-overlap-schedule
       --cuda-graph-backend-prefill disabled --cuda-graph-backend-decode disabled
       --chunked-prefill-size "$CHUNKED_PREFILL_SIZE" --max-prefill-tokens "$MAX_PREFILL_TOKENS"
@@ -312,6 +324,13 @@ assert ensure_acc_offload_ext("A3", install_dir=sys.argv[1])
 PY_EXT
   "$PYTHON_BIN" -m sglang.srt.offloading.moe.npu.native_acl --build-directory "$RUNTIME_DIR/native_acl"
   export HCCL_BUFFSIZE=1024 HCCL_OP_EXPANSION_MODE=AIV
+  if [[ $P_MOE_A2A_BACKEND == deepep ]]; then
+    export DEEPEP_HCCL_BUFFSIZE=${DEEPEP_HCCL_BUFFSIZE:-$HCCL_BUFFSIZE}
+    export DEEPEP_NORMAL_LONG_SEQ_ROUND=${DEEPEP_NORMAL_LONG_SEQ_ROUND:-72}
+    export DEEPEP_NORMAL_LONG_SEQ_PER_ROUND_TOKENS=${DEEPEP_NORMAL_LONG_SEQ_PER_ROUND_TOKENS:-1024}
+    export DEEPEP_NORMAL_COMBINE_ENABLE_LONG_SEQ=${DEEPEP_NORMAL_COMBINE_ENABLE_LONG_SEQ:-1}
+    export MOE_EXPERT_TOKEN_NUMS_TYPE=1 DEEP_NORMAL_MODE_USE_INT8_QUANT=1
+  fi
   export HCCL_CONNECT_TIMEOUT=300 HCCL_EXEC_TIMEOUT=300 ACL_DEVICE_SYNC_TIMEOUT=300
   export INF_NAN_MODE_FORCE_DISABLE=1 TASK_QUEUE_ENABLE=1 SGLANG_ENABLE_OVERLAP_PLAN_STREAM=0
   export SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT=600

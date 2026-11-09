@@ -7,6 +7,7 @@ never constructs decode/cache state just to satisfy that implementation.
 """
 
 import logging
+import os
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -82,12 +83,40 @@ class CachedExecution:
 class PrefillOnlyExecution:
     """Two layer banks, no cache, and no decode state on a fixed P worker."""
 
+    def __init__(self, *, use_deepep=False):
+        self.use_deepep = use_deepep
+
     @staticmethod
     def default_execution_slots(local_experts):
         return 2 * local_experts
 
     def validate_topology(self, owner):
         parallel = get_parallel()
+        if self.use_deepep:
+            moe = get_exec().moe
+            if owner.model_id != "GLM-5.2" or get_spec().speculative_algorithm:
+                raise ValueError(
+                    "DeepEP prefill-only offload requires GLM-5.2 without MTP"
+                )
+            if moe.deepep_mode != "normal":
+                raise ValueError(
+                    "DeepEP prefill-only offload requires --deepep-mode normal"
+                )
+            if parallel.moe_ep_size < 2:
+                raise ValueError("DeepEP prefill-only offload requires EP >= 2")
+            if moe.moe_runner_backend not in ("auto", "ascend"):
+                raise ValueError(
+                    "DeepEP prefill-only offload requires the Ascend MoE runner"
+                )
+            if envs.SGLANG_ZBAL_LOCAL_MEM_SIZE.get() > 0:
+                raise ValueError(
+                    "Use DeepEP-Ascend for prefill-only offload "
+                    "with SGLANG_ZBAL_LOCAL_MEM_SIZE=0"
+                )
+            if os.getenv("MOE_EXPERT_TOKEN_NUMS_TYPE", "1") != "1":
+                raise ValueError(
+                    "DeepEP prefill-only offload requires MOE_EXPERT_TOKEN_NUMS_TYPE=1"
+                )
         if parallel.pp_size == 1 and parallel.attn_cp_size == 1:
             return
         # Keep the new path narrow: native stage groups, with CP introduced
@@ -129,8 +158,10 @@ class PrefillOnlyExecution:
             )
 
     def validate_quantization(self, owner, quant_spec):
-        if get_parallel().pp_size > 1 and quant_spec.kind != "w8a8":
-            raise ValueError("Pipelined prefill-only offload requires ModelSlim W8A8")
+        if (self.use_deepep or get_parallel().pp_size > 1) and quant_spec.kind != "w8a8":
+            raise ValueError(
+                "DeepEP or pipelined prefill-only offload requires ModelSlim W8A8"
+            )
 
     def configure(self, owner, path):
         owner.hot_slots = 0
@@ -164,6 +195,9 @@ class PrefillOnlyExecution:
         owner.weight_copy_stream = torch.npu.Stream(device=owner.device)
         owner.context = owner._new_context()
         owner.prefill = AscendPrefillWeights(owner)
+        if self.use_deepep:
+            for storage in owner.storages.values():
+                self._bind_deepep_layer(owner, storage.layer)
         owner.ready = True
         logger.info(
             "Ascend prefill-only offload: layers=%d local=%d hot=0 "
@@ -173,6 +207,22 @@ class PrefillOnlyExecution:
             owner.format.expert_nbytes * owner.execution_slots / 1024**3,
             owner.host_pool.used_bytes / 1024**3,
         )
+
+    @staticmethod
+    def _bind_deepep_layer(owner, layer):
+        layer_id = layer.layer_id
+
+        def start(_dispatcher, _hidden_states, _topk_output):
+            owner.start_prefill_layer(layer_id)
+
+        def finish(_dispatcher, _hidden_states):
+            # The public combine returns after the normal implementation has
+            # joined its completion to the compute stream. Record the bank's
+            # reader frontier here before submitting the layer+2 refill.
+            owner.prefill.finish_layer(layer_id)
+
+        layer.dispatcher.register_pre_dispatch_hook(start)
+        layer.dispatcher.register_post_combine_hook(finish)
 
     @contextmanager
     def forward_scope(self, owner, batch):

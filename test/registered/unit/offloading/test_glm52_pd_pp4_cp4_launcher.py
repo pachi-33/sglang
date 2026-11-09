@@ -63,6 +63,9 @@ class TestGlm52PdPP4Launcher(unittest.TestCase):
             "            'HCCL_BUFFSIZE', 'TASK_QUEUE_ENABLE', 'SGLANG_ENABLE_OVERLAP_PLAN_STREAM',\n"
             "            'SGLANG_NPU_USE_MULTI_STREAM', 'SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK',\n"
             "            'DEEPEP_HCCL_BUFFSIZE', 'ASCEND_MF_LOG_LEVEL', 'LD_LIBRARY_PATH',\n"
+            "            'DEEPEP_NORMAL_LONG_SEQ_ROUND', 'DEEPEP_NORMAL_LONG_SEQ_PER_ROUND_TOKENS',\n"
+            "            'DEEPEP_NORMAL_COMBINE_ENABLE_LONG_SEQ', 'DEEP_NORMAL_MODE_USE_INT8_QUANT',\n"
+            "            'MOE_EXPERT_TOKEN_NUMS_TYPE',\n"
             "            'SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT', 'SGLANG_DISAGGREGATION_WAITING_TIMEOUT',\n"
             "            'STUB_P_CUSTOMIZE_SOURCED', 'STUB_D_CUSTOMIZE_SOURCED']\n"
             "    data = {'args': sys.argv[1:], 'env': {k: os.environ.get(k) for k in keys}}\n"
@@ -348,6 +351,41 @@ class TestGlm52PdPP4Launcher(unittest.TestCase):
                         tuning[-4:],
                         ["governor performance", "-w vm.swappiness=0", "-w kernel.numa_balancing=0", "-w kernel.sched_migration_cost_ns=50000"],
                     )
+
+    def test_deepep_switch_passes_normal_settings_to_prefill_only(self):
+        for index, address in enumerate(IPS[:2]):
+            with self.subTest(index=index):
+                record = self.root / f"deepep-{index}.json"
+                result = self.run_launcher(
+                    dry=False,
+                    overrides={
+                        "STUB_LOCAL_IPS": address,
+                        "STUB_RECORD": str(record),
+                        "LOG_DIR": str(self.root / f"logs-deepep-{index}"),
+                        "P_MOE_A2A_BACKEND": "deepep",
+                        "D_APPLY_HOST_TUNING": "0",
+                    },
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                data = json.loads(record.read_text())
+                command, env = data["args"], data["env"]
+                self.option(command, "--moe-a2a-backend", "deepep")
+                if index == 0:
+                    self.option(command, "--deepep-mode", "normal")
+                    self.option(command, "--deepep-dispatcher-output-dtype", "int8")
+                    self.assertIn("--moe-offload-config", command)
+                    self.assertNotIn("--moe-ascend-ops-config", command)
+                    self.assertEqual(env["DEEPEP_HCCL_BUFFSIZE"], "1024")
+                    self.assertEqual(env["DEEPEP_NORMAL_LONG_SEQ_ROUND"], "72")
+                    self.assertEqual(env["DEEPEP_NORMAL_LONG_SEQ_PER_ROUND_TOKENS"], "1024")
+                    self.assertEqual(env["DEEPEP_NORMAL_COMBINE_ENABLE_LONG_SEQ"], "1")
+                    self.assertEqual(env["DEEP_NORMAL_MODE_USE_INT8_QUANT"], "1")
+                    self.assertEqual(env["MOE_EXPERT_TOKEN_NUMS_TYPE"], "1")
+                else:
+                    self.option(command, "--deepep-mode", "low_latency")
+                    self.assertNotIn("--moe-offload-config", command)
+                    self.assertIsNone(env["DEEPEP_NORMAL_LONG_SEQ_ROUND"])
+                    self.assertIsNone(env["DEEP_NORMAL_MODE_USE_INT8_QUANT"])
 
     def test_decode_can_skip_host_tuning(self):
         result = self.run_launcher(
