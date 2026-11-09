@@ -26,8 +26,25 @@ class TestGlm52PdPP4Launcher(unittest.TestCase):
         self.bin = self.root / "bin"
         self.bin.mkdir()
         # No ip / ifconfig / hostname or accelerator programs in PATH.
-        for name in ("dirname", "date", "cat", "mkdir", "tee"):
+        for name in ("dirname", "date", "cat", "mkdir"):
             (self.bin / name).symlink_to(shutil.which(name))
+        tee = self.bin / "tee"
+        tee.write_text(
+            "#!/bin/bash\n"
+            "if [[ ${1-} == /sys/devices/system/cpu/* ]]; then\n"
+            "  cat >/dev/null\n"
+            "  printf 'governor performance\\n' >> \"$STUB_TUNING_LOG\"\n"
+            "else\n"
+            f"  exec {shlex.quote(shutil.which('tee'))} \"$@\"\n"
+            "fi\n"
+        )
+        tee.chmod(0o755)
+        sysctl = self.bin / "sysctl"
+        sysctl.write_text(
+            "#!/bin/bash\n"
+            "printf '%s\\n' \"$*\" >> \"$STUB_TUNING_LOG\"\n"
+        )
+        sysctl.chmod(0o755)
         python = self.bin / "python3"
         python.write_text(
             f"#!{sys.executable}\n"
@@ -44,7 +61,10 @@ class TestGlm52PdPP4Launcher(unittest.TestCase):
             "    keys = ['SGLANG_HOST_IP', 'SGLANG_PP_LAYER_PARTITION', 'HCCL_SOCKET_IFNAME',\n"
             "            'ASCEND_MF_STORE_URL', 'SGLANG_TEST_FAKE_PREFILL_RADIX_CACHE', 'PYTHONPATH',\n"
             "            'HCCL_BUFFSIZE', 'TASK_QUEUE_ENABLE', 'SGLANG_ENABLE_OVERLAP_PLAN_STREAM',\n"
-            "            'SGLANG_NPU_USE_MULTI_STREAM', 'SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK']\n"
+            "            'SGLANG_NPU_USE_MULTI_STREAM', 'SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK',\n"
+            "            'DEEPEP_HCCL_BUFFSIZE', 'ASCEND_MF_LOG_LEVEL', 'LD_LIBRARY_PATH',\n"
+            "            'SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT', 'SGLANG_DISAGGREGATION_WAITING_TIMEOUT',\n"
+            "            'STUB_P_CUSTOMIZE_SOURCED', 'STUB_D_CUSTOMIZE_SOURCED']\n"
             "    data = {'args': sys.argv[1:], 'env': {k: os.environ.get(k) for k in keys}}\n"
             "    pathlib.Path(os.environ['STUB_RECORD']).write_text(json.dumps(data))\n"
             "    sys.exit(0)\n"
@@ -74,6 +94,10 @@ class TestGlm52PdPP4Launcher(unittest.TestCase):
         (self.model / "config.json").write_text(json.dumps(self.config))
         env_file = self.root / "ascend-env.sh"
         env_file.write_text("# mock Ascend environment\n")
+        p_custom_env = self.root / "p-custom.sh"
+        p_custom_env.write_text("export STUB_P_CUSTOMIZE_SOURCED=1\n")
+        d_custom_env = self.root / "d-custom.sh"
+        d_custom_env.write_text("export STUB_D_CUSTOMIZE_SOURCED=1\n")
         self.env = {
             "PATH": str(self.bin),
             "LC_ALL": "C",
@@ -87,8 +111,11 @@ class TestGlm52PdPP4Launcher(unittest.TestCase):
             "LOG_DIR": str(self.root / "logs"),
             "CANN_ENV": str(env_file),
             "ATB_ENV": str(env_file),
-            "CUSTOMIZE_ENV": str(env_file),
+            "CUSTOMIZE_ENV": str(p_custom_env),
             "CUSTOM_TRANSFORMER_ENV": str(env_file),
+            "D_CUSTOMIZE_ENV": str(d_custom_env),
+            "D_CUSTOMIZE_OP_API_LIB": str(self.root / "decode custom ops"),
+            "STUB_TUNING_LOG": str(self.root / "host-tuning.log"),
             # Test that these pre-existing values do not leak to the wrong role.
             "SGLANG_PP_LAYER_PARTITION": "18,20,24,16",
             "SGLANG_TEST_FAKE_PREFILL_RADIX_CACHE": "1",
@@ -109,6 +136,7 @@ class TestGlm52PdPP4Launcher(unittest.TestCase):
             self.assertFalse((self.root / "runtime").exists())
             self.assertFalse((self.root / "logs").exists())
             self.assertFalse((self.root / "launched.json").exists())
+            self.assertFalse((self.root / "host-tuning.log").exists())
         return result
 
     def command(self, result):
@@ -140,6 +168,14 @@ class TestGlm52PdPP4Launcher(unittest.TestCase):
             "--moe-a2a-backend": "ascend_ops",
             "--served-model-name": "glm-5",
             "--chunked-prefill-size": 8192,
+            "--max-prefill-tokens": 8192,
+            "--max-running-requests": 128,
+            "--mem-fraction-static": "0.6",
+            "--load-format": "safetensors",
+            "--host": "0.0.0.0",
+            "--base-gpu-id": 0,
+            "--page-size": 128,
+            "--kv-cache-dtype": "bfloat16",
             "--port": 8000,
             "--disaggregation-bootstrap-port": 8998,
         }.items():
@@ -173,7 +209,12 @@ class TestGlm52PdPP4Launcher(unittest.TestCase):
                     "--moe-a2a-backend": "deepep",
                     "--deepep-mode": "low_latency",
                     "--cuda-graph-backend-decode": "full",
-                    "--cuda-graph-max-bs-decode": 4,
+                    "--max-running-requests": 32,
+                    "--mem-fraction-static": "0.97",
+                    "--host": address,
+                    "--disaggregation-transfer-backend": "ascend",
+                    "--page-size": 128,
+                    "--kv-cache-dtype": "bfloat16",
                     "--served-model-name": "glm-5",
                     "--port": 8003,
                 }.items():
@@ -183,11 +224,27 @@ class TestGlm52PdPP4Launcher(unittest.TestCase):
                     "--pp-size",
                     "--attn-cp-size",
                     "--speculative-algorithm",
+                    "--load-format",
+                    "--cuda-graph-max-bs-decode",
                 ):
                     self.assertNotIn(absent, command)
+                bs_index = command.index("--cuda-graph-bs-decode")
+                self.assertEqual(command[bs_index + 1 : bs_index + 4], ["1", "2", "3"])
                 self.assertIn(
                     f"IP={address} role=decode node_rank={rank}", result.stdout
                 )
+
+    def test_decode_graph_overrides_preserve_existing_max_bs_option(self):
+        for overrides, option, values in (
+            ({"D_CUDA_GRAPH_BS": "1 3 5"}, "--cuda-graph-bs-decode", ["1", "3", "5"]),
+            ({"D_CUDA_GRAPH_MAX_BS": "4"}, "--cuda-graph-max-bs-decode", ["4"]),
+        ):
+            with self.subTest(overrides=overrides):
+                command = self.command(
+                    self.run_launcher(overrides={"STUB_LOCAL_IPS": IPS[1], **overrides})
+                )
+                start = command.index(option) + 1
+                self.assertEqual(command[start : start + len(values)], values)
 
     def test_router_needs_no_model_or_node_enumeration(self):
         result = self.run_launcher(
@@ -219,6 +276,10 @@ class TestGlm52PdPP4Launcher(unittest.TestCase):
             ({"ASCEND_RT_VISIBLE_DEVICES": "0,1"}, "16 distinct"),
             ({"P_PORT": "0"}, "Invalid TCP port"),
             ({"MEM_FRACTION_STATIC": "nan"}, "MEM_FRACTION_STATIC"),
+            ({"STUB_LOCAL_IPS": IPS[1], "D_CUDA_GRAPH_BS": "1 0 3"}, "D_CUDA_GRAPH_BS"),
+            ({"STUB_LOCAL_IPS": IPS[1], "D_CUDA_GRAPH_BS": "1\n2 3"}, "D_CUDA_GRAPH_BS"),
+            ({"STUB_LOCAL_IPS": IPS[1], "D_CUDA_GRAPH_MAX_BS": "0"}, "D_CUDA_GRAPH_MAX_BS"),
+            ({"STUB_LOCAL_IPS": IPS[1], "D_APPLY_HOST_TUNING": "2"}, "D_APPLY_HOST_TUNING"),
         )
         for overrides, message in cases:
             with self.subTest(overrides=overrides):
@@ -245,10 +306,15 @@ class TestGlm52PdPP4Launcher(unittest.TestCase):
                 command, env = data["args"], data["env"]
                 self.assertEqual(env["SGLANG_HOST_IP"], address)
                 self.assertEqual(env["HCCL_SOCKET_IFNAME"], "bond0")
-                self.assertEqual(env["HCCL_BUFFSIZE"], "1024")
                 self.assertEqual(env["ASCEND_MF_STORE_URL"], f"tcp://{IPS[0]}:24707")
                 self.assertIsNone(env["SGLANG_TEST_FAKE_PREFILL_RADIX_CACHE"])
                 if index == 0:
+                    self.assertEqual(env["HCCL_BUFFSIZE"], "1024")
+                    self.assertEqual(env["SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT"], "600")
+                    self.assertIsNone(env["SGLANG_DISAGGREGATION_WAITING_TIMEOUT"])
+                    self.assertEqual(env["STUB_P_CUSTOMIZE_SOURCED"], "1")
+                    self.assertIsNone(env["STUB_D_CUSTOMIZE_SOURCED"])
+                    self.assertFalse((self.root / "host-tuning.log").exists())
                     self.assertEqual(env["SGLANG_PP_LAYER_PARTITION"], "18,20,24,16")
                     self.assertEqual(env["TASK_QUEUE_ENABLE"], "1")
                     self.assertEqual(env["SGLANG_ENABLE_OVERLAP_PLAN_STREAM"], "0")
@@ -257,18 +323,48 @@ class TestGlm52PdPP4Launcher(unittest.TestCase):
                     self.option(command, "--moe-offload-config", logs / "offload.json")
                     self.assertIn(str(self.root / "runtime/python"), env["PYTHONPATH"])
                 else:
+                    self.assertIsNone(env["HCCL_BUFFSIZE"])
+                    self.assertEqual(env["DEEPEP_HCCL_BUFFSIZE"], "200")
+                    self.assertEqual(env["ASCEND_MF_LOG_LEVEL"], "2")
+                    self.assertEqual(env["SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT"], "1200")
+                    self.assertEqual(env["SGLANG_DISAGGREGATION_WAITING_TIMEOUT"], "1200")
+                    self.assertIsNone(env["STUB_P_CUSTOMIZE_SOURCED"])
+                    self.assertEqual(env["STUB_D_CUSTOMIZE_SOURCED"], "1")
+                    self.assertEqual(env["LD_LIBRARY_PATH"], str(self.root / "decode custom ops"))
                     self.assertIsNone(env["SGLANG_PP_LAYER_PARTITION"])
                     self.assertEqual(env["TASK_QUEUE_ENABLE"], "0")
                     self.assertEqual(env["SGLANG_ENABLE_OVERLAP_PLAN_STREAM"], "1")
                     self.assertEqual(env["SGLANG_NPU_USE_MULTI_STREAM"], "1")
                     self.assertEqual(
-                        env["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK"], "32"
+                        env["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK"], "16"
                     )
                     self.assertFalse((logs / "offload.json").exists())
                     self.assertNotIn("--moe-offload-config", command)
                     self.assertNotIn(
                         str(self.root / "runtime/python"), env["PYTHONPATH"]
                     )
+                    tuning = (self.root / "host-tuning.log").read_text().splitlines()
+                    self.assertEqual(
+                        tuning[-4:],
+                        ["governor performance", "-w vm.swappiness=0", "-w kernel.numa_balancing=0", "-w kernel.sched_migration_cost_ns=50000"],
+                    )
+
+    def test_decode_can_skip_host_tuning(self):
+        result = self.run_launcher(
+            dry=False,
+            overrides={"STUB_LOCAL_IPS": IPS[1], "D_APPLY_HOST_TUNING": "0"},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.root / "host-tuning.log").exists())
+
+    def test_missing_decode_environment_fails_before_host_tuning(self):
+        result = self.run_launcher(
+            dry=False,
+            overrides={"STUB_LOCAL_IPS": IPS[1], "D_CUSTOMIZE_ENV": str(self.root / "missing")},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "host-tuning.log").exists())
+        self.assertIn("Missing Ascend environment script", (self.root / "logs/server.log").read_text())
 
 
 if __name__ == "__main__":

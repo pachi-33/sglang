@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # GLM-5.2 A3：单机 P 卸载 + 双机 D 常驻；三台用同一份脚本按 IP 自动识别。
 # P: PP4 × TP4 / attention DP1 / CP4 zigzag / stage 内 EP4。
-# D: 两机 TP32 / attention DP32 / EP32，沿用 serve_glm52_pd_baseline.sh。
+# D: 两机 TP32 / attention DP32 / EP32，沿用 best_pd_4rank_baseline.sh 的 Decode。
 # Usage: bash serve_glm52_pd_pp4_cp4.sh [auto|router] [--dry-run]
 set -eo pipefail
 
@@ -16,13 +16,15 @@ HOST_POOL_GIB=${HOST_POOL_GIB:-56} # 仅 P，每 rank；16 rank 共 896 GiB，�
 EXECUTION_SLOTS=${EXECUTION_SLOTS:-""} # 仅 P；留空自动使用双 bank，256 专家时为 128
 PP_PARTITION=${SGLANG_PP_LAYER_PARTITION:-18,20,24,16} # 四个 stage 的层数，总和须等于模型层数
 P_MEM_FRACTION_STATIC=${P_MEM_FRACTION_STATIC:-0.6}
-D_MEM_FRACTION_STATIC=${D_MEM_FRACTION_STATIC:-0.75}
+D_MEM_FRACTION_STATIC=${D_MEM_FRACTION_STATIC:-0.97}
 CONTEXT_LENGTH=${CONTEXT_LENGTH:-180000} # P/D 相同
 CHUNKED_PREFILL_SIZE=${CHUNKED_PREFILL_SIZE:-8192} # 仅 P，必须为 128 的倍数
 MAX_PREFILL_TOKENS=${MAX_PREFILL_TOKENS:-$CHUNKED_PREFILL_SIZE}
 P_MAX_RUNNING_REQUESTS=${P_MAX_RUNNING_REQUESTS:-128}
-D_MAX_RUNNING_REQUESTS=${D_MAX_RUNNING_REQUESTS:-128}
-D_CUDA_GRAPH_MAX_BS=${D_CUDA_GRAPH_MAX_BS:-4}
+D_MAX_RUNNING_REQUESTS=${D_MAX_RUNNING_REQUESTS:-32}
+D_CUDA_GRAPH_BS=${D_CUDA_GRAPH_BS:-"1 2 3"} # 默认与最佳基线的显式档位一致
+D_CUDA_GRAPH_MAX_BS=${D_CUDA_GRAPH_MAX_BS:-""} # 兼容旧覆盖方式；非空时优先
+D_APPLY_HOST_TUNING=${D_APPLY_HOST_TUNING:-1} # D 启动时应用最佳基线的主机级 CPU / sysctl 设置
 # 如需单机覆盖，可设置 MAX_RUNNING_REQUESTS / MEM_FRACTION_STATIC。
 export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
 
@@ -42,6 +44,8 @@ CANN_ENV=${CANN_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}
 ATB_ENV=${ATB_ENV:-/usr/local/Ascend/nnal/atb/set_env.sh}
 CUSTOMIZE_ENV=${CUSTOMIZE_ENV:-/usr/local/Ascend/ascend-toolkit/latest/opp/vendors/customize/bin/set_env.bash}
 CUSTOM_TRANSFORMER_ENV=${CUSTOM_TRANSFORMER_ENV:-/usr/local/Ascend/ascend-toolkit/latest/opp/vendors/custom_transformer/bin/set_env.bash}
+D_CUSTOMIZE_ENV=${D_CUSTOMIZE_ENV:-/usr/local/Ascend/cann-9.1.0/opp/vendors/customize/bin/set_env.bash}
+D_CUSTOMIZE_OP_API_LIB=${D_CUSTOMIZE_OP_API_LIB:-/usr/local/Ascend/ascend-toolkit/latest/opp/vendors/customize/op_api/lib/}
 # 可覆盖 RUNTIME_DIR / LOG_DIR（绝对路径），以及三台一致的 ASCEND_MF_STORE_URL / ASCEND_MF_TRANSFER_PROTOCOL。
 # P 的扩展编译并发可用 MAX_JOBS 覆盖，默认 4。升级 CANN 等依赖后请使用新的 RUNTIME_DIR。
 
@@ -55,6 +59,7 @@ Usage: $0 [auto|router] [--dry-run]
 必填：MODEL_PATH、P_IP、D0_IP、D1_IP（在脚本顶部填写或用同名环境变量覆盖）。
 P 使用 PP4 × TP4 / DP1 / CP4 / stage 内 EP4 卸载，D 使用双机 TP32 / DP32 / EP32 常驻。
 固定关闭 MTP；真实 PD 请求发送到 Router 的 ROUTER_PORT，不要携带 fake bootstrap 字段。
+D 正常启动时会按最佳基线调整本机 CPU governor 和 sysctl；可设置 D_APPLY_HOST_TUNING=0 跳过。
 EOF
 }
 
@@ -109,7 +114,8 @@ fi
 "$PYTHON_BIN" - "$ROLE" "$MODEL_PATH" "$HOST_POOL_GIB" "$EXECUTION_SLOTS" \
   "$RUNTIME_DIR" "$LOG_DIR" "$DRY_RUN" "$PP_PARTITION" "$ASCEND_RT_VISIBLE_DEVICES" \
   "$CONTEXT_LENGTH" "$CHUNKED_PREFILL_SIZE" "$MAX_PREFILL_TOKENS" "$MAX_RUNNING_REQUESTS" \
-  "$MEM_FRACTION_STATIC" "$D_CUDA_GRAPH_MAX_BS" "$P_IP" "$D0_IP" "$D1_IP" \
+  "$MEM_FRACTION_STATIC" "$D_CUDA_GRAPH_BS" "$D_CUDA_GRAPH_MAX_BS" "$D_APPLY_HOST_TUNING" \
+  "$P_IP" "$D0_IP" "$D1_IP" \
   "$P_PORT" "$D_PORT" "$BOOTSTRAP_PORT" "$P_DIST_PORT" "$D_DIST_PORT" "$MF_STORE_PORT" "$ROUTER_PORT" <<'PY_CONFIG'
 import ipaddress
 import json
@@ -119,7 +125,8 @@ from itertools import accumulate
 from pathlib import Path
 
 (role, model, host, slots, runtime, logs, dry, partition, devices, context,
- chunk, prefill, requests, fraction, graph_bs, p_ip, d0_ip, d1_ip, *ports) = sys.argv[1:]
+ chunk, prefill, requests, fraction, graph_bs, graph_max, host_tuning,
+ p_ip, d0_ip, d1_ip, *ports) = sys.argv[1:]
 for port in ports:
     if not port.isdecimal() or not 1 <= int(port) <= 65535:
         raise ValueError(f"Invalid TCP port: {port}")
@@ -147,8 +154,15 @@ if role != "router":
     if type(experts) is not int or experts <= 0 or experts % ep_size:
         raise ValueError(f"n_routed_experts must be positive and divisible by EP={ep_size}")
 if role == "decode":
-    if not graph_bs.isdecimal() or int(graph_bs) <= 0:
+    if graph_max and (not graph_max.isdecimal() or int(graph_max) <= 0):
         raise ValueError("D_CUDA_GRAPH_MAX_BS must be a positive integer")
+    if not graph_max:
+        sizes = graph_bs.split()
+        if (any(c not in "0123456789 \t" for c in graph_bs)
+                or not sizes or any(int(s) <= 0 for s in sizes)):
+            raise ValueError("D_CUDA_GRAPH_BS must contain positive integers on one line")
+    if host_tuning not in ("0", "1"):
+        raise ValueError("D_APPLY_HOST_TUNING must be 0 or 1")
 if role == "prefill":
     for name, value in (("HOST_POOL_GIB", host), ("CHUNKED_PREFILL_SIZE", chunk),
                         ("MAX_PREFILL_TOKENS", prefill)):
@@ -205,14 +219,15 @@ else
   command=("$PYTHON_BIN" -u -m sglang.launch_server
     --model-path "$MODEL_PATH" --served-model-name glm-5
     --device npu --attention-backend ascend --quantization modelslim
-    --load-format safetensors --dtype bfloat16 --trust-remote-code
+    --dtype bfloat16 --trust-remote-code
     --disaggregation-mode "$ROLE" --disaggregation-transfer-backend ascend
-    --host 0.0.0.0 --page-size 128 --kv-cache-dtype bfloat16
+    --page-size 128 --kv-cache-dtype bfloat16
     --context-length "$CONTEXT_LENGTH" --mem-fraction-static "$MEM_FRACTION_STATIC"
     --max-running-requests "$MAX_RUNNING_REQUESTS"
     --disable-shared-experts-fusion --load-balance-method round_robin)
   if [[ $ROLE == prefill ]]; then
-    command+=(--port "$P_PORT" --dist-init-addr "$P_IP:$P_DIST_PORT"
+    command+=(--host 0.0.0.0 --port "$P_PORT" --dist-init-addr "$P_IP:$P_DIST_PORT"
+      --base-gpu-id 0 --load-format safetensors
       --disaggregation-bootstrap-port "$BOOTSTRAP_PORT"
       --nnodes 1 --node-rank 0 --pp-size 4 --tp-size 4 --dp-size 1 --attn-dp-size 1
       --enable-prefill-cp --attn-cp-size 4 --cp-strategy zigzag
@@ -224,34 +239,32 @@ else
       --chunked-prefill-size "$CHUNKED_PREFILL_SIZE" --max-prefill-tokens "$MAX_PREFILL_TOKENS"
       --moe-offload-config "$LOG_DIR/offload.json" --watchdog-timeout 600)
   else
-    command+=(--port "$D_PORT" --dist-init-addr "$D0_IP:$D_DIST_PORT"
+    command+=(--host "$NODE_IP" --port "$D_PORT" --dist-init-addr "$D0_IP:$D_DIST_PORT"
       --nnodes 2 --node-rank "$NODE_RANK" --tp-size 32 --attn-dp-size 32 --ep-size 32
       --moe-a2a-backend deepep --deepep-mode low_latency
-      --cuda-graph-backend-decode full --cuda-graph-max-bs-decode "$D_CUDA_GRAPH_MAX_BS"
-      --tokenizer-worker-num 4 --watchdog-timeout 9000)
+      --cuda-graph-backend-decode full --tokenizer-worker-num 4 --watchdog-timeout 9000)
+    if [[ -n $D_CUDA_GRAPH_MAX_BS ]]; then
+      command+=(--cuda-graph-max-bs-decode "$D_CUDA_GRAPH_MAX_BS")
+    else
+      read -r -a graph_sizes <<< "$D_CUDA_GRAPH_BS"
+      command+=(--cuda-graph-bs-decode "${graph_sizes[@]}")
+    fi
   fi
 fi
 
 export PYTHONPATH="$SGLANG_ROOT/python${PYTHONPATH:+:$PYTHONPATH}"
-export HCCL_BUFFSIZE=1024
 # 这是实际 PD 部署，不启用独立 P 假发送测试开关。
 unset SGLANG_TEST_FAKE_PREFILL_RADIX_CACHE
 if [[ $ROLE != router ]]; then
   export SGLANG_HOST_IP="$NODE_IP"
   export ASCEND_MF_STORE_URL=${ASCEND_MF_STORE_URL:-tcp://$P_IP:$MF_STORE_PORT}
   export HCCL_SOCKET_IFNAME="$COMM_IFACE" GLOO_SOCKET_IFNAME="$COMM_IFACE"
-  export SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT=600
-  export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True SGLANG_SET_CPU_AFFINITY=1
-  export STREAMS_PER_DEVICE=32 TRANSFORMERS_VERBOSITY=error
   if [[ $ROLE == prefill ]]; then
     export SGLANG_PP_LAYER_PARTITION="$PP_PARTITION"
-    export HCCL_OP_EXPANSION_MODE=AIV HCCL_CONNECT_TIMEOUT=300 HCCL_EXEC_TIMEOUT=300 ACL_DEVICE_SYNC_TIMEOUT=300
-    export INF_NAN_MODE_FORCE_DISABLE=1 TASK_QUEUE_ENABLE=1 SGLANG_ENABLE_OVERLAP_PLAN_STREAM=0
     printf 'PP partition: %s\n' "$SGLANG_PP_LAYER_PARTITION"
   else
     unset SGLANG_PP_LAYER_PARTITION
-    export TASK_QUEUE_ENABLE=0 SGLANG_ENABLE_OVERLAP_PLAN_STREAM=1 SGLANG_NPU_USE_MULTI_STREAM=1
-    export SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK=32
+    printf 'D host tuning: %s\n' "$D_APPLY_HOST_TUNING"
   fi
   printf 'KV store: %s; communication interface: %s\n' "$ASCEND_MF_STORE_URL" "$COMM_IFACE"
 fi
@@ -298,5 +311,28 @@ from memfabric_hybrid._acc_offload_build import ensure_acc_offload_ext
 assert ensure_acc_offload_ext("A3", install_dir=sys.argv[1])
 PY_EXT
   "$PYTHON_BIN" -m sglang.srt.offloading.moe.npu.native_acl --build-directory "$RUNTIME_DIR/native_acl"
+  export HCCL_BUFFSIZE=1024 HCCL_OP_EXPANSION_MODE=AIV
+  export HCCL_CONNECT_TIMEOUT=300 HCCL_EXEC_TIMEOUT=300 ACL_DEVICE_SYNC_TIMEOUT=300
+  export INF_NAN_MODE_FORCE_DISABLE=1 TASK_QUEUE_ENABLE=1 SGLANG_ENABLE_OVERLAP_PLAN_STREAM=0
+  export SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT=600
+else
+  [[ -f $D_CUSTOMIZE_ENV ]] || fail "Missing Ascend environment script: $D_CUSTOMIZE_ENV"
+  source "$D_CUSTOMIZE_ENV"
+  if [[ $D_APPLY_HOST_TUNING == 1 ]]; then
+    # 与 best_pd_4rank_baseline.sh 一样，仅影响正在启动的 D 主机；失败时继续启动。
+    echo performance | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor ||
+      echo "WARNING: Unable to set CPU performance governor" >&2
+    for setting in vm.swappiness=0 kernel.numa_balancing=0 kernel.sched_migration_cost_ns=50000; do
+      sysctl -w "$setting" || echo "WARNING: Unable to set $setting" >&2
+    done
+  fi
+  export LD_LIBRARY_PATH="$D_CUSTOMIZE_OP_API_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export ASCEND_MF_LOG_LEVEL=2
+  export SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT=1200 SGLANG_DISAGGREGATION_WAITING_TIMEOUT=1200
+  export DEEPEP_HCCL_BUFFSIZE=200 SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK=16
+  export TASK_QUEUE_ENABLE=0 SGLANG_ENABLE_OVERLAP_PLAN_STREAM=1 SGLANG_NPU_USE_MULTI_STREAM=1
 fi
+export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True SGLANG_SET_CPU_AFFINITY=1 STREAMS_PER_DEVICE=32
+export HCCL_SOCKET_IFNAME="$COMM_IFACE" GLOO_SOCKET_IFNAME="$COMM_IFACE"
+unset SGLANG_TEST_FAKE_PREFILL_RADIX_CACHE
 exec "${command[@]}"

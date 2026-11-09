@@ -101,18 +101,22 @@ PY_SMOKE
 | 节点 | 部署参数 | 专家权重 |
 | --- | --- | --- |
 | P，一台 A3 / 16 die | PP4 × TP4、DP1、attention DP1 / CP4 zigzag、stage 内 EP4；Ascend Ops alltoallv | routed 专家卸载到 Host，双 bank 逐层预取 |
-| D0 + D1，两台 A3 / 32 die | TP32、attention DP32、EP32；DeepEP low_latency；Decode graph 最大 batch 为 4 | 常驻设备，不启用 MoE offload |
+| D0 + D1，两台 A3 / 32 die | TP32、attention DP32、EP32；DeepEP low_latency；Decode graph 档位为 1、2、3 | 常驻设备，不启用 MoE offload |
 
 本组合固定关闭 MTP：不能设置 `ENABLE_MTP=1`。请先用 `max_new_tokens=1` 验证完整 PD 链路；D 的多 token 生成、P→D 的真实 KV 传输以及并发仍需实机验收。脚本不会启动 fake sender 测试模式。
 
-D 的 `HCCL_BUFFSIZE=1024` 沿用基线脚本的实际值；基线旧测试与旧说明仍写 650，当前两者尚未对齐。
+D 的启动参数和进程环境沿用 `best_pd_4rank_baseline.sh`：`DEEPEP_HCCL_BUFFSIZE=200`、每 rank 的 DeepEP dispatch 容量参数为 16，bootstrap 与传输等待超时均为 1200 秒。D 不主动设置通用的 `HCCL_BUFFSIZE`，继承启动环境中的值。默认使用 CANN 9.1.0 的 customize 环境脚本，并将 customize 的 op API 库目录加入 `LD_LIBRARY_PATH`；非默认安装可分别设置 `D_CUSTOMIZE_ENV` 和 `D_CUSTOMIZE_OP_API_LIB`。
+
+D 正常启动时还会按该基线将本机 CPU governor 设为 `performance`，并设置 `vm.swappiness=0`、`kernel.numa_balancing=0`、`kernel.sched_migration_cost_ns=50000`。这些是**主机级**设置，可能需要管理员权限；不希望调整时设置 `D_APPLY_HOST_TUNING=0`。`--dry-run` 不执行这些操作。
 
 启动前，在三台机器上的同一份脚本顶部填写或通过环境变量指定：
 
 - `MODEL_PATH`：每台本地的 GLM-5.2 ModelSlim **W8A8** 权重目录；三台 checkpoint 内容一致。启动前激活安装了 SGLang 和 NPU 依赖的 Python 环境；非默认环境可设置 `PYTHON_BIN`，脚本自动将当前仓库的 `python` 目录加入 `PYTHONPATH`。
 - `P_IP`、`D0_IP`、`D1_IP`：三台机器实际绑定、互相可达的通信 IPv4，三份配置保持一致。脚本通过 `pd_node.py` 自动匹配本机 IP 和网卡，不依赖 `ip`、`ifconfig`。容器内须能看到这些 IP。
 - P 的 `HOST_POOL_GIB` 默认为每 rank 56 GiB，16 rank 合计 896 GiB；系统、模型加载和其他进程还需要额外内存。启动前会依据 checkpoint 的尺寸做 W8 权重本体估算，运行时还会按实际格式检查。`SGLANG_PP_LAYER_PARTITION` 默认 `18,20,24,16`，需与模型层数相符；`EXECUTION_SLOTS` 留空时为两个完整本地专家层。
-- 默认 P 的 `CHUNKED_PREFILL_SIZE=8192`、`MAX_PREFILL_TOKENS=8192`、`P_MEM_FRACTION_STATIC=0.6`，D 的 `D_MEM_FRACTION_STATIC=0.75`。可按容量调整，P/D 的 `CONTEXT_LENGTH` 和模型内容须一致。实际 P chunk 会影响搬运次数、性能和峰值内存。
+- 默认 P 的 `CHUNKED_PREFILL_SIZE=8192`、`MAX_PREFILL_TOKENS=8192`、`P_MEM_FRACTION_STATIC=0.6`、`P_MAX_RUNNING_REQUESTS=128`；D 的 `D_MEM_FRACTION_STATIC=0.97`、`D_MAX_RUNNING_REQUESTS=32`。可按容量调整，P/D 的 `CONTEXT_LENGTH` 和模型内容须一致。D 显存比例较高，须在目标机器验证 graph 捕获、KV 传输和实际请求的显存余量。实际 P chunk 会影响搬运次数、性能和峰值内存。
+- 若当前环境已设置通用的 `MEM_FRACTION_STATIC` 或 `MAX_RUNNING_REQUESTS`，它们会优先覆盖当前机器对应角色的默认值；需要基线默认值时请先检查这些环境变量。
+- D 默认的 graph 档位可通过 `D_CUDA_GRAPH_BS="1 2 3"` 调整；原有的 `D_CUDA_GRAPH_MAX_BS` 覆盖方式仍可使用，设置时优先于档位列表。
 
 三台机器分别执行相同的命令；D0 和 D1 应同时启动，组成一个 D 实例：
 
