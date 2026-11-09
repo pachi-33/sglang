@@ -168,3 +168,13 @@ python3 -B -m unittest discover -s . -p 'test_*.py' -v
 ```
 
 CPU检查覆盖容量、分区、共同窗口统计以及模拟异步流中的copy顺序/生命周期/验证边界。Mac上没有NPU：尚未做真实CANN编译、NPU搬运、驱动兼容性或带宽验证。进程超时仅负责终止本次测试的子进程，不能保证解除驱动内部卡死。
+
+## `allow_internal_format` 属性错误
+
+若旧版脚本在生成环境信息时出现 `_npuConfig object has no attribute allow_internal_format`，更新 `bench.py` 即可，无需重编 ACL 扩展。
+
+torch_npu 2.10 的 `_npuConfig` 只实现该属性的 setter：赋值会向运行时设置选项，但不会保存可读的 Python 属性。[上游实现](https://github.com/Ascend/pytorch/blob/v2.10.0/torch_npu/npu/npu_config.py)
+
+脚本仍执行 `torch.npu.config.allow_internal_format = True`，但记录的是 `allow_internal_format_requested: true`，不再读回该属性。真实 NZ 布局仍由 `NpuV4W8A8Format` 探测和检查。CPU初始化回归使用同样的可写不可读配置对象，覆盖从设置选项到生成环境信息的完整初始化路径。
+
+重新运行时换一个 `--output` 目录；脚本会保留已有失败报告，不覆盖旧目录。

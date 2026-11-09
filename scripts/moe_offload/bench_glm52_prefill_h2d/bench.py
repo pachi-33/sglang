@@ -175,7 +175,9 @@ class Runtime:
             'host_slab_bytes': self.pool.nbytes, 'host_physical_reservation_bytes': self.pool.physical_bytes,
             'two_bank_bytes': 2 * self.actual_bytes_per_layer,
             'native_extension': str(getattr(self.native, '__file__', 'unknown')),
-            'allow_internal_format': torch.npu.config.allow_internal_format,
+            # torch_npu 2.10 exposes a setter-only config attribute. Record the
+            # requested option; the format probe above verifies actual NZ layout.
+            'allow_internal_format_requested': True,
             'environment': {k: os.getenv(k) for k in (
                 'TASK_QUEUE_ENABLE', 'ASCEND_LAUNCH_BLOCKING', 'ASCEND_RT_VISIBLE_DEVICES',
                 'PYTORCH_NPU_ALLOC_CONF', 'ASCEND_HOME_PATH', 'MEMFABRIC_HYBRID_EXTEND_LIB_PATH')},
