@@ -93,3 +93,44 @@ PY_SMOKE
 第一个 token 在 prefill 结束后由 logits 采样产生，不需要 decode forward。长输入仍可包含多个 prefill chunk。极短输入可能回退到不切 CP 的路径；验收 CP4 时用目标长度输入，并检查 forward / CP 元数据。与同拓扑常驻结果比较 token ID / logits，确认只输出 1 token、没有本请求的 decode forward，且连续请求结束后 KV / metadata / bank 正常回收。
 
 本配置需要目标 NPU 上的数值、PP/CP 通信和性能验收。Fake sender 不传输真实 KV，独立 P 测试通过不代表真实 P→D 传输、D 多 token 生成或 Router 联调已经通过。
+
+## 真实 PD：单机 P 卸载 + 双机 D
+
+新脚本 [serve_glm52_pd_pp4_cp4.sh](serve_glm52_pd_pp4_cp4.sh) 沿用本页的 P 拓扑和权重卸载方式，并接入双机 Decode：
+
+| 节点 | 部署参数 | 专家权重 |
+| --- | --- | --- |
+| P，一台 A3 / 16 die | PP4 × TP4、DP1、attention DP1 / CP4 zigzag、stage 内 EP4；Ascend Ops alltoallv | routed 专家卸载到 Host，双 bank 逐层预取 |
+| D0 + D1，两台 A3 / 32 die | TP32、attention DP32、EP32；DeepEP low_latency；Decode graph 最大 batch 为 4 | 常驻设备，不启用 MoE offload |
+
+本组合固定关闭 MTP：不能设置 `ENABLE_MTP=1`。请先用 `max_new_tokens=1` 验证完整 PD 链路；D 的多 token 生成、P→D 的真实 KV 传输以及并发仍需实机验收。脚本不会启动 fake sender 测试模式。
+
+D 的 `HCCL_BUFFSIZE=1024` 沿用基线脚本的实际值；基线旧测试与旧说明仍写 650，当前两者尚未对齐。
+
+启动前，在三台机器上的同一份脚本顶部填写或通过环境变量指定：
+
+- `MODEL_PATH`：每台本地的 GLM-5.2 ModelSlim **W8A8** 权重目录；三台 checkpoint 内容一致。启动前激活安装了 SGLang 和 NPU 依赖的 Python 环境；非默认环境可设置 `PYTHON_BIN`，脚本自动将当前仓库的 `python` 目录加入 `PYTHONPATH`。
+- `P_IP`、`D0_IP`、`D1_IP`：三台机器实际绑定、互相可达的通信 IPv4，三份配置保持一致。脚本通过 `pd_node.py` 自动匹配本机 IP 和网卡，不依赖 `ip`、`ifconfig`。容器内须能看到这些 IP。
+- P 的 `HOST_POOL_GIB` 默认为每 rank 56 GiB，16 rank 合计 896 GiB；系统、模型加载和其他进程还需要额外内存。启动前会依据 checkpoint 的尺寸做 W8 权重本体估算，运行时还会按实际格式检查。`SGLANG_PP_LAYER_PARTITION` 默认 `18,20,24,16`，需与模型层数相符；`EXECUTION_SLOTS` 留空时为两个完整本地专家层。
+- 默认 P 的 `CHUNKED_PREFILL_SIZE=8192`、`MAX_PREFILL_TOKENS=8192`、`P_MEM_FRACTION_STATIC=0.6`，D 的 `D_MEM_FRACTION_STATIC=0.75`。可按容量调整，P/D 的 `CONTEXT_LENGTH` 和模型内容须一致。实际 P chunk 会影响搬运次数、性能和峰值内存。
+
+三台机器分别执行相同的命令；D0 和 D1 应同时启动，组成一个 D 实例：
+
+~~~bash
+bash scripts/moe_offload/serve_glm52_pd_pp4_cp4.sh --dry-run
+bash scripts/moe_offload/serve_glm52_pd_pp4_cp4.sh
+~~~
+
+`--dry-run` 只检查本机配置并打印启动命令；不加载模型、构建扩展或创建运行文件。正常启动时，P 会在 `LOG_DIR` 下生成 `offload.json` 并构建卸载扩展，D 不会生成该文件；日志均为各自 `LOG_DIR/server.log`。`RUNTIME_DIR` 和 `LOG_DIR` 可用绝对路径覆盖。Ascend 软件安装在非默认路径时设置脚本顶部的环境文件路径。
+
+P 和 D ready 后，在可连接 `P_IP` 和 `D0_IP` 的机器上另开终端，单独运行一次 Router：
+
+~~~bash
+bash scripts/moe_offload/serve_glm52_pd_pp4_cp4.sh router
+~~~
+
+Router 只登记 P 和 D0，D1 不单独登记；客户端向运行 Router 的机器发送请求，例如 `http://<Router-IP>:6688/generate`。默认端口为 P HTTP 8000、P bootstrap 8998、D HTTP 8003、P/D 各自的 rendezvous 5000、KV store 24707、Router 6688，均可在脚本顶部修改。`ASCEND_MF_STORE_URL` 默认在三台均指向 `tcp://P_IP:24707`；按实际 fabric 配置确认跨机传输可用。
+
+给 Router 的真实 PD 请求不要添加 `bootstrap_host=2.2.2.2` 或手写 `bootstrap_room`，Router 会注入正确的对端信息。当前 `simple_bench.sh` 默认包含 fake bootstrap 字段，经过 Router 测试前需要移除这些字段。
+
+该脚本已做 CPU 启动参数契约检查；当前尚无这组 P PP4/CP4 → 双机 D 的 A3 联机数值、KV 传输和性能验证。建议先对比常驻基线的首 token 和多 token 输出，再测试多 chunk、缓存命中及并发。
