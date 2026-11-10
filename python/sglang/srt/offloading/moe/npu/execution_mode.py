@@ -93,6 +93,15 @@ class PrefillOnlyExecution:
     def default_execution_slots(local_experts):
         return 2 * local_experts
 
+    @staticmethod
+    def _uses_dp4_cp4_ep16(parallel):
+        return (
+            parallel.pp_size == 1
+            and parallel.tp_size == parallel.moe_ep_size == 16
+            and parallel.dp_size == 1
+            and parallel.attn_dp_size == parallel.attn_cp_size == 4
+        )
+
     def validate_topology(self, owner):
         parallel = get_parallel()
         if self.use_deepep:
@@ -122,24 +131,23 @@ class PrefillOnlyExecution:
                 )
         if parallel.pp_size == 1 and parallel.attn_cp_size == 1:
             return
-        # Keep the new path narrow: native stage groups, with CP introduced
-        # only after PP4/CP1 has been validated. Existing PP1 stays unchanged.
-        if (
-            owner.model_id != "GLM-5.2"
-            or parallel.pp_size != 4
-            or parallel.tp_size != 4
-            or parallel.moe_ep_size != 4
-            or parallel.dp_size != 1
-            or parallel.attn_dp_size != 1
-            or parallel.attn_cp_size not in (1, 4)
+        stage_ep4 = (
+            parallel.pp_size == 4
+            and parallel.tp_size == parallel.moe_ep_size == 4
+            and parallel.dp_size == parallel.attn_dp_size == 1
+            and parallel.attn_cp_size in (1, 4)
+        )
+        if owner.model_id != "GLM-5.2" or not (
+            stage_ep4 or self._uses_dp4_cp4_ep16(parallel)
         ):
             raise ValueError(
-                "Pipelined prefill-only offload requires GLM-5.2, "
-                "PP4/TP4/EP4, DP1/attention DP1 and attention CP1 or CP4"
+                "Prefill-only offload with PP or CP requires GLM-5.2 and "
+                "either PP4/TP4/EP4 with attention DP1 and CP1 or CP4, "
+                "or PP1/TP16/EP16 with attention DP4 and CP4"
             )
         if parallel.disable_attn_tp_gather:
             raise ValueError(
-                "Pipelined prefill-only offload requires scheduler phase "
+                "Prefill-only offload with PP or CP requires scheduler phase "
                 "synchronization; remove --disable-attn-tp-gather"
             )
         if parallel.attn_cp_size == 4 and (
@@ -156,16 +164,19 @@ class PrefillOnlyExecution:
             or get_spec().speculative_algorithm
         ):
             raise ValueError(
-                "Pipelined prefill-only offload requires MTP, CP-TP group "
+                "Prefill-only offload with PP or CP requires MTP, CP-TP group "
                 "sharing and KV sharding/layer splitting to be disabled"
             )
 
     def validate_quantization(self, owner, quant_spec):
-        if (
-            self.resident_experts or self.use_deepep or get_parallel().pp_size > 1
-        ) and quant_spec.kind != "w8a8":
+        if quant_spec.kind != "w8a8" and (
+            self.resident_experts
+            or self.use_deepep
+            or get_parallel().pp_size > 1
+            or get_parallel().attn_cp_size > 1
+        ):
             raise ValueError(
-                "Partial residency, DeepEP or pipelined prefill-only offload requires ModelSlim W8A8"
+                "Partial residency, DeepEP, PP or CP prefill-only offload requires ModelSlim W8A8"
             )
 
     def configure(self, owner, path):
@@ -195,11 +206,14 @@ class PrefillOnlyExecution:
         if self.resident_experts:
             if (
                 owner.model_id != "GLM-5.2"
-                or parallel.moe_ep_size != 4
+                or not (
+                    parallel.moe_ep_size == 4 or self._uses_dp4_cp4_ep16(parallel)
+                )
                 or get_spec().speculative_algorithm
             ):
                 raise ValueError(
-                    "Prefill residency requires GLM-5.2 and EP4 without MTP"
+                    "Prefill residency requires GLM-5.2 without MTP and "
+                    "either EP4 or PP1/TP16/EP16 with attention DP4 and CP4"
                 )
             if not self.use_deepep:
                 from sglang.srt.layers.moe.utils import AscendOpsConfig

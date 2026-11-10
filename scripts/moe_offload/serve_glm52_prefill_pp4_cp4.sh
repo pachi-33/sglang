@@ -1,20 +1,15 @@
 #!/usr/bin/env bash
-# A3 单机 16 die：PP4 × TP4，DP1 / CP4，stage 内 EP4，仅 Prefill 权重卸载。
+# A3 单机 16 die，仅 Prefill 权重卸载，支持 PP4/EP4 和 PP1/DP4/CP4/EP16。
 # 启动前激活已安装 torch_npu / SGLang 依赖的 Python 环境。
-# Usage: MODEL_PATH=/models/GLM-5.2-w8a8 bash serve_glm52_prefill_pp4_cp4.sh [--dry-run]
+# Usage: bash serve_glm52_prefill_pp4_cp4.sh [--dp4-cp4-ep16] [--dry-run]
 set -eo pipefail
 
 # ==================== 必填 ====================
 MODEL_PATH=${MODEL_PATH:-/home/weights/GLM-5.2-w8a8} # 本机 GLM-5.2 ModelSlim W8A8 权重目录
 
 # ==================== 按容量调整 ====================
-HOST_POOL_GIB=${HOST_POOL_GIB:-56} # 每 rank；16 rank 预留 1024 GiB，另留系统/加载内存
-PREFILL_RESIDENT_RATIO=${PREFILL_RESIDENT_RATIO:-0} # P 每层本地 routed experts 的常驻比例
-EXECUTION_SLOTS=${EXECUTION_SLOTS:-""} # P 每 rank 权重槽位上限，留空按 PP stage 计算
-export SGLANG_PP_LAYER_PARTITION=${SGLANG_PP_LAYER_PARTITION:-18,20,24,16}
+EXECUTION_SLOTS=${EXECUTION_SLOTS:-""} # P 每 rank 权重槽位上限，留空自动计算
 CONTEXT_LENGTH=${CONTEXT_LENGTH:-180000}
-CHUNKED_PREFILL_SIZE=${CHUNKED_PREFILL_SIZE:-16384}
-MAX_PREFILL_TOKENS=${MAX_PREFILL_TOKENS:-$CHUNKED_PREFILL_SIZE}
 MAX_RUNNING_REQUESTS=${MAX_RUNNING_REQUESTS:-128}
 MEM_FRACTION_STATIC=${MEM_FRACTION_STATIC:-0.6}
 P_MOE_A2A_BACKEND=${P_MOE_A2A_BACKEND:-ascend_ops}
@@ -41,22 +36,45 @@ LOG_DIR=${LOG_DIR:-/tmp/sglang-glm52-prefill-pp4-cp4-$(date +%Y%m%d_%H%M%S)-$$}
 fail() { echo "ERROR: $*" >&2; exit 1; }
 usage() {
   cat <<EOF
-Usage: MODEL_PATH=/models/GLM-5.2-w8a8 $0 [--dry-run]
+Usage: MODEL_PATH=/models/GLM-5.2-w8a8 $0 [--dp4-cp4-ep16] [--dry-run]
   --dry-run : 只读模型 config.json、检查配置并打印命令，不加载 NPU 或创建运行文件。
-固定拓扑：单机 PP4 × TP4 / DP1 / CP4 zigzag / stage 内 EP4；关闭 MTP。
+默认拓扑为 PP4 × TP4 / attention DP1 / CP4 zigzag / stage 内 EP4。
+  --dp4-cp4-ep16 : PP1 / TP16 / attention DP4 × CP4 zigzag / EP16。
+                   默认每层常驻比例 0.25，每个 DP 组实际 chunk 上限 16384。
+PREFILL_RESIDENT_RATIO 设置每层本地 routed experts 常驻比例，0 表示全卸载。
+DP4 模式下 CHUNKED_PREFILL_SIZE 是除以 DP 数之前的值。
 P_MOE_A2A_BACKEND=deepep 可使用 DeepEP normal；默认 ascend_ops。
 请求直发 P 的 /generate，设置 max_new_tokens=1、bootstrap_host=2.2.2.2、bootstrap_room=0。
 不启动 D / Router；真实 PD KV 传输不在这次独立 P 测试范围内。
 EOF
 }
 DRY_RUN=0
+DP4_CP4_EP16=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
+    --dp4-cp4-ep16) DP4_CP4_EP16=1 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; fail "Unknown argument: $arg" ;;
   esac
 done
+if [[ $DP4_CP4_EP16 == 1 ]]; then
+  pp_size=1 tp_size=16 attn_dp_size=4
+  unset SGLANG_PP_LAYER_PARTITION
+  HOST_POOL_GIB=${HOST_POOL_GIB:-48}
+  PREFILL_RESIDENT_RATIO=${PREFILL_RESIDENT_RATIO:-0.25}
+  CHUNKED_PREFILL_SIZE=${CHUNKED_PREFILL_SIZE:-65536}
+  MAX_PREFILL_TOKENS=${MAX_PREFILL_TOKENS:-16384}
+  topology_args=(--enable-dp-lm-head --load-balance-method round_robin)
+else
+  pp_size=4 tp_size=4 attn_dp_size=1
+  export SGLANG_PP_LAYER_PARTITION=${SGLANG_PP_LAYER_PARTITION:-18,20,24,16}
+  HOST_POOL_GIB=${HOST_POOL_GIB:-56}
+  PREFILL_RESIDENT_RATIO=${PREFILL_RESIDENT_RATIO:-0}
+  CHUNKED_PREFILL_SIZE=${CHUNKED_PREFILL_SIZE:-16384}
+  MAX_PREFILL_TOKENS=${MAX_PREFILL_TOKENS:-$CHUNKED_PREFILL_SIZE}
+  topology_args=()
+fi
 [[ ${ENABLE_MTP:-0} == 0 ]] || fail "This prefill-only test requires ENABLE_MTP=0"
 [[ -f $MODEL_PATH/config.json ]] || fail "Set MODEL_PATH to a local GLM-5.2 ModelSlim W8A8 checkpoint"
 [[ $RUNTIME_DIR == /* && $LOG_DIR == /* ]] || fail "RUNTIME_DIR and LOG_DIR must be absolute paths"
@@ -79,7 +97,8 @@ export PYTHONDONTWRITEBYTECODE=1
 # Preflight uses only the Python standard library. Runtime storage checks use
 # the actual quantization layout; the optional weight estimate below is W8 only.
 "$PYTHON_BIN" - "$MODEL_PATH" "$HOST_POOL_GIB" "$EXECUTION_SLOTS" "$PREFILL_RESIDENT_RATIO" "$SGLANG_ROOT" \
-  "$RUNTIME_DIR" "$LOG_DIR" "$DRY_RUN" "$SGLANG_PP_LAYER_PARTITION" \
+  "$RUNTIME_DIR" "$LOG_DIR" "$DRY_RUN" "${SGLANG_PP_LAYER_PARTITION:-}" \
+  "$pp_size" "$tp_size" "$attn_dp_size" \
   "$ASCEND_RT_VISIBLE_DEVICES" "$CONTEXT_LENGTH" "$CHUNKED_PREFILL_SIZE" \
   "$MAX_PREFILL_TOKENS" "$MAX_RUNNING_REQUESTS" "$MEM_FRACTION_STATIC" \
   "$SERVER_PORT" "$DIST_PORT" "$BOOTSTRAP_PORT" "$MF_STORE_PORT" "$P_IP" <<'PY_CONFIG'
@@ -91,8 +110,10 @@ from itertools import accumulate
 from pathlib import Path
 from runpy import run_path
 
-(model, host, slots, resident_ratio, root, runtime, logs, dry, partition, devices,
- context, chunk, prefill, requests, fraction, *ports_and_ip) = sys.argv[1:]
+(model, host, slots, resident_ratio, root, runtime, logs, dry, partition,
+ pp, ep, attn_dp, devices, context, chunk, prefill, requests,
+ fraction, *ports_and_ip) = sys.argv[1:]
+pp, ep, attn_dp = int(pp), int(ep), int(attn_dp)
 for port in ports_and_ip[:-1]:
     if not port.isdecimal() or not 1 <= int(port) <= 65535:
         raise ValueError(f"Invalid TCP port: {port}")
@@ -101,34 +122,37 @@ if address.is_unspecified or address.is_multicast or str(address) == "255.255.25
     raise ValueError("P_IP must be a local unicast IPv4 address (loopback is allowed)")
 visible = devices.split(",")
 if len(visible) != 16 or len(set(visible)) != 16 or not all(d.isdecimal() for d in visible):
-    raise ValueError("Expose 16 distinct A3 NPU devices for PP4 x TP4")
+    raise ValueError(f"Expose 16 distinct A3 NPU devices for PP{pp} x TP{ep}")
 for name, value in (("HOST_POOL_GIB", host), ("CONTEXT_LENGTH", context),
                     ("CHUNKED_PREFILL_SIZE", chunk), ("MAX_PREFILL_TOKENS", prefill),
                     ("MAX_RUNNING_REQUESTS", requests)):
     if not value.isdecimal() or int(value) <= 0:
         raise ValueError(f"{name} must be a positive integer")
-if int(chunk) % 128:
-    raise ValueError("CHUNKED_PREFILL_SIZE must be divisible by page size 128")
+if int(chunk) % (128 * attn_dp):
+    raise ValueError(
+        f"CHUNKED_PREFILL_SIZE must be divisible by {128 * attn_dp} "
+        "for 128-token pages after attention DP division"
+    )
 if not math.isfinite(float(fraction)) or not 0 < float(fraction) < 1:
     raise ValueError("MEM_FRACTION_STATIC must be in (0, 1)")
 cfg = json.loads((Path(model) / "config.json").read_text())
 if cfg.get("model_type") != "glm_moe_dsa" or "GlmMoeDsaForCausalLM" not in cfg.get("architectures", []):
     raise ValueError("MODEL_PATH must contain GLM-5.2 / GlmMoeDsaForCausalLM")
 experts = cfg.get("n_routed_experts")
-if type(experts) is not int or experts <= 0 or experts % 4:
-    raise ValueError("n_routed_experts must be positive and divisible by stage EP4")
+if type(experts) is not int or experts <= 0 or experts % ep:
+    raise ValueError(f"n_routed_experts must be positive and divisible by stage EP{ep}")
 layers, first, frequency = (cfg.get(k) for k in ("num_hidden_layers", "first_k_dense_replace", "moe_layer_freq"))
 if type(layers) is not int or layers <= 0 or type(first) is not int or first < 0 or type(frequency) is not int or frequency <= 0:
     raise ValueError("Invalid num_hidden_layers / first_k_dense_replace / moe_layer_freq")
-parts = [int(x) for x in partition.split(",")]
-if len(parts) != 4 or any(x <= 0 for x in parts) or sum(parts) != layers:
-    raise ValueError(f"SGLANG_PP_LAYER_PARTITION must contain four positive lengths summing to {layers}")
+parts = [layers] if pp == 1 else [int(x) for x in partition.split(",")]
+if len(parts) != pp or any(x <= 0 for x in parts) or sum(parts) != layers:
+    raise ValueError(f"SGLANG_PP_LAYER_PARTITION must contain {pp} positive lengths summing to {layers}")
 bounds = [0, *accumulate(parts)]
 counts = [sum(i >= first and i % frequency == 0 for i in range(start, end))
           for start, end in zip(bounds, bounds[1:])]
 if not all(counts):
     raise ValueError("Each PP stage must contain at least one routed MoE layer")
-local_experts = experts // 4
+local_experts = experts // ep
 options = run_path(str(Path(root) / "python/sglang/srt/offloading/moe/npu/options.py"))
 ratio = options["parse_prefill_resident_ratio"](float(resident_ratio))
 if slots and (not slots.isdecimal() or int(slots) <= 0):
@@ -151,14 +175,21 @@ if slot_budget is not None:
 elif not resident:
     output["execution_slots"] = stage_layouts[0][1]
 print(json.dumps(output, indent=2))
-print(f"Stage routed layers: {counts}; experts/rank/layer: {experts // 4}")
+print(f"Stage routed layers: {counts}; experts/rank/layer: {local_experts}")
+if attn_dp > 1:
+    print(f"Chunk cap per attention DP group: {int(chunk) // attn_dp} tokens "
+          f"(global setting: {chunk}, attention DP: {attn_dp})")
 if ratio:
     print(f"Prefill resident experts/rank/layer: {resident}/{local_experts}; "
           f"HBM slots/rank by stage: {[allocated for _, allocated in stage_layouts]}")
 hidden, intermediate = cfg.get("hidden_size"), cfg.get("moe_intermediate_size")
 if type(hidden) is int and hidden > 0 and type(intermediate) is int and intermediate > 0:
-    rank_layer_bytes = 3 * hidden * intermediate * (experts // 4)
-    estimate = [rank_layer_bytes * count / 1024**3 for count in counts]
+    expert_gib = 3 * hidden * intermediate / 1024**3
+    estimate = [expert_gib * local_experts * count for count in counts]
+    if attn_dp > 1:
+        cold_gib = expert_gib * (local_experts - resident)
+        print(f"W8 weight-only cold H2D/layer/rank: {cold_gib:.3f} GiB; "
+              f"HBM expert pool/rank: {expert_gib * stage_layouts[0][1]:.3f} GiB")
     print(f"W8 weight-only Host GiB/rank by stage: {estimate}; metadata/alignment/loading need extra RAM")
     if max(estimate) >= int(host):
         raise ValueError("HOST_POOL_GIB leaves no room for the largest stage's W8 weights and metadata")
@@ -175,9 +206,10 @@ command=("$PYTHON_BIN" -u -m sglang.launch_server
   --device npu --base-gpu-id 0 --attention-backend ascend --quantization modelslim
   --load-format safetensors --dtype bfloat16 --trust-remote-code
   --host "$SERVER_HOST" --port "$SERVER_PORT" --dist-init-addr "$P_IP:$DIST_PORT"
-  --nnodes 1 --node-rank 0 --pp-size 4 --tp-size 4 --dp-size 1 --attn-dp-size 1
+  --nnodes 1 --node-rank 0 --pp-size "$pp_size" --tp-size "$tp_size" --dp-size 1 --attn-dp-size "$attn_dp_size"
   --enable-prefill-cp --attn-cp-size 4 --cp-strategy zigzag
-  --ep-size 4 --moe-dp-size 1 --moe-dense-tp-size 1
+  --ep-size "$tp_size" --moe-dp-size 1 --moe-dense-tp-size 1
+  "${topology_args[@]}"
   "${moe_args[@]}"
   --disaggregation-mode prefill --disaggregation-transfer-backend ascend
   --disaggregation-bootstrap-port "$BOOTSTRAP_PORT"
@@ -194,7 +226,7 @@ export SGLANG_HOST_IP="$P_IP"
 export ASCEND_MF_STORE_URL=${ASCEND_MF_STORE_URL:-tcp://$P_IP:$MF_STORE_PORT}
 export HCCL_SOCKET_IFNAME="$COMM_IFACE" GLOO_SOCKET_IFNAME="$COMM_IFACE"
 printf 'PP partition: %s\nKV store: %s\nRuntime: %s\nLogs: %s\nCommand:' \
-  "$SGLANG_PP_LAYER_PARTITION" "$ASCEND_MF_STORE_URL" "$RUNTIME_DIR" "$LOG_DIR"
+  "${SGLANG_PP_LAYER_PARTITION:-full model (PP1)}" "$ASCEND_MF_STORE_URL" "$RUNTIME_DIR" "$LOG_DIR"
 printf ' %q' "${command[@]}"
 printf '\n'
 if [[ $DRY_RUN == 1 ]]; then exit 0; fi

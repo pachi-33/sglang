@@ -71,9 +71,9 @@ class TestPrefillPP4Launcher(unittest.TestCase):
     def _write_config(self):
         (self.model / "config.json").write_text(json.dumps(self.config))
 
-    def _run(self, **settings):
+    def _run(self, *args, **settings):
         result = subprocess.run(
-            [BASH, str(SCRIPT), "--dry-run"],
+            [BASH, str(SCRIPT), *args, "--dry-run"],
             env={**self.env, **settings},
             text=True,
             capture_output=True,
@@ -120,6 +120,41 @@ class TestPrefillPP4Launcher(unittest.TestCase):
         self.assertNotIn("--speculative-algorithm", command)
         self.assertNotIn("--enable-dp-lm-head", command)
         self.assertNotIn("sglang_router.launch_router", command)
+
+    def test_dp4_cp4_ep16_dry_run_resolves_local_chunk_and_residency(self):
+        result = self._run(
+            "--dp4-cp4-ep16",
+            HOST_POOL_GIB="",
+            PREFILL_RESIDENT_RATIO="",
+            CHUNKED_PREFILL_SIZE="",
+            MAX_PREFILL_TOKENS="",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config, _ = json.JSONDecoder().raw_decode(result.stdout)
+        self.assertEqual(config["prefill_resident_ratio"], 0.25)
+        self.assertEqual(config["host_pool_gib"], 48)
+        self.assertIn("4/16; HBM slots/rank by stage: [324]", result.stdout)
+        self.assertIn("Chunk cap per attention DP group: 16384", result.stdout)
+        self.assertIn("full model (PP1)", result.stdout)
+        command = shlex.split(result.stdout.split("Command:", 1)[1])
+        for flag, value in {
+            "--pp-size": "1",
+            "--tp-size": "16",
+            "--dp-size": "1",
+            "--attn-dp-size": "4",
+            "--attn-cp-size": "4",
+            "--ep-size": "16",
+            "--moe-dp-size": "1",
+            "--chunked-prefill-size": "65536",
+            "--max-prefill-tokens": "16384",
+        }.items():
+            self.assertEqual(command[command.index(flag) + 1], value)
+        self.assertIn("--enable-dp-lm-head", command)
+
+    def test_dp4_rejects_chunk_unaligned_after_dividing_by_dp(self):
+        result = self._run("--dp4-cp4-ep16", CHUNKED_PREFILL_SIZE="8320")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must be divisible by 512", result.stderr)
 
     def test_deepep_prefill_selects_normal_with_int8_activations(self):
         result = self._run(P_MOE_A2A_BACKEND="deepep", CHUNKED_PREFILL_SIZE="16384")

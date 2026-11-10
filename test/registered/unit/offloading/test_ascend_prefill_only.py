@@ -510,6 +510,67 @@ class TestPrefillOnlyConfiguration(CustomTestCase):
                     PrefillOnlyExecution().configure(SimpleNamespace(), "unused.json")
 
 
+class TestIdleAscendOpsPrefill(CustomTestCase):
+    def test_idle_dp_rank_receives_and_returns_remote_expert_rows(self):
+        from sglang.srt.layers.moe.token_dispatcher import ascend_ops as dispatcher_mod
+
+        dispatcher = object.__new__(dispatcher_mod.AscendOpsDispatcher)
+        dispatcher.num_experts = 256
+        dispatcher.num_local_experts = 16
+        group = object()
+        local = torch.empty((0, 4), dtype=torch.bfloat16)
+        topk_weights = torch.empty((0, 8), dtype=torch.float32)
+        topk_ids = torch.empty((0, 8), dtype=torch.int32)
+        empty_splits = [0] * 16
+        remote_splits = [0, 2] + [0] * 14
+
+        def gather(output, local_counts, *, group):
+            torch.testing.assert_close(local_counts, torch.zeros_like(local_counts))
+            output.zero_()
+            output.view(16, 256)[1, 0] = 2
+
+        def exchange(output, source, *, output_split_sizes, input_split_sizes, group):
+            self.assertEqual(output.shape[0], sum(output_split_sizes))
+            self.assertEqual(source.shape[0], sum(input_split_sizes))
+            output.fill_(1)
+
+        for quant_mode, wire_dtype in ((-1, torch.bfloat16), (1, torch.int8)):
+            with (
+                self.subTest(wire_dtype=wire_dtype),
+                patch.object(dispatcher, "_quant_mode", return_value=quant_mode),
+                patch.object(dispatcher_mod.dist, "get_world_size", return_value=16),
+                patch.object(dispatcher_mod.dist, "get_rank", return_value=0),
+                patch.object(dispatcher_mod.dist, "all_gather_into_tensor", side_effect=gather),
+                patch.object(dispatcher_mod.dist, "all_to_all_single", side_effect=exchange) as alltoall,
+                patch.object(dispatcher_mod, "npu_moe_init_routing") as route,
+                patch.object(dispatcher_mod, "npu_moe_finalize_routing") as finalize,
+            ):
+                result = dispatcher._dispatch_alltoallv(
+                    local, topk_weights, topk_ids, group
+                )
+                self.assertEqual(result.hidden_states.shape, (2, 4))
+                self.assertEqual(result.hidden_states.dtype, wire_dtype)
+                if wire_dtype == torch.int8:
+                    self.assertEqual(result.hidden_states_scale.shape, (2,))
+                    self.assertEqual(result.hidden_states_scale.dtype, torch.float32)
+                    self.assertEqual(alltoall.call_count, 2)
+                else:
+                    self.assertIsNone(result.hidden_states_scale)
+                    self.assertEqual(alltoall.call_count, 1)
+                self.assertEqual(result.forward_state.input_splits, empty_splits)
+                self.assertEqual(result.forward_state.output_splits, remote_splits)
+
+                combined = dispatcher._combine_alltoallv(
+                    torch.ones((2, 4), dtype=torch.bfloat16), result.forward_state
+                )
+                self.assertEqual(combined.shape, local.shape)
+                self.assertEqual(combined.dtype, local.dtype)
+                self.assertEqual(alltoall.call_args.kwargs["input_split_sizes"], remote_splits)
+                self.assertEqual(alltoall.call_args.kwargs["output_split_sizes"], empty_splits)
+                route.assert_not_called()
+                finalize.assert_not_called()
+
+
 class TestOffloadModeWiring(CustomTestCase):
     @staticmethod
     def _construct(
@@ -640,6 +701,60 @@ class TestOffloadModeWiring(CustomTestCase):
         self.assertIsNone(owner.format)
         self.assertIsNone(owner.host_pool)
         self.assertFalse(owner.ready)
+
+    def test_dp4_cp4_ep16_uses_all_layers_and_two_cold_banks(self):
+        from sglang.srt.offloading.moe.npu.model_adapter import ExpertQuantSpec
+
+        values = {"mode": "prefill_only", "prefill_resident_ratio": 0.25}
+        parallel = dict(
+            attn_cp_size=4,
+            attn_tp_size=1,
+            enable_prefill_cp=True,
+            cp_strategy="zigzag",
+        )
+        with patch.dict(
+            "os.environ",
+            {
+                "SGLANG_PP_LAYER_PARTITION": "18,20,24,16",
+                "MOE_EXPERT_TOKEN_NUMS_TYPE": "1",
+                "SGLANG_ZBAL_LOCAL_MEM_SIZE": "0",
+            },
+        ):
+            for backend in ("ascend_ops", "deepep"):
+                with self.subTest(backend=backend):
+                    owner = self._construct(
+                        values,
+                        "prefill",
+                        parallel_changes=parallel,
+                        moe_changes={"moe_a2a_backend": backend},
+                    )
+                    self.assertEqual(owner.layer_range, (0, 78))
+                    self.assertEqual(len(owner.catalog.offloaded_layers), 75)
+                    self.assertEqual(owner.local_experts, 16)
+                    self.assertEqual(owner.execution_mode.resident_experts, 4)
+                    self.assertEqual(owner.execution_slots, 324)
+                    owner.execution_mode.validate_quantization(
+                        owner, ExpertQuantSpec("w8a8")
+                    )
+                    with self.assertRaisesRegex(ValueError, "W8A8"):
+                        owner.execution_mode.validate_quantization(
+                            owner, ExpertQuantSpec("w4a8")
+                        )
+            with self.assertRaisesRegex(ValueError, "at least 324"):
+                self._construct(
+                    {**values, "execution_slots": 323},
+                    "prefill",
+                    parallel_changes=parallel,
+                )
+            for changes in (
+                {"attn_dp_size": 2, "attn_tp_size": 2},
+                {"disable_attn_tp_gather": True},
+                {"cp_strategy": "interleave"},
+            ):
+                with self.subTest(changes=changes), self.assertRaises(ValueError):
+                    self._construct(
+                        values, "prefill", parallel_changes={**parallel, **changes}
+                    )
 
     def test_deepep_normal_uses_the_same_stage_catalog_and_banks(self):
         from sglang.srt.offloading.moe.npu.model_adapter import ExpertQuantSpec

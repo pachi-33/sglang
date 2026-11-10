@@ -559,12 +559,15 @@ class AscendOpsDispatcher(BaseDispatcher):
                 f"num_experts / ep_size ({self.num_local_experts} != {local_experts})"
             )
 
-        local_counts = torch.histc(
-            topk_ids.reshape(-1).to(torch.float32),
-            bins=self.num_experts,
-            min=0,
-            max=self.num_experts,
-        ).to(torch.int64)
+        if topk_ids.numel():
+            local_counts = torch.histc(
+                topk_ids.reshape(-1).to(torch.float32),
+                bins=self.num_experts,
+                min=0,
+                max=self.num_experts,
+            ).to(torch.int64)
+        else:
+            local_counts = topk_ids.new_zeros(self.num_experts, dtype=torch.int64)
         gathered_counts = torch.empty(
             ep_size * self.num_experts,
             dtype=local_counts.dtype,
@@ -612,11 +615,25 @@ class AscendOpsDispatcher(BaseDispatcher):
         )
 
         quant_mode = self._quant_mode("routing")
-        routed = npu_moe_init_routing(
-            hidden_states, topk_ids, self.num_experts, quant_mode=quant_mode
-        )
+        if hidden_states.shape[0] == 0 and quant_mode in (-1, INT8_QUANT_MODE):
+            # An idle attention DP shard still owns experts. Skip local
+            # routing and enter the same payload collectives as active ranks.
+            send_states = hidden_states
+            scale_for_comm = None
+            if quant_mode == INT8_QUANT_MODE:
+                send_states = hidden_states.new_empty(
+                    hidden_states.shape, dtype=torch.int8
+                )
+                scale_for_comm = hidden_states.new_empty((0,), dtype=torch.float32)
+            expanded_row_idx = topk_ids.new_empty((0,))
+        else:
+            routed = npu_moe_init_routing(
+                hidden_states, topk_ids, self.num_experts, quant_mode=quant_mode
+            )
+            send_states = routed.hidden_states
+            scale_for_comm = routed.scale
+            expanded_row_idx = routed.expanded_row_idx
 
-        scale_for_comm = routed.scale
         if quant_mode not in (-1, INT8_QUANT_MODE) and scale_for_comm is not None:
             scale_for_comm = scale_for_comm.view(torch.uint8)
         received_scale = (
@@ -625,7 +642,7 @@ class AscendOpsDispatcher(BaseDispatcher):
             else None
         )
         received = self._alltoall_single(
-            routed.hidden_states, output_splits, input_splits, group
+            send_states, output_splits, input_splits, group
         )
 
         state = _AllToAllVState(
@@ -634,7 +651,7 @@ class AscendOpsDispatcher(BaseDispatcher):
             output_splits=output_splits,
             topk_weights=topk_weights,
             topk_ids=topk_ids,
-            expanded_row_idx=routed.expanded_row_idx.clone(),
+            expanded_row_idx=expanded_row_idx.clone(),
             hidden_shape=hidden_states.shape,
         )
         return AscendOpsDispatchOutput(
@@ -660,6 +677,8 @@ class AscendOpsDispatcher(BaseDispatcher):
             state.output_splits,
             state.group,
         )
+        if state.hidden_shape[0] == 0:
+            return source_order.view(state.hidden_shape)
         output = npu_moe_finalize_routing(
             source_order,
             state.expanded_row_idx,
