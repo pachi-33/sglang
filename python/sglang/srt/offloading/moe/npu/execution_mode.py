@@ -94,12 +94,12 @@ class PrefillOnlyExecution:
         return 2 * local_experts
 
     @staticmethod
-    def _uses_dp4_cp4_ep16(parallel):
+    def _uses_pp1_ep16_cp(parallel):
         return (
             parallel.pp_size == 1
             and parallel.tp_size == parallel.moe_ep_size == 16
             and parallel.dp_size == 1
-            and parallel.attn_dp_size == parallel.attn_cp_size == 4
+            and (parallel.attn_dp_size, parallel.attn_cp_size) in ((4, 4), (2, 8))
         )
 
     def validate_topology(self, owner):
@@ -138,24 +138,24 @@ class PrefillOnlyExecution:
             and parallel.attn_cp_size in (1, 4)
         )
         if owner.model_id != "GLM-5.2" or not (
-            stage_ep4 or self._uses_dp4_cp4_ep16(parallel)
+            stage_ep4 or self._uses_pp1_ep16_cp(parallel)
         ):
             raise ValueError(
                 "Prefill-only offload with PP or CP requires GLM-5.2 and "
                 "either PP4/TP4/EP4 with attention DP1 and CP1 or CP4, "
-                "or PP1/TP16/EP16 with attention DP4 and CP4"
+                "or PP1/TP16/EP16 with attention DP4/CP4 or DP2/CP8"
             )
         if parallel.disable_attn_tp_gather:
             raise ValueError(
                 "Prefill-only offload with PP or CP requires scheduler phase "
                 "synchronization; remove --disable-attn-tp-gather"
             )
-        if parallel.attn_cp_size == 4 and (
+        if parallel.attn_cp_size > 1 and (
             not parallel.enable_prefill_cp
             or parallel.cp_strategy != "zigzag"
             or parallel.attn_tp_size != 1
         ):
-            raise ValueError("Prefill-only CP4 requires zigzag CP and attention TP1")
+            raise ValueError("Prefill-only CP requires zigzag CP and attention TP1")
         if (
             parallel.enable_cp_tp_group_sharing
             or parallel.enable_dsa_cache_layer_split
@@ -207,13 +207,13 @@ class PrefillOnlyExecution:
             if (
                 owner.model_id != "GLM-5.2"
                 or not (
-                    parallel.moe_ep_size == 4 or self._uses_dp4_cp4_ep16(parallel)
+                    parallel.moe_ep_size == 4 or self._uses_pp1_ep16_cp(parallel)
                 )
                 or get_spec().speculative_algorithm
             ):
                 raise ValueError(
                     "Prefill residency requires GLM-5.2 without MTP and "
-                    "either EP4 or PP1/TP16/EP16 with attention DP4 and CP4"
+                    "either EP4 or PP1/TP16/EP16 with attention DP4/CP4 or DP2/CP8"
                 )
             if not self.use_deepep:
                 from sglang.srt.layers.moe.utils import AscendOpsConfig

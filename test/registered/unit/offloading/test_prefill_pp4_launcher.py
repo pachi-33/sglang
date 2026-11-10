@@ -71,9 +71,9 @@ class TestPrefillPP4Launcher(unittest.TestCase):
     def _write_config(self):
         (self.model / "config.json").write_text(json.dumps(self.config))
 
-    def _run(self, *args, **settings):
+    def _run(self, *args, launcher=SCRIPT, **settings):
         result = subprocess.run(
-            [BASH, str(SCRIPT), *args, "--dry-run"],
+            [BASH, str(launcher), *args, "--dry-run"],
             env={**self.env, **settings},
             text=True,
             capture_output=True,
@@ -150,6 +150,44 @@ class TestPrefillPP4Launcher(unittest.TestCase):
         }.items():
             self.assertEqual(command[command.index(flag) + 1], value)
         self.assertIn("--enable-dp-lm-head", command)
+
+    def test_standalone_pp1_launcher_supports_both_attention_topologies(self):
+        root = self.root / "standalone checkout"
+        launcher = root / "scripts/moe_offload/serve_glm52_prefill_dp4_cp4_ep16.sh"
+        launcher.parent.mkdir(parents=True)
+        shutil.copyfile(SCRIPT.with_name(launcher.name), launcher)
+        options = Path("python/sglang/srt/offloading/moe/npu/options.py")
+        (root / options).parent.mkdir(parents=True)
+        shutil.copyfile(SCRIPT.parents[2] / options, root / options)
+
+        for dp, cp, args in ((4, 4, ()), (2, 8, ("--dp2-cp8",))):
+            with self.subTest(dp=dp, cp=cp):
+                result = self._run(
+                    *args,
+                    launcher=launcher,
+                    PREFILL_RESIDENT_RATIO="",
+                    CHUNKED_PREFILL_SIZE="",
+                    MAX_PREFILL_TOKENS="",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                config, _ = json.JSONDecoder().raw_decode(result.stdout)
+                self.assertEqual(config["prefill_resident_ratio"], 0.25)
+                self.assertIn("HBM slots/rank: 324", result.stdout)
+                self.assertIn("Chunk cap per attention DP group: 16384", result.stdout)
+                command = shlex.split(result.stdout.split("Command:", 1)[1])
+                for flag, value in {
+                    "--pp-size": "1",
+                    "--tp-size": "16",
+                    "--ep-size": "16",
+                    "--attn-dp-size": str(dp),
+                    "--attn-cp-size": str(cp),
+                    "--chunked-prefill-size": str(16384 * dp),
+                }.items():
+                    self.assertEqual(command[command.index(flag) + 1], value)
+
+        result = self._run("--dp2-cp8", launcher=launcher, CHUNKED_PREFILL_SIZE="8320")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must be divisible by 256", result.stderr)
 
     def test_dp4_rejects_chunk_unaligned_after_dividing_by_dp(self):
         result = self._run("--dp4-cp4-ep16", CHUNKED_PREFILL_SIZE="8320")

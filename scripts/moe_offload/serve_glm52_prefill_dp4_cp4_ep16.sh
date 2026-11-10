@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# A3 单机 16 die，PP1 / attention DP4 × CP4 / EP16，仅 Prefill 权重卸载。
+# A3 单机 16 die，PP1 / EP16，仅 Prefill 权重卸载，支持 DP4×CP4 和 DP2×CP8。
 # 启动前激活已安装 torch_npu / SGLang 依赖的 Python 环境。
-# Usage: bash serve_glm52_prefill_dp4_cp4_ep16.sh [--dry-run]
+# Usage: bash serve_glm52_prefill_dp4_cp4_ep16.sh [--dp2-cp8] [--dry-run]
 set -eo pipefail
 
 # ==================== 必填 ====================
@@ -10,7 +10,6 @@ MODEL_PATH=${MODEL_PATH:-/home/weights/GLM-5.2-w8a8} # 本机 GLM-5.2 ModelSlim 
 # ==================== 按容量调整 ====================
 HOST_POOL_GIB=${HOST_POOL_GIB:-48}
 PREFILL_RESIDENT_RATIO=${PREFILL_RESIDENT_RATIO:-0.25}
-CHUNKED_PREFILL_SIZE=${CHUNKED_PREFILL_SIZE:-65536} # 除以 DP4 后每组默认 16384
 MAX_PREFILL_TOKENS=${MAX_PREFILL_TOKENS:-16384}
 EXECUTION_SLOTS=${EXECUTION_SLOTS:-""} # P 每 rank 权重槽位上限，留空自动计算
 CONTEXT_LENGTH=${CONTEXT_LENGTH:-180000}
@@ -34,31 +33,37 @@ CANN_ENV=${CANN_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}
 ATB_ENV=${ATB_ENV:-/usr/local/Ascend/nnal/atb/set_env.sh}
 CUSTOMIZE_ENV=${CUSTOMIZE_ENV:-/usr/local/Ascend/ascend-toolkit/latest/opp/vendors/customize/bin/set_env.bash}
 CUSTOM_TRANSFORMER_ENV=${CUSTOM_TRANSFORMER_ENV:-/usr/local/Ascend/ascend-toolkit/latest/opp/vendors/custom_transformer/bin/set_env.bash}
-RUNTIME_DIR=${RUNTIME_DIR:-/tmp/sglang-glm52-prefill-dp4-cp4-ep16-runtime}
-LOG_DIR=${LOG_DIR:-/tmp/sglang-glm52-prefill-dp4-cp4-ep16-$(date +%Y%m%d_%H%M%S)-$$}
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
 usage() {
   cat <<EOF
-Usage: MODEL_PATH=/models/GLM-5.2-w8a8 $0 [--dry-run]
+Usage: MODEL_PATH=/models/GLM-5.2-w8a8 $0 [--dp2-cp8] [--dry-run]
   --dry-run : 只读模型 config.json、检查配置并打印命令，不加载 NPU 或创建运行文件。
-固定拓扑为单机 PP1 / TP16 / attention DP4 × CP4 zigzag / EP16。
+单机 PP1 / TP16 / EP16，默认 attention DP4 × CP4 zigzag。
+  --dp2-cp8 : 改用 attention DP2 × CP8 zigzag。
 默认每层常驻比例 0.25，每个 DP 组实际 chunk 上限 16384。
 PREFILL_RESIDENT_RATIO 设置每层本地 routed experts 常驻比例，0 表示全卸载。
-DP4 模式下 CHUNKED_PREFILL_SIZE 是除以 DP 数之前的值。
+CHUNKED_PREFILL_SIZE 是除以 attention DP 数之前的值。
 P_MOE_A2A_BACKEND=deepep 可使用 DeepEP normal；默认 ascend_ops。
 请求直发 P 的 /generate，设置 max_new_tokens=1、bootstrap_host=2.2.2.2、bootstrap_room=0。
 不启动 D / Router；真实 PD KV 传输不在这次独立 P 测试范围内。
 EOF
 }
 DRY_RUN=0
+attn_dp_size=4
+attn_cp_size=4
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
+    --dp2-cp8) attn_dp_size=2 attn_cp_size=8 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; fail "Unknown argument: $arg" ;;
   esac
 done
+CHUNKED_PREFILL_SIZE=${CHUNKED_PREFILL_SIZE:-$((16384 * attn_dp_size))}
+profile="dp${attn_dp_size}-cp${attn_cp_size}-ep16"
+RUNTIME_DIR=${RUNTIME_DIR:-/tmp/sglang-glm52-prefill-$profile-runtime}
+LOG_DIR=${LOG_DIR:-/tmp/sglang-glm52-prefill-$profile-$(date +%Y%m%d_%H%M%S)-$$}
 unset SGLANG_PP_LAYER_PARTITION
 [[ ${ENABLE_MTP:-0} == 0 ]] || fail "This prefill-only test requires ENABLE_MTP=0"
 [[ -f $MODEL_PATH/config.json ]] || fail "Set MODEL_PATH to a local GLM-5.2 ModelSlim W8A8 checkpoint"
@@ -82,7 +87,7 @@ export PYTHONDONTWRITEBYTECODE=1
 # Preflight uses only the Python standard library. Runtime storage checks use
 # the actual quantization layout; the optional weight estimate below is W8 only.
 "$PYTHON_BIN" - "$MODEL_PATH" "$HOST_POOL_GIB" "$EXECUTION_SLOTS" "$PREFILL_RESIDENT_RATIO" "$SGLANG_ROOT" \
-  "$RUNTIME_DIR" "$LOG_DIR" "$DRY_RUN" \
+  "$RUNTIME_DIR" "$LOG_DIR" "$DRY_RUN" "$attn_dp_size" \
   "$ASCEND_RT_VISIBLE_DEVICES" "$CONTEXT_LENGTH" "$CHUNKED_PREFILL_SIZE" \
   "$MAX_PREFILL_TOKENS" "$MAX_RUNNING_REQUESTS" "$MEM_FRACTION_STATIC" \
   "$SERVER_PORT" "$DIST_PORT" "$BOOTSTRAP_PORT" "$MF_STORE_PORT" "$P_IP" <<'PY_CONFIG'
@@ -93,9 +98,9 @@ import sys
 from pathlib import Path
 from runpy import run_path
 
-(model, host, slots, resident_ratio, root, runtime, logs, dry, devices,
+(model, host, slots, resident_ratio, root, runtime, logs, dry, attn_dp, devices,
  context, chunk, prefill, requests, fraction, *ports_and_ip) = sys.argv[1:]
-ep, attn_dp = 16, 4
+ep, attn_dp = 16, int(attn_dp)
 for port in ports_and_ip[:-1]:
     if not port.isdecimal() or not 1 <= int(port) <= 65535:
         raise ValueError(f"Invalid TCP port: {port}")
@@ -178,8 +183,8 @@ command=("$PYTHON_BIN" -u -m sglang.launch_server
   --device npu --base-gpu-id 0 --attention-backend ascend --quantization modelslim
   --load-format safetensors --dtype bfloat16 --trust-remote-code
   --host "$SERVER_HOST" --port "$SERVER_PORT" --dist-init-addr "$P_IP:$DIST_PORT"
-  --nnodes 1 --node-rank 0 --pp-size 1 --tp-size 16 --dp-size 1 --attn-dp-size 4
-  --enable-prefill-cp --attn-cp-size 4 --cp-strategy zigzag
+  --nnodes 1 --node-rank 0 --pp-size 1 --tp-size 16 --dp-size 1 --attn-dp-size "$attn_dp_size"
+  --enable-prefill-cp --attn-cp-size "$attn_cp_size" --cp-strategy zigzag
   --ep-size 16 --moe-dp-size 1 --moe-dense-tp-size 1
   --enable-dp-lm-head --load-balance-method round_robin
   "${moe_args[@]}"

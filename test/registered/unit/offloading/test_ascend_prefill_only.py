@@ -9,6 +9,7 @@ import json
 import tempfile
 import unittest
 from functools import partial
+from itertools import product
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -702,7 +703,7 @@ class TestOffloadModeWiring(CustomTestCase):
         self.assertIsNone(owner.host_pool)
         self.assertFalse(owner.ready)
 
-    def test_dp4_cp4_ep16_uses_all_layers_and_two_cold_banks(self):
+    def test_pp1_ep16_cp_uses_all_layers_and_two_cold_banks(self):
         from sglang.srt.offloading.moe.npu.model_adapter import ExpertQuantSpec
 
         values = {"mode": "prefill_only", "prefill_resident_ratio": 0.25}
@@ -720,12 +721,18 @@ class TestOffloadModeWiring(CustomTestCase):
                 "SGLANG_ZBAL_LOCAL_MEM_SIZE": "0",
             },
         ):
-            for backend in ("ascend_ops", "deepep"):
-                with self.subTest(backend=backend):
+            for (dp, cp), backend in product(
+                ((4, 4), (2, 8)), ("ascend_ops", "deepep")
+            ):
+                with self.subTest(dp=dp, cp=cp, backend=backend):
                     owner = self._construct(
                         values,
                         "prefill",
-                        parallel_changes=parallel,
+                        parallel_changes={
+                            **parallel,
+                            "attn_dp_size": dp,
+                            "attn_cp_size": cp,
+                        },
                         moe_changes={"moe_a2a_backend": backend},
                     )
                     self.assertEqual(owner.layer_range, (0, 78))
@@ -748,8 +755,9 @@ class TestOffloadModeWiring(CustomTestCase):
                 )
             for changes in (
                 {"attn_dp_size": 2, "attn_tp_size": 2},
+                {"attn_dp_size": 2, "attn_cp_size": 8, "attn_tp_size": 2},
+                {"attn_dp_size": 2, "attn_cp_size": 8, "cp_strategy": "interleave"},
                 {"disable_attn_tp_gather": True},
-                {"cp_strategy": "interleave"},
             ):
                 with self.subTest(changes=changes), self.assertRaises(ValueError):
                     self._construct(
