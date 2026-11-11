@@ -541,8 +541,12 @@ class TestIdleAscendOpsPrefill(CustomTestCase):
                 patch.object(dispatcher, "_quant_mode", return_value=quant_mode),
                 patch.object(dispatcher_mod.dist, "get_world_size", return_value=16),
                 patch.object(dispatcher_mod.dist, "get_rank", return_value=0),
-                patch.object(dispatcher_mod.dist, "all_gather_into_tensor", side_effect=gather),
-                patch.object(dispatcher_mod.dist, "all_to_all_single", side_effect=exchange) as alltoall,
+                patch.object(
+                    dispatcher_mod.dist, "all_gather_into_tensor", side_effect=gather
+                ),
+                patch.object(
+                    dispatcher_mod.dist, "all_to_all_single", side_effect=exchange
+                ) as alltoall,
                 patch.object(dispatcher_mod, "npu_moe_init_routing") as route,
                 patch.object(dispatcher_mod, "npu_moe_finalize_routing") as finalize,
             ):
@@ -566,8 +570,12 @@ class TestIdleAscendOpsPrefill(CustomTestCase):
                 )
                 self.assertEqual(combined.shape, local.shape)
                 self.assertEqual(combined.dtype, local.dtype)
-                self.assertEqual(alltoall.call_args.kwargs["input_split_sizes"], remote_splits)
-                self.assertEqual(alltoall.call_args.kwargs["output_split_sizes"], empty_splits)
+                self.assertEqual(
+                    alltoall.call_args.kwargs["input_split_sizes"], remote_splits
+                )
+                self.assertEqual(
+                    alltoall.call_args.kwargs["output_split_sizes"], empty_splits
+                )
                 route.assert_not_called()
                 finalize.assert_not_called()
 
@@ -957,6 +965,102 @@ class TestOffloadModeWiring(CustomTestCase):
                     speculative_algorithm=algorithm,
                 )
 
+    @classmethod
+    def _two_node_pipeline(cls, **changes):
+        values = cls._pipeline_parallel(
+            nnodes=2,
+            tp_size=8,
+            moe_ep_size=8,
+            attn_cp_size=8,
+            cp_strategy="interleave",
+        )
+        values.update(changes)
+        return values
+
+    def test_two_node_stages_keep_local_expert_identity_and_residency(self):
+        spans = ((0, 18), (18, 38), (38, 62), (62, 78))
+        with patch.dict(
+            "os.environ",
+            {
+                "SGLANG_PP_LAYER_PARTITION": "18,20,24,16",
+                "MOE_EXPERT_TOKEN_NUMS_TYPE": "1",
+                "SGLANG_ZBAL_LOCAL_MEM_SIZE": "0",
+            },
+        ):
+            for pp, ep, cp, backend, ratio in product(
+                range(4),
+                (0, 7),
+                ("interleave", "zigzag"),
+                ("deepep", "ascend_ops"),
+                (0, 0.25, 0.5),
+            ):
+                with self.subTest(pp=pp, ep=ep, cp=cp, backend=backend, ratio=ratio):
+                    owner = self._construct(
+                        {"mode": "prefill_only", "prefill_resident_ratio": ratio},
+                        "prefill",
+                        parallel_changes=self._two_node_pipeline(
+                            pp_rank=pp,
+                            moe_ep_rank=ep,
+                            cp_strategy=cp,
+                        ),
+                        moe_changes={"moe_a2a_backend": backend},
+                    )
+                    start, end = spans[pp]
+                    self.assertEqual(owner.layer_range, spans[pp])
+                    specs = owner.catalog.offloaded_layers
+                    self.assertEqual(
+                        [s.layer_id for s in specs], list(range(max(3, start), end))
+                    )
+                    self.assertTrue(all(s.global_start == ep * 32 for s in specs))
+                    resident = int(32 * ratio)
+                    self.assertEqual(owner.local_experts, 32)
+                    self.assertEqual(owner.execution_mode.resident_experts, resident)
+                    self.assertEqual(
+                        owner.execution_slots,
+                        len(specs) * resident + 2 * (32 - resident),
+                    )
+                    self.assertEqual(owner.hot_slots, 0)
+                    self.assertIsNone(owner.host_pool)
+
+    def test_two_node_whitelist_does_not_enable_other_distributed_topologies(self):
+        for changes in (
+            dict(nnodes=1),
+            dict(nnodes=4),
+            dict(pp_size=2),
+            dict(tp_size=16, moe_ep_size=16),
+            dict(moe_ep_size=4),
+            dict(attn_dp_size=2),
+            dict(dp_size=2),
+            dict(attn_cp_size=4),
+            dict(attn_tp_size=2),
+            dict(enable_prefill_cp=False),
+            dict(cp_strategy="invalid"),
+            dict(moe_dp_size=2),
+            dict(disable_attn_tp_gather=True),
+            dict(enable_kv_cache_sharding=True),
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self._construct(
+                    {"mode": "prefill_only"},
+                    "prefill",
+                    parallel_changes=self._two_node_pipeline(**changes),
+                )
+        with self.assertRaises(ValueError):
+            self._construct({}, "null", parallel_changes=self._two_node_pipeline())
+
+    def test_two_node_largest_stage_residency_respects_slot_budget(self):
+        with patch.dict("os.environ", {"SGLANG_PP_LAYER_PARTITION": "18,20,24,16"}):
+            with self.assertRaisesRegex(ValueError, "at least 240"):
+                self._construct(
+                    {
+                        "mode": "prefill_only",
+                        "prefill_resident_ratio": 0.25,
+                        "execution_slots": 239,
+                    },
+                    "prefill",
+                    parallel_changes=self._two_node_pipeline(pp_rank=2),
+                )
+
     def test_mixed_mode_still_rejects_pipeline_and_cp(self):
         for changes in (self._pipeline_parallel(), dict(attn_cp_size=4)):
             with (
@@ -1044,25 +1148,41 @@ class TestPrefillOnlyInitialization(CustomTestCase):
             self.assertFalse(hasattr(owner, name), name)
 
     def test_resident_bytes_survive_cold_bank_reuse_across_chunks(self):
+        self._check_resident_bank_reuse(4, 1, (0, 2, 4))
+
+    def test_ep8_resident_bytes_survive_all_stage_layers_and_repeated_chunks(self):
+        self._check_resident_bank_reuse(32, 8, tuple(range(38, 62)))
+
+    def _check_resident_bank_reuse(self, local_experts, resident, layers):
         from sglang.srt.offloading.moe.npu.format import ExpertBank
 
         owner = self._owner()
-        owner.execution_mode.resident_experts = 1
-        owner.execution_slots = 9
-        layers = tuple(owner.storages)
+        cold = local_experts - resident
+        slots = len(layers) * resident + 2 * cold
+        owner.local_experts = owner.copy_capacity = local_experts
+        owner.execution_mode.resident_experts = resident
+        owner.execution_slots = slots
+        owner.catalog = SimpleNamespace(
+            num_experts=len(layers) * local_experts,
+            offloaded_layers=tuple(SimpleNamespace(layer_id=i) for i in layers),
+        )
+        owner.storages = {i: SimpleNamespace(require_sealed=Mock()) for i in layers}
         names = ("w13_weight", "w13_weight_scale", "w2_weight", "w2_weight_scale")
         owner.format.layouts = {name: SimpleNamespace(nbytes=1) for name in names}
         owner.format.adapter = SimpleNamespace(native_acl=object())
         owner.format.quant_info = lambda tensors: tensors
-        tensors = {name: torch.zeros((9, 1), dtype=torch.uint8) for name in names}
+        tensors = {name: torch.zeros((slots, 1), dtype=torch.uint8) for name in names}
         owner.format.allocate_bank.return_value = ExpertBank(
-            owner.format, tensors, 9, ResourceKind.EXECUTION_WEIGHTS, "test"
+            owner.format, tensors, slots, ResourceKind.EXECUTION_WEIGHTS, "test"
         )
         for index, layer in enumerate(layers):
             owner.storages[layer].component_capabilities = {
                 name: tuple(
-                    SimpleNamespace(nbytes=1, value=32 * component + 4 * index + e + 1)
-                    for e in range(4)
+                    SimpleNamespace(
+                        nbytes=1,
+                        value=(32 * component + local_experts * index + e) % 251 + 1,
+                    )
+                    for e in range(local_experts)
                 )
                 for component, name in enumerate(names)
             }
@@ -1098,7 +1218,7 @@ class TestPrefillOnlyInitialization(CustomTestCase):
 
         self.assertEqual(host_ops.materialize_into.call_count, 2 * len(layers))
         self.assertEqual(owner.context.resources, [])
-        self.assertEqual([bank.capacity for bank in owner.prefill.banks], [3, 3])
+        self.assertEqual([bank.capacity for bank in owner.prefill.banks], [cold, cold])
         owner._new_context = _Context
         owner._check_error = Mock()
         for _ in range(2):
@@ -1108,7 +1228,7 @@ class TestPrefillOnlyInitialization(CustomTestCase):
                     bank = owner.prefill.pipeline.acquire(layer, owner.context)
                     owner.prefill.pipeline.wait_for_w2(layer, owner.context)
                     _Completion(owner.context.compute_stream.tail).synchronize()
-                    cold_start = len(layers) + bank * 3
+                    cold_start = len(layers) * resident + bank * cold
                     for name in names:
                         expected = [
                             source.value
@@ -1116,10 +1236,15 @@ class TestPrefillOnlyInitialization(CustomTestCase):
                                 name
                             ]
                         ]
-                        self.assertEqual(tensors[name][index, 0].item(), expected[0])
                         self.assertEqual(
-                            tensors[name][cold_start : cold_start + 3, 0].tolist(),
-                            expected[1:],
+                            tensors[name][
+                                index * resident : (index + 1) * resident, 0
+                            ].tolist(),
+                            expected[:resident],
+                        )
+                        self.assertEqual(
+                            tensors[name][cold_start : cold_start + cold, 0].tolist(),
+                            expected[resident:],
                         )
                     owner.prefill.finish_layer(layer)
         self.assertEqual(host_ops.materialize_into.call_count, 6 * len(layers))

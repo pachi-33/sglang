@@ -102,6 +102,18 @@ class PrefillOnlyExecution:
             and (parallel.attn_dp_size, parallel.attn_cp_size) in ((4, 4), (2, 8))
         )
 
+    @staticmethod
+    def uses_two_node_pipeline(parallel):
+        # Two complete stages per node: TP/CP/EP stay node-local. Only PP
+        # crosses nodes; each process still owns a MemFabric LOCAL Host pool.
+        return (
+            parallel.nnodes == 2
+            and parallel.pp_size == 4
+            and parallel.tp_size == parallel.moe_ep_size == 8
+            and parallel.dp_size == parallel.attn_dp_size == 1
+            and parallel.attn_cp_size == 8
+        )
+
     def validate_topology(self, owner):
         parallel = get_parallel()
         if self.use_deepep:
@@ -137,25 +149,31 @@ class PrefillOnlyExecution:
             and parallel.dp_size == parallel.attn_dp_size == 1
             and parallel.attn_cp_size in (1, 4)
         )
+        two_node_pipeline = self.uses_two_node_pipeline(parallel)
         if owner.model_id != "GLM-5.2" or not (
-            stage_ep4 or self._uses_pp1_ep16_cp(parallel)
+            stage_ep4 or self._uses_pp1_ep16_cp(parallel) or two_node_pipeline
         ):
             raise ValueError(
                 "Prefill-only offload with PP or CP requires GLM-5.2 and "
                 "either PP4/TP4/EP4 with attention DP1 and CP1 or CP4, "
-                "or PP1/TP16/EP16 with attention DP4/CP4 or DP2/CP8"
+                "PP1/TP16/EP16 with attention DP4/CP4 or DP2/CP8, "
+                "or two-node PP4/TP8/EP8 with attention DP1/CP8"
             )
         if parallel.disable_attn_tp_gather:
             raise ValueError(
                 "Prefill-only offload with PP or CP requires scheduler phase "
                 "synchronization; remove --disable-attn-tp-gather"
             )
+        cp_strategies = ("zigzag", "interleave") if two_node_pipeline else ("zigzag",)
         if parallel.attn_cp_size > 1 and (
             not parallel.enable_prefill_cp
-            or parallel.cp_strategy != "zigzag"
+            or parallel.cp_strategy not in cp_strategies
             or parallel.attn_tp_size != 1
         ):
-            raise ValueError("Prefill-only CP requires zigzag CP and attention TP1")
+            raise ValueError(
+                f"Prefill-only CP requires a strategy in {cp_strategies} "
+                "and attention TP1"
+            )
         if (
             parallel.enable_cp_tp_group_sharing
             or parallel.enable_dsa_cache_layer_split
@@ -207,13 +225,16 @@ class PrefillOnlyExecution:
             if (
                 owner.model_id != "GLM-5.2"
                 or not (
-                    parallel.moe_ep_size == 4 or self._uses_pp1_ep16_cp(parallel)
+                    parallel.moe_ep_size == 4
+                    or self._uses_pp1_ep16_cp(parallel)
+                    or self.uses_two_node_pipeline(parallel)
                 )
                 or get_spec().speculative_algorithm
             ):
                 raise ValueError(
                     "Prefill residency requires GLM-5.2 without MTP and "
-                    "either EP4 or PP1/TP16/EP16 with attention DP4/CP4 or DP2/CP8"
+                    "EP4, PP1/TP16/EP16 with attention DP4/CP4 or DP2/CP8, "
+                    "or two-node PP4/TP8/EP8 with attention DP1/CP8"
                 )
             if not self.use_deepep:
                 from sglang.srt.layers.moe.utils import AscendOpsConfig

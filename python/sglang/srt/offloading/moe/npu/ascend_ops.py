@@ -103,10 +103,17 @@ class AscendOpsOffloader(BaseOffloader):
             p.tp_size != p.moe_ep_size
             or p.moe_tp_size != 1
             or p.moe_dp_size != 1
-            or p.nnodes != 1
+            or (
+                p.nnodes != 1
+                and not (
+                    self.options.prefill_only
+                    and PrefillOnlyExecution.uses_two_node_pipeline(p)
+                )
+            )
         ):
             raise ValueError(
-                "Expert offload requires single-node stage TP=EP and MoE TP=DP=1"
+                "Expert offload requires stage TP=EP and MoE TP=DP=1 on "
+                "a single node or the supported two-node prefill topology"
             )
         self.execution_mode.validate_topology(self)
         if not get_schedule().disable_overlap_schedule:
