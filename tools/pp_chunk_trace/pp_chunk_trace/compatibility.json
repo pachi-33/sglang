@@ -1,0 +1,47 @@
+{
+  "reference_commit": "58e353d08c",
+  "methods": [
+    {
+      "class": "SchedulerPPMixin",
+      "method": "init_pp_loop_state",
+      "path": "python/sglang/srt/managers/scheduler_pp_mixin.py",
+      "sha256": "d5a492ea98a08332fc3419fb28c258e855ec76f6b510f8d57abd036e587ccb13"
+    },
+    {
+      "class": "SchedulerPPMixin",
+      "method": "_pp_recv_proxy_tensors",
+      "path": "python/sglang/srt/managers/scheduler_pp_mixin.py",
+      "sha256": "9296706338ae86a0c62a5cd08499047fe8fee319866822a39ad8d3a194ff95ba"
+    },
+    {
+      "class": "SchedulerPPMixin",
+      "method": "_pp_launch_batch",
+      "path": "python/sglang/srt/managers/scheduler_pp_mixin.py",
+      "sha256": "1846ee63431792eabcc3dac4dcfa2eca71610cf03c5c86610cfa579e16ee7099"
+    },
+    {
+      "class": "SchedulerPPMixin",
+      "method": "_pp_send_proxy_to_next_stage",
+      "path": "python/sglang/srt/managers/scheduler_pp_mixin.py",
+      "sha256": "1573986ec333fd294d362b3e1ee1d2a2a97f682d469db4446e0f0ccd4ea5e0b7"
+    },
+    {
+      "class": "SchedulerPPMixin",
+      "method": "_pp_send_dict_to_next_stage",
+      "path": "python/sglang/srt/managers/scheduler_pp_mixin.py",
+      "sha256": "8b0dcdf9bb1ddeb647e94f077717a1a6963f8dd7a81b6f28ad3753952597401d"
+    },
+    {
+      "class": "SchedulerPPMixin",
+      "method": "_pp_wait_forward_dependencies",
+      "path": "python/sglang/srt/managers/scheduler_pp_mixin.py",
+      "sha256": "81be3ebe90f48ff6e242555637a0a5e692c4a6c23662f6d8e74186e8607ef33c"
+    },
+    {
+      "class": "Scheduler",
+      "method": "run_batch",
+      "path": "python/sglang/srt/managers/scheduler.py",
+      "sha256": "51a3d5ba9ec269d845425e5bbe115a8f133f4629c55b5bd08828ddde7ba48e5d"
+    }
+  ]
+}
