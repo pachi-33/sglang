@@ -7,9 +7,13 @@ Borrowed Hot bytes are restored before decode or cache maintenance can consume
 the published cache addresses.
 """
 
+import logging
 from dataclasses import dataclass
 
 from ...transfer import HostCopyPlan, HostCopyRegion, TransferTicket
+from .options import MAX_PHYSICAL_WEIGHT_GROUPS
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -108,12 +112,16 @@ class LayerPrefetchPipeline:
         # serializing this layer's MoE with an unrelated future H2D.
         self.started = True
 
-    def acquire(self, layer, context):
+    def current_bank(self, layer, context):
         self._require_current(layer, context)
         if not self.started:
             raise RuntimeError("Start the prefill layer before acquiring weights")
-        self.ready[self.current].w13.completion.wait_on(context.compute_stream)
         return self.current % 2
+
+    def acquire(self, layer, context):
+        bank = self.current_bank(layer, context)
+        self.ready[self.current].w13.completion.wait_on(context.compute_stream)
+        return bank
 
     def wait_for_w2(self, layer, context):
         self._require_current(layer, context)
@@ -155,6 +163,10 @@ class AscendPrefillWeights:
         specs = owner.catalog.offloaded_layers
         self.resident_experts = resident_experts
         self.resident_slots = len(specs) * resident_experts
+        # Use the allocated pool size, not an oversized configuration budget.
+        self.split_gmm = bool(
+            resident_experts and owner.execution.capacity > MAX_PHYSICAL_WEIGHT_GROUPS
+        )
         if resident_experts:
             cold_experts = owner.local_experts - resident_experts
             self.banks = tuple(
@@ -163,10 +175,27 @@ class AscendPrefillWeights:
                 )
                 for bank in range(2)
             )
-            quant_info = owner.execution.quant_info()
-            self.quant_info = (quant_info, quant_info)
-            self.groups = torch.zeros(
-                (owner.execution.capacity, 2), dtype=torch.int64, device=owner.device
+            if self.split_gmm:
+                self.resident_quant_info = tuple(
+                    owner.execution.view(
+                        index * resident_experts, resident_experts
+                    ).quant_info()
+                    for index in range(len(specs))
+                )
+                self.quant_info = tuple(bank.quant_info() for bank in self.banks)
+            else:
+                quant_info = owner.execution.quant_info()
+                self.quant_info = (quant_info, quant_info)
+                self.groups = torch.zeros(
+                    (owner.execution.capacity, 2),
+                    dtype=torch.int64,
+                    device=owner.device,
+                )
+            logger.info(
+                "Prefill expert GMM: slots=%d, resident_experts=%d, mode=%s",
+                owner.execution.capacity,
+                resident_experts,
+                "split_type1" if self.split_gmm else "type2",
             )
             self.borrows_hot = False
         else:
@@ -289,7 +318,7 @@ class AscendPrefillWeights:
         state = owner.state
         start = owner.catalog.key(layer, 0)
         group_tokens, group_type, slot_args = self.counts, 1, {}
-        if self.resident_experts:
+        if self.resident_experts and not self.split_gmm:
             # The same layer ordinal selects its immutable prefix and the
             # alternating cold bank. Groups stay in dispatch's logical order.
             index = self.pipeline.current
@@ -322,7 +351,16 @@ class AscendPrefillWeights:
         )
         # Keep the dispatch-owned input alive through asynchronous consumption.
         owner.context.retain(counts)
+        if self.split_gmm:
+            self.pipeline.current_bank(layer, owner.context)
+            # Immutable resident weights need no cold-bank readiness wait.
+            return self.resident_quant_info[self.pipeline.current]
         bank = self.pipeline.acquire(layer, owner.context)
+        return self.quant_info[bank]
+
+    def cold_weights(self, layer):
+        """Join the cold W13 copy only after the resident FFN was enqueued."""
+        bank = self.pipeline.acquire(layer, self.owner.context)
         return self.quant_info[bank]
 
     def finish_layer(self, layer):

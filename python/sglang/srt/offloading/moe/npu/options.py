@@ -56,11 +56,8 @@ def prefill_weight_slots(local_experts, routed_layers, ratio, slot_budget):
     """Return experts resident per layer and HBM slots to allocate on this rank."""
     resident = int(local_experts * ratio)
     required = routed_layers * resident + 2 * (local_experts - resident)
-    if resident and required > MAX_PHYSICAL_WEIGHT_GROUPS:
-        raise ValueError(
-            f"Prefill residency needs {required} physical weight groups, "
-            f"but GMM supports at most {MAX_PHYSICAL_WEIGHT_GROUPS}"
-        )
+    # Large resident pools use separate type1 GMMs over layer-local views;
+    # MAX_PHYSICAL_WEIGHT_GROUPS limits type2 addressing, not HBM allocation.
     if slot_budget is not None and slot_budget < required:
         raise ValueError(
             f"execution_slots (EXECUTION_SLOTS) must be at least {required} "

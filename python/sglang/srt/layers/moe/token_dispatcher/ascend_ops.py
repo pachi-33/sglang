@@ -128,6 +128,7 @@ class _AllToAllVState:
     expanded_row_idx: torch.Tensor
     hidden_shape: torch.Size
     local_expanded_row_idx: Optional[torch.Tensor] = None
+    prefill_resident_rows: Optional[int] = None
 
 
 AscendOpsForwardState = _MC2State | _AllGatherState | _AllToAllVState
@@ -543,8 +544,8 @@ class AscendOpsDispatcher(BaseDispatcher):
     # Prefill: AllToAllV
 
     def _alltoall_counts(
-        self, topk_ids: torch.Tensor, group
-    ) -> tuple[list[int], list[int], torch.Tensor]:
+        self, topk_ids: torch.Tensor, group, *, resident_experts: int = 0
+    ) -> tuple[list[int], list[int], torch.Tensor, Optional[int]]:
         if self.num_experts is None or self.num_local_experts is None:
             raise ValueError("Ascend Ops alltoallv requires expert counts")
         ep_size = dist.get_world_size(group=group)
@@ -585,8 +586,17 @@ class AscendOpsDispatcher(BaseDispatcher):
         input_splits = (
             local_counts.view(ep_size, local_experts).sum(dim=1).cpu().tolist()
         )
-        output_splits = recv_counts.sum(dim=1).cpu().tolist()
-        return input_splits, output_splits, recv_counts
+        resident_rows = None
+        if resident_experts:
+            # Reuse the existing output-split readback. This transfers the
+            # small count matrix instead of its row sums, without a new sync
+            # or collective, and keeps the resident boundary off the GMM path.
+            host_counts = recv_counts.cpu().tolist()
+            output_splits = [sum(row) for row in host_counts]
+            resident_rows = sum(sum(row[:resident_experts]) for row in host_counts)
+        else:
+            output_splits = recv_counts.sum(dim=1).cpu().tolist()
+        return input_splits, output_splits, recv_counts, resident_rows
 
     def _alltoall_single(
         self,
@@ -610,8 +620,14 @@ class AscendOpsDispatcher(BaseDispatcher):
     def _dispatch_alltoallv(self, hidden_states, topk_weights, topk_ids, group):
         """Send each token to its expert-owning rank."""
         topk_ids = topk_ids.to(torch.int32)
-        input_splits, output_splits, recv_counts = self._alltoall_counts(
-            topk_ids, group
+        layer = getattr(self, "_offload_layer", None)
+        owner = getattr(layer, "_ascend_ops_offloader", None)
+        prefill = getattr(owner, "prefill", None)
+        resident_experts = (
+            prefill.resident_experts if getattr(prefill, "split_gmm", False) else 0
+        )
+        input_splits, output_splits, recv_counts, resident_rows = self._alltoall_counts(
+            topk_ids, group, resident_experts=resident_experts
         )
 
         quant_mode = self._quant_mode("routing")
@@ -653,6 +669,7 @@ class AscendOpsDispatcher(BaseDispatcher):
             topk_ids=topk_ids,
             expanded_row_idx=expanded_row_idx.clone(),
             hidden_shape=hidden_states.shape,
+            prefill_resident_rows=resident_rows,
         )
         return AscendOpsDispatchOutput(
             hidden_states=received,

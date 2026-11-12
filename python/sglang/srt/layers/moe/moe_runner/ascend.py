@@ -115,6 +115,8 @@ class AscendRunnerInput(RunnerInput):
     hidden_states_scale: Optional[torch.Tensor]  # None for unquant
     expert_tokens: torch.Tensor
     group_list_type: int  # 0: cumulative, 1: counts, 2: physical-slot/count pairs
+    # Host-known row boundary, supplied by dispatch only for split prefill GMM.
+    prefill_resident_rows: Optional[int] = None
 
     @property
     def runner_backend(self) -> MoeRunnerBackend:
@@ -282,6 +284,88 @@ class AscendRunnerCore(MoeRunnerCore):
             if x.shape[0] == 0:
                 return AscendRunnerOutput(hidden_states=x.to(original_dtype))
 
+        if offloaded_prefill and getattr(owner.prefill, "split_gmm", False):
+            return AscendRunnerOutput(
+                hidden_states=self._run_split_prefill(runner_input, quant_info, owner)
+            )
+        return AscendRunnerOutput(
+            hidden_states=self._run_ffn(
+                runner_input,
+                quant_info,
+                activation_tokens=activation_tokens,
+                activation_group_type=activation_group_type,
+                wait_for_w2=(
+                    (lambda: owner.wait_for_w2(self.config.layer.layer_id))
+                    if owner is not None
+                    else None
+                ),
+            )
+        )
+
+    def _run_split_prefill(self, runner_input, resident_quant_info, owner):
+        """Two local FFNs; dispatch/combine and bank retirement remain shared."""
+        x = runner_input.hidden_states
+        rows = runner_input.prefill_resident_rows
+        if type(rows) is not int or not 0 <= rows <= x.shape[0]:
+            raise ValueError("Split prefill GMM requires a valid resident row count")
+        if runner_input.group_list_type != 1:
+            raise ValueError("Split prefill GMM requires logical expert counts")
+        scale = runner_input.hidden_states_scale
+        if scale is not None:
+            if scale.numel() != x.shape[0]:
+                raise ValueError("Split W8A8 prefill requires one scale per row")
+            scale = scale.reshape(-1)
+        experts = owner.prefill.resident_experts
+        counts = runner_input.expert_tokens
+        outputs = []
+        for cold, row_slice, expert_slice in (
+            (False, slice(0, rows), slice(0, experts)),
+            (True, slice(rows, x.shape[0]), slice(experts, counts.shape[0])),
+        ):
+            if row_slice.start == row_slice.stop:
+                continue
+            inputs = AscendRunnerInput(
+                hidden_states=x[row_slice],
+                hidden_states_scale=scale[row_slice] if scale is not None else None,
+                expert_tokens=counts[expert_slice],
+                group_list_type=1,
+            )
+            quant_info = (
+                owner.prefill.cold_weights(self.config.layer.layer_id)
+                if cold
+                else resident_quant_info
+            )
+            outputs.append(
+                self._run_ffn(
+                    inputs,
+                    quant_info,
+                    wait_for_w2=(
+                        (lambda: owner.wait_for_w2(self.config.layer.layer_id))
+                        if cold
+                        else None
+                    ),
+                )
+            )
+        # Resident experts are the logical prefix, so concatenation restores
+        # exactly the dispatch order required by the original combine handle.
+        return outputs[0] if len(outputs) == 1 else torch.cat(outputs, dim=0)
+
+    def _run_ffn(
+        self,
+        runner_input,
+        quant_info,
+        *,
+        activation_tokens=None,
+        activation_group_type=None,
+        wait_for_w2=None,
+    ):
+        x = runner_input.hidden_states
+        original_dtype = torch.float16 if x.dtype == torch.float16 else torch.bfloat16
+        expert_tokens = runner_input.expert_tokens
+        group_list_type = runner_input.group_list_type
+        if activation_tokens is None:
+            activation_tokens = expert_tokens
+            activation_group_type = group_list_type
         w13_kernel = self.config.layer.w13_kernel
 
         if _uses_fused_gmm1(w13_kernel, self.config):
@@ -329,8 +413,8 @@ class AscendRunnerCore(MoeRunnerCore):
                 )
 
         # W2 transfer may overlap W13 projection and activation.
-        if owner is not None:
-            owner.wait_for_w2(self.config.layer.layer_id)
+        if wait_for_w2 is not None:
+            wait_for_w2()
 
         # --- w2 (down) projection ---
         hidden_states = self.config.layer.w2_kernel.apply(
@@ -342,7 +426,7 @@ class AscendRunnerCore(MoeRunnerCore):
             weight_prefix="w2",
             group_list_type=group_list_type,
         )
-        return AscendRunnerOutput(hidden_states=hidden_states)
+        return hidden_states
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +607,7 @@ def _pre_permute_alltoallv(
         hidden_states_scale=local_scale,
         expert_tokens=recv_counts.sum(dim=0).to(torch.int64),
         group_list_type=dispatch_output.group_list_type,
+        prefill_resident_rows=getattr(state, "prefill_resident_rows", None),
     )
 
 
@@ -589,7 +674,9 @@ def pre_permute_deepep_normal_to_ascend(
         topk_weights,
         num_recv_tokens_per_expert,
     ) = dispatch_output
-    if getattr(runner_config.layer, "_ascend_ops_offloader", None) is not None:
+    resident_rows = None
+    owner = getattr(runner_config.layer, "_ascend_ops_offloader", None)
+    if owner is not None:
         counts = num_recv_tokens_per_expert
         if (
             not isinstance(counts, (list, tuple))
@@ -599,6 +686,10 @@ def pre_permute_deepep_normal_to_ascend(
             raise ValueError(
                 "DeepEP offload requires one nonnegative count per local expert"
             )
+        prefill = getattr(owner, "prefill", None)
+        if getattr(prefill, "split_gmm", False):
+            # DeepEP already supplies these counts on the host; no D2H/sync.
+            resident_rows = sum(counts[: prefill.resident_experts])
         received = sum(counts)
         rows = hidden_states.shape[0]
         if received == 0 and rows == 1:
@@ -631,6 +722,7 @@ def pre_permute_deepep_normal_to_ascend(
         hidden_states_scale=hidden_states_scale,
         expert_tokens=group_list,
         group_list_type=1,
+        prefill_resident_rows=resident_rows,
     )
 
 

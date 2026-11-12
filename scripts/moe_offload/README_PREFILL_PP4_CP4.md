@@ -30,6 +30,15 @@ PREFILL_RESIDENT_RATIO=0.25 EXECUTION_SLOTS=480 P_MOE_A2A_BACKEND=deepep \
 
 去掉 `--dry-run` 后启动。默认 PP 分区下，比例 0.25 会在每张 NPU 每层常驻 16 个专家，并为 48 个冷专家保留双 bank。PP0 至 PP3 分别需要 336、416、480、352 个权重槽。启用常驻时，`EXECUTION_SLOTS` 是每张 NPU 的总权重槽位上限。留空由各 stage 计算最小容量。显存占用会在 KV pool 定容前计入，Host 权重池仍保留完整权重。
 
+有层内常驻专家时，GMM 路径按**各 rank 实际分配的权重槽数**自动选择，无需新开关：
+
+- 不超过 1024（含 1024）：保留 `group_list_type=2`，一次 FFN 使用常驻区和冷 bank。
+- 大于 1024：使用两个 `group_list_type=1` FFN，先算本层常驻专家，再算当前冷 bank 的专家；每部分仍包含 W13、激活和 W2。输入及逐 token scale 按常驻专家的 token 行数切分，输出拼回原专家顺序。某部分没有 token 时跳过其 FFN。
+
+此分支同时支持 Ascend Ops alltoallv 和 DeepEP normal，dispatch/combine 各执行一次。DeepEP 复用已有的 CPU 专家计数；Ascend Ops 在原来的计数读回中返回完整小计数矩阵来确定切分位置，不增加同步点或 collective。冷权重仍使用原 ACL H2D 接口及 W13/W2 就绪事件；常驻计算不等待冷 H2D，冷 bank 仍在 combine 后才能复用。没有把常驻权重额外复制到执行区，但两部分均有 token 时多一组 GMM/激活算子启动及输出拼接，性能需在 NPU 上对照。
+
+日志会打印 `Prefill expert GMM: slots=..., resident_experts=..., mode=type2/split_type1`。例如 EP4 的 24 个 MoE 层 stage，每层常驻 40 个专家时共 1008 槽，仍走 type2；常驻 41 个时共 1030 槽，自动拆分。配置预算 `EXECUTION_SLOTS=2048` 本身不会让实际仅分配 1008 槽的 rank 切换。比例为 0 时仍保留原整层双 bank 的 type1 路径；Decode 路径不变。更大的池依然需要足够 HBM，并会压缩 KV cache 空间。
+
 P 的 DeepEP 分轮参数初值沿用基线的 `72` 轮、每 rank 每轮 `1024` token 和 long-seq combine。可用 `DEEPEP_NORMAL_LONG_SEQ_ROUND`、`DEEPEP_NORMAL_LONG_SEQ_PER_ROUND_TOKENS`、`DEEPEP_NORMAL_COMBINE_ENABLE_LONG_SEQ` 和 `DEEPEP_HCCL_BUFFSIZE` 覆盖，默认通信 buffer 配置为 1024 MB。目标设备上的 16K chunk 容量、数值和性能需实测。[DeepEP-Ascend 参数说明](https://github.com/sgl-project/sgl-kernel-npu/blob/main/python/deep_ep/README.md#environment-variables)
 
 按需设置：

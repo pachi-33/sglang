@@ -836,6 +836,34 @@ class TestOffloadModeWiring(CustomTestCase):
                     moe_changes={"moe_ascend_ops_config": '{"prefill":"allgather"}'},
                 )
 
+    def test_large_residency_pool_is_accepted_by_both_dispatchers(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "SGLANG_PP_LAYER_PARTITION": "18,20,24,16",
+                "MOE_EXPERT_TOKEN_NUMS_TYPE": "1",
+                "SGLANG_ZBAL_LOCAL_MEM_SIZE": "0",
+            },
+        ):
+            for backend in ("ascend_ops", "deepep"):
+                for resident, slots in ((40, 1008), (41, 1030)):
+                    with self.subTest(backend=backend, resident=resident):
+                        owner = self._construct(
+                            {
+                                "mode": "prefill_only",
+                                "prefill_resident_ratio": resident / 64,
+                                # The budget alone must not select the mode.
+                                "execution_slots": 2048,
+                            },
+                            "prefill",
+                            parallel_changes=self._pipeline_parallel(pp_rank=2),
+                            moe_changes={"moe_a2a_backend": backend},
+                        )
+                        self.assertEqual(owner.execution_slots, slots)
+                        self.assertEqual(
+                            owner.execution_mode.resident_experts, resident
+                        )
+
     def test_deepep_rejects_incompatible_modes_and_counts(self):
         for mode in ("auto", "low_latency"):
             with (
@@ -1153,6 +1181,12 @@ class TestPrefillOnlyInitialization(CustomTestCase):
     def test_ep8_resident_bytes_survive_all_stage_layers_and_repeated_chunks(self):
         self._check_resident_bank_reuse(32, 8, tuple(range(38, 62)))
 
+    def test_gmm_threshold_and_views_survive_cold_reuse(self):
+        # 18*56 + 2*8 == 1024; 25*39 + 2*25 == 1025.
+        for resident, layers in ((56, 18), (39, 25)):
+            with self.subTest(slots=layers * resident + 2 * (64 - resident)):
+                self._check_resident_bank_reuse(64, resident, tuple(range(layers)))
+
     def _check_resident_bank_reuse(self, local_experts, resident, layers):
         from sglang.srt.offloading.moe.npu.format import ExpertBank
 
@@ -1193,12 +1227,15 @@ class TestPrefillOnlyInitialization(CustomTestCase):
 
         def submit(plan, bank, stream):
             owner.context.retain(plan)
-            for region in plan.regions:
-                stream.enqueue(
-                    lambda r=region: ctypes.memset(
-                        r.destination.address, r.source.value, r.nbytes
+
+            def copy_regions():
+                for region in plan.regions:
+                    ctypes.memset(
+                        region.destination.address, region.source.value, region.nbytes
                     )
-                )
+
+            # One queued batch per projection, as with the native batch API.
+            stream.enqueue(copy_regions)
             return SimpleNamespace(completion=_Completion(stream.tail))
 
         host_ops.materialize_into.side_effect = submit
@@ -1219,6 +1256,25 @@ class TestPrefillOnlyInitialization(CustomTestCase):
         self.assertEqual(host_ops.materialize_into.call_count, 2 * len(layers))
         self.assertEqual(owner.context.resources, [])
         self.assertEqual([bank.capacity for bank in owner.prefill.banks], [cold, cold])
+        self.assertEqual(owner.prefill.split_gmm, slots > 1024)
+        if slots > 1024:
+            self.assertFalse(hasattr(owner.prefill, "groups"))
+            for index, quant in enumerate(owner.prefill.resident_quant_info):
+                for name in names:
+                    self.assertEqual(quant[name].shape[0], resident)
+                    self.assertEqual(
+                        quant[name].data_ptr(),
+                        tensors[name][index * resident].data_ptr(),
+                    )
+            for bank, quant in enumerate(owner.prefill.quant_info):
+                for name in names:
+                    self.assertEqual(quant[name].shape[0], cold)
+                    self.assertEqual(
+                        quant[name].data_ptr(),
+                        tensors[name][len(layers) * resident + bank * cold].data_ptr(),
+                    )
+        else:
+            self.assertEqual(owner.prefill.groups.shape, (slots, 2))
         owner._new_context = _Context
         owner._check_error = Mock()
         for _ in range(2):

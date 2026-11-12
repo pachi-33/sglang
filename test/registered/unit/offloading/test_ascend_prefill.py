@@ -412,6 +412,7 @@ class TestAscendPrefillWeights(CustomTestCase):
         weights = object.__new__(AscendPrefillWeights)
         weights.counts = torch.empty(4, dtype=torch.int64)
         weights.resident_experts = 0
+        weights.split_gmm = False
         context = _Context()
         usage = torch.zeros(8, dtype=torch.int64)
         weights.owner = SimpleNamespace(
@@ -444,6 +445,7 @@ class TestAscendPrefillWeights(CustomTestCase):
         weights = object.__new__(AscendPrefillWeights)
         weights.counts = torch.empty(4, dtype=torch.int64)
         weights.resident_experts = 0
+        weights.split_gmm = False
         context = _Context()
         weights.owner = SimpleNamespace(
             local_experts=4,
@@ -471,6 +473,7 @@ class TestAscendPrefillWeights(CustomTestCase):
 
         weights = object.__new__(AscendPrefillWeights)
         weights.resident_experts, weights.resident_slots = 1, 3
+        weights.split_gmm = False
         weights.counts = torch.empty(3, dtype=torch.int64)
         weights.groups = torch.zeros((7, 2), dtype=torch.int64)
         weights.banks = (SimpleNamespace(capacity=2),) * 2
@@ -507,6 +510,35 @@ class TestAscendPrefillWeights(CustomTestCase):
                 self.assertEqual(
                     inputs.expert_tokens.tolist(), pairs + [[0, 0]] * (7 - len(pairs))
                 )
+
+    def test_split_groups_are_logical_and_resident_does_not_wait_for_h2d(self):
+        weights = object.__new__(AscendPrefillWeights)
+        weights.resident_experts, weights.split_gmm = 2, True
+        weights.counts = torch.empty(4, dtype=torch.int64)
+        weights.resident_quant_info = (object(), object())
+        weights.quant_info = (object(), object())
+        weights.pipeline = SimpleNamespace(
+            current=1, current_bank=Mock(return_value=1), acquire=Mock(return_value=1)
+        )
+        weights.owner = SimpleNamespace(
+            local_experts=4,
+            error=torch.zeros((), dtype=torch.int32),
+            state=None,
+            catalog=SimpleNamespace(key=lambda layer, expert: expert),
+            context=_Context(),
+        )
+        for kind, counts in ((0, [2, 2, 5, 6]), (1, [2, 0, 3, 1])):
+            with self.subTest(group_type=kind):
+                inputs = SimpleNamespace(
+                    expert_tokens=torch.tensor(counts), group_list_type=kind
+                )
+                quant = weights.weights(4, inputs)
+                self.assertIs(quant, weights.resident_quant_info[1])
+                self.assertEqual(inputs.group_list_type, 1)
+                self.assertEqual(inputs.expert_tokens.tolist(), [2, 0, 3, 1])
+                weights.pipeline.acquire.assert_not_called()
+        self.assertIs(weights.cold_weights(4), weights.quant_info[1])
+        weights.pipeline.acquire.assert_called_once_with(4, weights.owner.context)
 
     def test_prefill_count_kernel_without_usage_checks_invalid_and_padded_groups(self):
         from sglang.srt.offloading.moe.npu.small_batch_kernels import (
@@ -1325,7 +1357,7 @@ class TestAscendPrefillIntegration(CustomTestCase):
                     self.assertLess(
                         trace.index("combine-done"), trace.index("copy-5-w13")
                     )
-                    if mode == "alltoallv":
+                    if mode == "alltoallv" and rows:
                         self.assertLess(
                             trace.index("finalize-done"), trace.index("copy-5-w13")
                         )
