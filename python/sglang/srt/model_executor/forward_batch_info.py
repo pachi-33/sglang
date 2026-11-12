@@ -2481,28 +2481,20 @@ def _prepare_layerwise_indices(ret: ForwardBatch, batch, model_runner) -> None:
         sender = getattr(req, "disagg_kv_sender", None)
         if sender is None or not getattr(sender, "is_layerwise_enabled", False):
             continue
-        # Use the current chunk's extend_range, not the full request length.
-        # For chunked prefill, req_to_token only has valid KV indices within
-        # extend_range; reading beyond it yields uninitialized slots that
-        # would produce invalid RDMA addresses and hang the NPU.
-        extend_range = getattr(req, "extend_range", None)
-        if extend_range is not None:
-            start = extend_range.start
-            end = min(extend_range.end, len(req.origin_input_ids))
-        else:
-            start = getattr(req, "start_send_idx", 0)
-            end = len(req.origin_input_ids)
+        # Allocation fills req_to_token only through this forward's extend_end.
+        # origin_input_ids still contains the entire prompt during chunking.
+        # Keep start_send_idx: a prefill cache hit can leave earlier KV to send,
+        # and the layerwise path advances this cursor only in the final send.
+        start = req.start_send_idx
+        end = min(req.extend_end, len(req.origin_input_ids))
         if end <= start:
             continue
         kv_indices = req_to_token_pool.req_to_token[req.kv.req_pool_idx, start:end]
         kv_indices = allocator.translate_kv_indices_for_transfer(kv_indices)
         prefill_page_indices = kv_to_page_indices(kv_indices, page_size)
-        # dst_kv_indices is positionally indexed in PAGE units across the
-        # WHOLE request (see CommonKVSender.send's index_slice and
-        # mooncake's req.dst_kv_indices[index_slice]).  For chunked prefill
-        # we must slice it to the current chunk's page range so src/dst
-        # lengths stay aligned for group_concurrent_contiguous.
-        page_offset = start // page_size
+        # Decode registers only the suffix after its cached prefix. Source
+        # positions are request-relative; destination offsets are suffix-relative.
+        page_offset = (start - req.disagg_decode_prefix_len) // page_size
         dst_page_indices = prefill_page_indices  # fallback (same length)
         kv_mgr = getattr(sender, "kv_mgr", None)
         room = getattr(sender, "bootstrap_room", None)

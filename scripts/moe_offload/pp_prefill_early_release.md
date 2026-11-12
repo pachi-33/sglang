@@ -31,7 +31,9 @@ bash scripts/moe_offload/serve_glm52_prefill_pp4_cp4.sh
 
 每个请求分别保存任务的完成状态。结果后处理、最后一次发送和释放 KV 前，会等待该请求的后台任务；这仍可能等待本请求的慢传输，但不会等待另一个请求后来覆盖的全局完成事件。后台任务也参与取消确认、内存整理和后端退出的检查，避免仍在读写的页被复用。
 
-这次修复未处理此前 review 指出的 PP 提前释放确认丢失、分块索引范围和 decode 前缀偏移问题，不能据此认为这两个开关的所有场景都已验证。
+逐层传输的索引范围现已使用 `req.start_send_idx:min(req.extend_end, len(req.origin_input_ids))`，避免分块 prefill 读取尚未分配的后续 KV 索引；decode 目标页偏移则相对于 `req.disagg_decode_prefix_len` 计算。保留现有最终 chunk 推进发送进度的逻辑，因此后续 chunk 仍可能重复发送前面已计算的 KV。
+
+此前 review 指出的 PP 提前释放确认丢失问题尚未处理，不能据此认为这两个开关的所有场景都已验证。
 
 ## 使用
 

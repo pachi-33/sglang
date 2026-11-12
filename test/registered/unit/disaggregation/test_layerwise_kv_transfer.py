@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+import torch
 
 from sglang.srt.disaggregation.ascend.conn import AscendKVManager
 from sglang.srt.disaggregation.base.conn import KVPoll
@@ -16,6 +17,7 @@ from sglang.srt.disaggregation.utils import (
     DisaggregationMode,
     disagg_transfers_in_flight,
 )
+from sglang.srt.model_executor.forward_batch_info import _prepare_layerwise_indices
 from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
 
@@ -156,6 +158,106 @@ class TestLayerwiseKVTransfer(CustomTestCase):
                                 )
                             )
                     self.assertCountEqual(mgr.writes, expected)
+
+    def make_indexed_request(
+        self, sender, page_size, input_pages, decode_prefix_pages=0
+    ):
+        token_count = input_pages * page_size
+        req = SimpleNamespace(
+            kv=SimpleNamespace(req_pool_idx=0),
+            origin_input_ids=[0] * token_count,
+            prefix_len=0,
+            extend_end=0,
+            start_send_idx=decode_prefix_pages * page_size,
+            disagg_decode_prefix_len=decode_prefix_pages * page_size,
+            disagg_kv_sender=sender,
+        )
+        # Unallocated positions deliberately contain invalid indices, so reading
+        # future chunks would produce visibly incorrect wire addresses.
+        runner = SimpleNamespace(
+            req_to_token_pool=SimpleNamespace(
+                req_to_token=torch.full((1, token_count), -100, dtype=torch.int64)
+            ),
+            token_to_kv_pool_allocator=SimpleNamespace(
+                page_size=page_size,
+                translate_kv_indices_for_transfer=lambda indices: (
+                    indices + 3 * page_size
+                ),
+            ),
+        )
+        sender.kv_mgr.transfer_infos[sender.bootstrap_room][
+            "decode"
+        ].dst_kv_indices = np.arange(
+            50, 50 + input_pages - decode_prefix_pages, dtype=np.int32
+        )
+        return req, runner
+
+    def test_chunked_forward_sends_only_allocated_pages(self):
+        """An unfinished prompt must never send indices from its future chunks."""
+        for page_size in (1, 4):
+            with self.subTest(page_size=page_size):
+                mgr = self.make_manager()
+                sender = self.make_sender(mgr)
+                req, runner = self.make_indexed_request(sender, page_size, 10)
+                for end_page in (4, 8, 10):
+                    req.prefix_len = req.extend_end
+                    req.extend_end = end_page * page_size
+                    runner.req_to_token_pool.req_to_token[0, : req.extend_end] = (
+                        torch.arange(2 * page_size, (2 + end_page) * page_size)
+                    )
+                    _prepare_layerwise_indices(
+                        None, SimpleNamespace(reqs=[req]), runner
+                    )
+                    sender.start_layerwise_send(2)
+                    mgr.writes.clear()
+                    for layer in range(2):
+                        sender.save_kv_layer(layer)
+                    sender.wait_layerwise_send_done()
+                    expected = [
+                        (
+                            src + 5 * item_len,
+                            dst + 50 * item_len,
+                            end_page * item_len,
+                        )
+                        for src, dst, item_len in zip(
+                            mgr.kv_args.kv_data_ptrs,
+                            mgr.peer.dst_kv_ptrs,
+                            mgr.kv_args.kv_item_lens,
+                        )
+                    ]
+                    self.assertCountEqual(mgr.writes, expected)
+
+    def test_layerwise_destination_is_relative_to_decode_prefix(self):
+        """Cached decode pages must not shift or truncate the suffix transfer."""
+        for start_page in (4, 8):
+            with self.subTest(start_page=start_page):
+                mgr = self.make_manager()
+                sender = self.make_sender(mgr)
+                req, runner = self.make_indexed_request(sender, 4, 12, 4)
+                # Prefill has a longer cache hit than decode. Its cached KV
+                # before prefix_len must still be sent if start_send_idx < it.
+                req.prefix_len = 8 * 4
+                req.start_send_idx = start_page * 4
+                req.extend_end = len(req.origin_input_ids) + 1
+                runner.req_to_token_pool.req_to_token[0] = torch.arange(2 * 4, 14 * 4)
+                _prepare_layerwise_indices(None, SimpleNamespace(reqs=[req]), runner)
+                sender.start_layerwise_send(2)
+                for layer in range(2):
+                    sender.save_kv_layer(layer)
+                sender.wait_layerwise_send_done()
+                expected = [
+                    (
+                        src + (5 + start_page) * item_len,
+                        dst + (50 + start_page - 4) * item_len,
+                        (12 - start_page) * item_len,
+                    )
+                    for src, dst, item_len in zip(
+                        mgr.kv_args.kv_data_ptrs,
+                        mgr.peer.dst_kv_ptrs,
+                        mgr.kv_args.kv_item_lens,
+                    )
+                ]
+                self.assertCountEqual(mgr.writes, expected)
 
     def test_forward_returns_before_compute_and_transport_finish(self):
         """A blocked attention event or transport must not hold up forward."""
