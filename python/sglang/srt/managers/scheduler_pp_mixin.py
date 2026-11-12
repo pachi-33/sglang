@@ -243,10 +243,11 @@ class SchedulerPPMixin:
         ====================================================================
 
         Release Requests still use the two-pass PP consensus. Bootstrap uses
-        PPConsensusStore instead of the legacy two-round RID sync. With
-        SGLANG_PP_PREFILL_EARLY_RELEASE, the release/retire and request/transfer
-        control messages move together before batch scheduling and device waits;
-        the tensor exchange order below is unchanged.
+        PPConsensusStore instead of the legacy two-round RID sync.
+        SGLANG_PP_PREFILL_EARLY_RELEASE retires requests after release consensus
+        but before waiting for an unrelated microbatch's D2H/result processing.
+        CPU control and device communication keep their original relative order:
+        waiting for release before proxy/output exchange can deadlock HCCL.
 
         """
         self.init_pp_loop_state()
@@ -288,22 +289,6 @@ class SchedulerPPMixin:
                 transferred_rids = self._pp_pd_get_prefill_transferred_ids()
                 self._pp_commit_comm_work(send_transfer_work)
                 tmbs[mb_id] = transferred_rids
-
-                if early_release:
-                    # Progress the CPU control ring before any proxy/output receive
-                    # or device wait. Keep wire order release -> requests -> transfers.
-                    next_release_rids = self._pp_prefill_exchange_release(
-                        tmbs,
-                        next_first_rank_mb_id,
-                        next_mb_id,
-                        release_rids,
-                        transferred_rids,
-                    )
-                    if tmbs[next_mb_id] is not None:
-                        self._pp_prefill_retire_transfers(next_release_rids)
-                    send_transfer_work = self._pp_prefill_send_control(
-                        recv_reqs, transferred_rids
-                    )
 
                 self.process_prefill_chunk(
                     last_batch=self.last_batch, running_batch=self.running_batch
@@ -347,14 +332,20 @@ class SchedulerPPMixin:
                             next_mb_id,
                         )
                     )
-                if not early_release:
-                    next_release_rids = self._pp_prefill_exchange_release(
-                        tmbs,
-                        next_first_rank_mb_id,
-                        next_mb_id,
-                        release_rids,
-                        transferred_rids,
-                    )
+                # Preserve the CPU/device dependency order, not just CPU FIFO.
+                # A downstream stage may be waiting for our *next* release while
+                # our current proxy/output isend waits for its matching recv
+                # (notably on HCCL communicator initialization). Never move this
+                # blocking exchange ahead of the tensor exchanges above.
+                next_release_rids = self._pp_prefill_exchange_release(
+                    tmbs,
+                    next_first_rank_mb_id,
+                    next_mb_id,
+                    release_rids,
+                    transferred_rids,
+                )
+                if early_release and tmbs[next_mb_id] is not None:
+                    self._pp_prefill_retire_transfers(next_release_rids)
                 # post-process the coming microbatch
                 if self.mbs[next_mb_id] is not None:
                     d2h_event.synchronize()
@@ -367,12 +358,11 @@ class SchedulerPPMixin:
                     )
                     self.last_mbs[next_mb_id] = self.mbs[next_mb_id]
 
-                if not early_release:
-                    if tmbs[next_mb_id] is not None:
-                        self._pp_prefill_retire_transfers(next_release_rids)
-                    send_transfer_work = self._pp_prefill_send_control(
-                        recv_reqs, transferred_rids
-                    )
+                if not early_release and tmbs[next_mb_id] is not None:
+                    self._pp_prefill_retire_transfers(next_release_rids)
+                send_transfer_work = self._pp_prefill_send_control(
+                    recv_reqs, transferred_rids
+                )
                 if not self.pp_group.is_last_rank and cur_batch:
                     self._pp_send_proxy_to_next_stage(result)
 

@@ -10,12 +10,12 @@ from __future__ import annotations
 import ast
 import logging
 import os
-from pathlib import Path
 import queue
 import threading
 import time
-from types import MethodType, SimpleNamespace
 import unittest
+from pathlib import Path
+from types import MethodType, SimpleNamespace
 
 
 def _source_path():
@@ -341,7 +341,7 @@ class TestPPPrefillEarlyRelease(unittest.TestCase):
             {"both": False, "failed-remotely": True, "failed-locally": True},
         )
 
-    def test_ready_responses_precede_unrelated_gpu_waits(self):
+    def test_ready_responses_precede_unrelated_d2h_waits(self):
         for pp_size in (2, 4):
             for depth in (0, 1):
                 for rank in range(pp_size):
@@ -351,16 +351,23 @@ class TestPPPrefillEarlyRelease(unittest.TestCase):
                         for step in range(stage.steps):
                             ops = [name for i, name in stage.ops if i == step]
                             self.assertLess(
-                                ops.index("exchange_release"), ops.index("output_wait")
+                                ops.index("recv_proxy"), ops.index("exchange_release")
+                            )
+                            self.assertLess(
+                                ops.index("output_wait"), ops.index("exchange_release")
                             )
                             if "retire_and_respond" in ops:
                                 self.assertLess(
+                                    ops.index("exchange_release"),
                                     ops.index("retire_and_respond"),
-                                    ops.index("schedule"),
                                 )
                                 self.assertLess(
                                     ops.index("retire_and_respond"),
-                                    ops.index("output_wait"),
+                                    ops.index("d2h_wait"),
+                                )
+                                self.assertLess(
+                                    ops.index("retire_and_respond"),
+                                    ops.index("process_result"),
                                 )
                             if rank < pp_size - 1:
                                 self.assertLess(
@@ -369,12 +376,201 @@ class TestPPPrefillEarlyRelease(unittest.TestCase):
                                 )
                                 self.assertLess(
                                     ops.index("send_transferred"),
-                                    ops.index("recv_proxy"),
+                                    ops.index("send_proxy"),
                                 )
-                                self.assertLess(
-                                    ops.index("send_transferred"),
-                                    ops.index("output_wait"),
-                                )
+
+    def test_early_release_preserves_all_communication_order(self):
+        # The flag may move retirement, never a CPU or device communication.
+        comm_ops = {
+            "ingest",
+            "snapshot_transferred",
+            "recv_proxy",
+            "commit_proxy",
+            "output_wait",
+            "exchange_release",
+            "send_release",
+            "recv_release",
+            "commit_release",
+            "send_requests",
+            "send_transferred",
+            "send_proxy",
+            "commit_requests",
+            "commit_transferred",
+        }
+        for pp_size in (2, 4):
+            for depth in (0, 1, 2):
+                for rank in range(pp_size):
+                    with self.subTest(pp=pp_size, depth=depth, rank=rank):
+                        sequences = []
+                        for early in (False, True):
+                            stage = FakeStage(early, pp_size, depth, rank)
+                            stage.run()
+                            sequences.append(
+                                [op for op in stage.ops if op[1] in comm_ops]
+                            )
+                        self.assertEqual(*sequences)
+
+    def _retirement_lifecycle_stage(self, early, depth=0, steps=8):
+        """Use the real retirement method with CPU-only resource/output spies."""
+        source = _source_path().parents[1] / "disaggregation/prefill.py"
+        tree = ast.parse(source.read_text())
+        cls = next(
+            n
+            for n in tree.body
+            if isinstance(n, ast.ClassDef)
+            and n.name == "SchedulerDisaggregationPrefillMixin"
+        )
+        method = next(
+            n
+            for n in cls.body
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "process_disagg_prefill_inflight_queue"
+        )
+        method.decorator_list = []
+        stage = FakeStage(early, 4, depth, steps=steps)
+        stage.released, stage.responded, stage.cleared, stage.metadata_freed = (
+            [],
+            [],
+            [],
+            [],
+        )
+        stage.finished_handles = []
+        polls = SimpleNamespace(Success=4, Failed=0, WaitingForInput=2, Transferring=3)
+
+        def release_kv(req, cache, checkpoint):
+            self.assertTrue(checkpoint)
+            self.assertNotIn(req.rid, stage.released, "KV released twice")
+            stage.released.append(req.rid)
+
+        def release_metadata(req, allocator):
+            self.assertGreaterEqual(req.metadata_buffer_index, 0)
+            stage.metadata_freed.append(req.rid)
+            req.metadata_buffer_index = -1
+
+        namespace = {
+            "KVPoll": polls,
+            "FINISH_ABORT": type("AbortReason", (), {}),
+            "FINISH_LENGTH": lambda length: SimpleNamespace(length=length),
+            "CacheRequestOutcome": SimpleNamespace(SUCCESS="success"),
+            "FAKE_BOOTSTRAP_HOST": "fake",
+            "release_kv_cache": release_kv,
+            "maybe_release_metadata_buffer": release_metadata,
+            "poll_and_all_reduce_attn_cp_tp_group": lambda senders, *groups: [
+                sender.poll() for sender in senders
+            ],
+            "rank_consensus_checker": SimpleNamespace(assert_same=lambda *args: None),
+        }
+        module = ast.Module(
+            body=[
+                ast.ImportFrom(
+                    module="__future__", names=[ast.alias(name="annotations")], level=0
+                ),
+                method,
+            ],
+            type_ignores=[],
+        )
+        exec(compile(ast.fix_missing_locations(module), str(source), "exec"), namespace)
+        stage.process_disagg_prefill_inflight_queue = MethodType(
+            namespace[method.name], stage
+        )
+        stage.attn_cp_cpu_group = stage.attn_tp_cpu_group = None
+        stage.tree_cache = SimpleNamespace(
+            finish=lambda handle, outcome: stage.finished_handles.append(
+                (handle, outcome)
+            )
+        )
+        stage.req_to_metadata_buffer_idx_allocator = object()
+        stage.output_streamer = SimpleNamespace(
+            stream_output=lambda reqs, *args: stage.responded.extend(
+                r.rid for r in reqs
+            )
+        )
+
+        def request(rid):
+            req = SimpleNamespace(
+                rid=rid,
+                pending_bootstrap=False,
+                return_routed_experts=False,
+                return_logprob=False,
+                finished_reason=None,
+                bootstrap_host="fake",
+                cache_request_handle=rid,
+                metadata_buffer_index=1,
+                time_stats=SimpleNamespace(
+                    set_prefill_kv_transfer_finish_time=lambda: None,
+                    set_completion_time=lambda: None,
+                ),
+                disagg_kv_sender=SimpleNamespace(
+                    poll=lambda: polls.Success,
+                    clear=lambda: stage.cleared.append(rid),
+                ),
+            )
+            req.finish_outside_step = lambda reason: setattr(
+                req, "finished_reason", reason
+            )
+            return req
+
+        stage.old_req, stage.new_req = request("old"), request("new")
+        stage.disagg_prefill_inflight_queue = [stage.old_req]
+        # Repeat the old release, including after it has already been retired.
+        stage._pp_recv_pyobj_from_prev_stage = lambda: {"old": False}
+        return stage
+
+    def test_ready_transfer_responds_before_a_blocked_unrelated_d2h(self):
+        # The D2H barrier stops the loop before the next result can be processed.
+        # Early mode must have already sent the old request's response there.
+        for early in (False, True):
+            for depth in (0, 1):
+                with self.subTest(early=early, depth=depth):
+                    stage = self._retirement_lifecycle_stage(early, depth)
+                    reached_d2h = []
+
+                    def blocked_d2h():
+                        reached_d2h.append(True)
+                        raise StopLoop
+
+                    stage._pp_commit_send_output_work_and_preprocess_output_tensors = (
+                        lambda *args: (
+                            None,
+                            object(),
+                            SimpleNamespace(synchronize=blocked_d2h),
+                        )
+                    )
+                    stage._pp_process_batch_result = lambda *args: self.fail(
+                        "A blocked D2H must prevent result processing"
+                    )
+                    stage.run()
+                    self.assertEqual(reached_d2h, [True])
+                    expected = ["old"] if early else []
+                    self.assertEqual(stage.responded, expected)
+                    self.assertEqual(stage.released, expected)
+                    self.assertEqual(stage.metadata_freed, expected)
+
+    def test_old_consensus_does_not_retire_new_result_or_reply_twice(self):
+        for early in (False, True):
+            for depth in (0, 1):
+                with self.subTest(early=early, depth=depth):
+                    stage = self._retirement_lifecycle_stage(early, depth, steps=10)
+                    appended = []
+
+                    def process_result(*args):
+                        if not appended:
+                            stage.disagg_prefill_inflight_queue.append(stage.new_req)
+                            appended.append(stage.step)
+
+                    stage._pp_process_batch_result = process_result
+                    stage.run()
+                    self.assertEqual(len(appended), 1)
+                    self.assertEqual(stage.responded, ["old"])
+                    self.assertEqual(stage.released, ["old"])
+                    self.assertEqual(stage.cleared, ["old"])
+                    self.assertEqual(stage.metadata_freed, ["old"])
+                    self.assertEqual(stage.finished_handles, [("old", "success")])
+                    self.assertEqual(
+                        stage.disagg_prefill_inflight_queue, [stage.new_req]
+                    )
+                    self.assertIsNone(stage.new_req.finished_reason)
+                    self.assertEqual(stage.new_req.metadata_buffer_index, 1)
 
     def test_disabled_retains_legacy_completion_order(self):
         for pp_size in (2, 4):
