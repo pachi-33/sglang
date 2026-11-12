@@ -1014,6 +1014,11 @@ class SchedulerDisaggregationPrefillMixin:
         for i, (req, next_token_id) in enumerate(
             zip(batch.reqs, next_token_ids, strict=True)
         ):
+            if getattr(req.disagg_kv_sender, "is_layerwise_enabled", False):
+                # PP reaches here after tensor exchange. Each request owns its
+                # pending transfers; a fake sender or another request cannot
+                # stand in for the rest of the batch. Also covers non-PP prefill.
+                req.disagg_kv_sender.wait_layerwise_send_done()
             if req.inflight_middle_chunks <= 0:
                 req.time_stats.set_prefill_finished_time()
 
@@ -1941,6 +1946,8 @@ class SchedulerDisaggregationPrefillMixin:
 
     def optimistic_release_and_requeue(self: Scheduler, req: Req) -> None:
         """Release KV cache and requeue an optimistic prefill request."""
+        if getattr(req.disagg_kv_sender, "is_layerwise_enabled", False):
+            req.disagg_kv_sender.wait_layerwise_send_done()
         max_attempts = get_disagg().optimistic_prefill_attempts
         uses_write_through_cache = _uses_write_through_cache(self.tree_cache)
         if not uses_write_through_cache:

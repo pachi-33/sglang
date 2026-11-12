@@ -454,6 +454,7 @@ class MooncakeKVManager(StagingManagerMixin, CommonKVManager):
         here; only mooncake-side registrations / sockets are released.
         """
         self._stopped = True
+        self.shutdown_layerwise()
 
         # Stop the failed-session probe loop (PREFILL role) if running.
         probe_shutdown = getattr(self, "_failed_session_probe_shutdown", None)

@@ -163,6 +163,10 @@ class BaseKVManager(ABC):
     # (ABORT_ACK carrying the sender rank). Without it a hold only ends on timeout.
     supports_deferred_decode_kv_release: bool = False
 
+    def has_pending_layerwise(self, room: Optional[int] = None) -> bool:
+        """Whether layerwise writes still pin this room (or any room)."""
+        return False
+
     def teardown(self) -> None:
         raise NotImplementedError(
             f"{type(self).__name__} does not support PD role switch teardown"
@@ -260,9 +264,11 @@ class BaseKVSender(ABC):
         pass
 
     def finalize_layerwise_send(self) -> None:
-        """Called after the model forward pass completes. Layerwise backends
-        flush any remaining state (aux, Mamba, etc.) and signal completion
-        to the decode side."""
+        """Queue any pending per-layer writes at the end of model forward."""
+        pass
+
+    def wait_layerwise_send_done(self) -> None:
+        """Drain this request's writes before result handling or KV release."""
         pass
 
 

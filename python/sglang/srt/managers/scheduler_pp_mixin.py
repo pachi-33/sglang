@@ -353,17 +353,6 @@ class SchedulerPPMixin:
                 # post-process the coming microbatch
                 if self.mbs[next_mb_id] is not None:
                     d2h_event.synchronize()
-                    # Sync layerwise KV transfers at a single pipeline point
-                    # — after PP tensor exchange, before post-processing
-                    # queues the final state/aux transfer. All senders on
-                    # this worker share the manager's transfer stream.
-                    for req in self.mbs[next_mb_id].reqs:
-                        sender = getattr(req, "disagg_kv_sender", None)
-                        if sender is not None and hasattr(
-                            sender, "wait_layerwise_send_done"
-                        ):
-                            sender.wait_layerwise_send_done()
-                            break
                     self._pp_process_batch_result(
                         self.mbs[next_mb_id],
                         next_batch_result,

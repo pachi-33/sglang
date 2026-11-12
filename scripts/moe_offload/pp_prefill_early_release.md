@@ -4,7 +4,7 @@
 
 ## PR #38309 的另外两个开关
 
-本分支合入了 [PR #38309](https://github.com/sgl-project/sglang/pull/38309)，来源提交为 `8cc6cf74ea75e456e743c96eea9d3a8b0abf5d79`。下面两个开关默认关闭，启动脚本没有自动启用它们：
+本分支合入了 [PR #38309](https://github.com/sgl-project/sglang/pull/38309)，来源提交为 `8cc6cf74ea75e456e743c96eea9d3a8b0abf5d79`。下面两个开关在代码中默认关闭，当前 `serve_glm52_prefill_pp4_cp4.sh` 已显式开启它们：
 
 | 开关 | 行为 |
 | --- | --- |
@@ -24,6 +24,14 @@ bash scripts/moe_offload/serve_glm52_prefill_pp4_cp4.sh
 ```
 
 分层传输需要真实 decode 节点才能验证；fake sender 不会实际发送分层 KV。合入时保留了本分支的 PP 通信顺序修复、KV checksum、CP 索引处理和普通传输的异步索引拷贝。CPU 检查不能替代 NPU/HCCL 下的传输正确性与性能验证。
+
+### Ascend 缓冲区与后台传输修复
+
+逐层发送现在会包含同一层的全部已注册缓冲区（K、V、index K 等），沿用 Ascend 的 PP 层映射。同步传输接口在独立后台线程执行：线程先等待这一层 attention 的设备事件，再读取 KV；forward 只提交任务，不等待网络传输，也不再在 MoE matmul 后等待传输。
+
+每个请求分别保存任务的完成状态。结果后处理、最后一次发送和释放 KV 前，会等待该请求的后台任务；这仍可能等待本请求的慢传输，但不会等待另一个请求后来覆盖的全局完成事件。后台任务也参与取消确认、内存整理和后端退出的检查，避免仍在读写的页被复用。
+
+这次修复未处理此前 review 指出的 PP 提前释放确认丢失、分块索引范围和 decode 前缀偏移问题，不能据此认为这两个开关的所有场景都已验证。
 
 ## 使用
 

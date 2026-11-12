@@ -184,9 +184,14 @@ def disagg_transfers_in_flight(scheduler):
     # The scheduler and pool outlive the queues rebuilt by a PD role switch.
     def busy() -> bool:
         if scheduler.disaggregation_mode == DisaggregationMode.PREFILL:
+            bootstrap_queue = getattr(scheduler, "disagg_prefill_bootstrap_queue", None)
+            kv_manager = getattr(bootstrap_queue, "kv_manager", None)
             return bool(
                 scheduler.disagg_prefill_inflight_queue
                 or scheduler.disagg_prefill_pending_chunk_rids
+                # Layerwise writes can start in forward, before either queue
+                # tracks the request. Their captured physical addresses pin KV.
+                or (kv_manager is not None and kv_manager.has_pending_layerwise())
             )
         if scheduler.disaggregation_mode == DisaggregationMode.DECODE:
             decode_offload_manager = scheduler.decode_offload_manager

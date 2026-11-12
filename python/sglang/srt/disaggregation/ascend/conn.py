@@ -15,6 +15,7 @@ from sglang.srt.disaggregation.mooncake.conn import (
     MooncakeKVReceiver,
     MooncakeKVSender,
 )
+from sglang.srt.disaggregation.utils import build_transfer_entry_pairs
 from sglang.srt.runtime_context import get_parallel
 from sglang.srt.utils.network import get_local_ip_auto
 
@@ -268,6 +269,46 @@ class AscendKVManager(MooncakeKVManager):
                     )
         layers_current_pp_stage = len(src_kv_ptrs)
         return src_kv_ptrs, sliced_dst_kv_ptrs, layers_current_pp_stage
+
+    def get_layer_transfer_entries(
+        self, layer_id: int, peer
+    ) -> List[Tuple[int, int, int]]:
+        """Include K, V, index K and any scales belonging to this layer."""
+        args = self.kv_args
+        src_ids = getattr(args, "kv_layer_ids", None)
+        dst_ids = getattr(peer, "dst_kv_layer_ids", None)
+        if src_ids and dst_ids:
+            pairs = build_transfer_entry_pairs(
+                src_ids, dst_ids, len(args.kv_data_ptrs), len(peer.dst_kv_ptrs)
+            )
+            entries = [
+                (args.kv_data_ptrs[i], peer.dst_kv_ptrs[j], args.kv_item_lens[i])
+                for i, j in pairs
+                if src_ids[i] == layer_id
+            ]
+        else:
+            # Legacy NPU registrations group buffers by component, then layer.
+            # Use the existing PP mapping for every group, including decode PP1.
+            src_ptrs, dst_ptrs, _ = self.get_mla_kv_ptrs_with_pp(
+                args.kv_data_ptrs, peer.dst_kv_ptrs
+            )
+            num_layers = args.prefill_end_layer - args.prefill_start_layer
+            num_entries = len(src_ptrs) - getattr(args, "num_draft_entries", 0)
+            local_layer = layer_id - args.prefill_start_layer
+            if (
+                num_layers <= 0
+                or not 0 <= local_layer < num_layers
+                or num_entries % num_layers
+                or len(dst_ptrs) != len(src_ptrs)
+            ):
+                raise RuntimeError("Invalid Ascend layerwise KV buffer layout")
+            entries = [
+                (src_ptrs[i], dst_ptrs[i], args.kv_item_lens[i])
+                for i in range(local_layer, num_entries, num_layers)
+            ]
+        if not entries:
+            raise RuntimeError(f"No Ascend KV buffers registered for layer {layer_id}")
+        return entries
 
     def send_kvcache(
         self,

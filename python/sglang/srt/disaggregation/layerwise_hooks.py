@@ -38,14 +38,6 @@ def layerwise_save_kv_layer(layer_id: int) -> None:
         sender.save_kv_layer(layer_id)
 
 
-def layerwise_wait_transfer_done() -> None:
-    """Make the compute stream wait for all queued transfer-stream RDMA
-    work to complete.  Called before EP combine communication to avoid
-    RDMA / HCCL network resource contention."""
-    for sender in get_disagg_kv_senders():
-        sender.wait_compute_on_transfer()
-
-
 def layerwise_finalize_send() -> None:
     """Notify all active senders that the forward has finished and no more
     per-layer save calls will arrive."""

@@ -553,50 +553,6 @@ class TestPPPrefillEarlyRelease(unittest.TestCase):
                     self.assertIn(stage.new_req, stage.disagg_prefill_inflight_queue)
                     self.assertIsNone(stage.new_req.finished_reason)
 
-    def test_layerwise_wait_is_reset_for_each_forward(self):
-        # A slot is reused for later forwards. Waiting twice must not drain
-        # twice, but the next forward must not inherit the earlier wait flag.
-        source = _source_path().parents[1] / "disaggregation/common/conn.py"
-        cls = next(
-            node
-            for node in ast.parse(source.read_text()).body
-            if isinstance(node, ast.ClassDef) and node.name == "CommonKVSender"
-        )
-        names = {"start_layerwise_send", "wait_layerwise_send_done"}
-        methods = [
-            node
-            for node in cls.body
-            if isinstance(node, ast.FunctionDef) and node.name in names
-        ]
-        namespace = {}
-        module = ast.Module(body=methods, type_ignores=[])
-        exec(compile(ast.fix_missing_locations(module), str(source), "exec"), namespace)
-        pending, completed = [], []
-
-        def drain():
-            completed.extend(pending)
-            pending.clear()
-
-        sender = SimpleNamespace(
-            _layerwise_enabled=True,
-            kv_mgr=SimpleNamespace(
-                init_layerwise=lambda: None, wait_layerwise_done=drain
-            ),
-        )
-        for name in names:
-            setattr(sender, name, MethodType(namespace[name], sender))
-        for request in ("request-1", "request-2"):
-            sender.start_layerwise_send(2)
-            pending.append(request)
-            sender.wait_layerwise_send_done()
-            self.assertFalse(pending)
-            # A later transfer must not be drained by a duplicate wait.
-            pending.append("unrelated")
-            sender.wait_layerwise_send_done()
-            self.assertEqual(pending, ["unrelated"])
-            pending.clear()
-        self.assertEqual(completed, ["request-1", "request-2"])
-
     def test_ready_transfer_responds_before_a_blocked_unrelated_d2h(self):
         # The D2H barrier stops the loop before the next result can be processed.
         # Early mode must have already sent the old request's response there.
