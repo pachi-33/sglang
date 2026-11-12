@@ -20,6 +20,9 @@ P_NUMA_NODES=${P_NUMA_NODES:-"0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7"}
 read -r -a numa_nodes <<< "$P_NUMA_NODES"
 
 export SGLANG_PP_PREFILL_EARLY_RELEASE=1
+# 每层 attention 计算完成后开始传输该层 KV。
+export SGLANG_DISAGG_LAYERWISE=1
+export SGLANG_PP_EARLY_RELEASE_KV=1
 
 # ==================== 服务与单机通信 ====================
 SERVER_HOST=${SERVER_HOST:-0.0.0.0}
