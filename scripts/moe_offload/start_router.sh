@@ -4,7 +4,7 @@ export PYTHONPATH="$SGLANG_ROOT/python${PYTHONPATH:+:$PYTHONPATH}"
 
 python -m sglang_router.launch_router \
     --pd-disaggregation \
-    --prefill http://61.47.19.68:8000 8998 \
+    --prefill http://61.47.19.70:8000 8998 \
     --decode http://61.47.19.70:8003 \
     --host 127.0.0.1 \
     --port 6688

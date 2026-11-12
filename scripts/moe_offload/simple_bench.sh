@@ -4,16 +4,17 @@ set -euo pipefail
 # ==================== 主要配置 ====================
 HOST="127.0.0.1"
 PORT=30000
+# PORT=8000
 # PORT=6688
-KV_CACHE_HIT_RATE=0.99                 # 0~1；0.90=90%，1.0=原参考的全共享前缀
+KV_CACHE_HIT_RATE=0.90                 # 0~1；0.90=90%，1.0=原参考的全共享前缀
 # MODEL="/home/weights/DeepSeek-V4-Flash-0731-w8a8"
 MODEL="/home/weights/GLM-5.2-w8a8"
-CONCURRENCY=1                      # 正式压测的客户端并发上限
+CONCURRENCY=5                      # 正式压测的客户端并发上限
 
 # ==================== 测试规模 ====================
 INPUT_LEN=128000                       # 目标总输入长度：共享前缀 + 独立问题
 OUTPUT_LEN=1
-NUM_REQUESTS=1                       # 正式压测总请求数，与并发上限不同
+NUM_REQUESTS=128                       # 正式压测总请求数，与并发上限不同
 CACHE_REQUESTS=1                       # 创建缓存阶段的请求数和并发上限
 
 # 每次运行使用新种子，减少复用上轮问题缓存的干扰；两阶段共用它。
@@ -101,6 +102,14 @@ fi
 # ==================== 2. 正式压测 ====================
 # 不使用 --flush-cache，否则会清除刚刚创建的服务端缓存。
 echo "[2/2] 开始正式压测"
+
+# curl -X POST http://61.47.19.70:8000/start_profile -H "Content-Type: application/json"   -d '{
+#     "num_steps": 10,
+#     "activities": ["CPU","GPU"],
+#     "profile_by_stage":true,
+#     "with_stack":false,
+#     "record_shapes":false
+#   }'
 
 # curl -X POST http://127.0.0.1:30000/start_profile -H "Content-Type: application/json"   -d '{
 #     "num_steps": 4,
