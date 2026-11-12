@@ -107,7 +107,7 @@ do
         --served-model-name glm-5 --moe-a2a-backend deepep --deepep-mode low_latency \
         --cuda-graph-bs-decode 1 2 3 --disaggregation-transfer-backend ascend --watchdog-timeout 9000 --context-length 180000 \
         --tokenizer-worker-num 4 --disable-shared-experts-fusion --dtype bfloat16  --load-balance-method round_robin \
-        --speculative-algorithm NEXTN --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5 --speculative-draft-model-quantization unquant 
+        --speculative-algorithm NEXTN --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5 --speculative-draft-model-quantization unquant
 
         NODE_RANK=$i
         break

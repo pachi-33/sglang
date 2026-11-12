@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A3 单机 16 die，PP1 / EP16，仅 Prefill 权重卸载，支持 DP4×CP4 和 DP2×CP8。
+# A3 单机 16 die，PP1 / EP16，仅 Prefill 权重卸载，默认 DP2×CP8。
 # 启动前激活已安装 torch_npu / SGLang 依赖的 Python 环境。
 # Usage: bash serve_glm52_prefill_dp4_cp4_ep16.sh [--dp2-cp8] [--dry-run]
 set -eo pipefail
@@ -39,9 +39,9 @@ usage() {
   cat <<EOF
 Usage: MODEL_PATH=/models/GLM-5.2-w8a8 $0 [--dp2-cp8] [--dry-run]
   --dry-run : 只读模型 config.json、检查配置并打印命令，不加载 NPU 或创建运行文件。
-单机 PP1 / TP16 / EP16，默认 attention DP4 × CP4 zigzag。
-  --dp2-cp8 : 改用 attention DP2 × CP8 zigzag。
-默认每层常驻比例 0.25，每个 DP 组实际 chunk 上限 16384。
+单机 PP1 / TP16 / EP16，默认 attention DP2 × CP8 zigzag。
+  --dp2-cp8 : 显式选择 attention DP2 × CP8 zigzag（与默认一致）。
+默认每层常驻比例 0.4，每个 DP 组实际 chunk 上限 16384。
 PREFILL_RESIDENT_RATIO 设置每层本地 routed experts 常驻比例，0 表示全卸载。
 CHUNKED_PREFILL_SIZE 是除以 attention DP 数之前的值。
 P_MOE_A2A_BACKEND=deepep 可使用 DeepEP normal；默认 ascend_ops。

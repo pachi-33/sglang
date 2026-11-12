@@ -43,11 +43,12 @@ usage() {
 Usage: MODEL_PATH=/models/GLM-5.2-w8a8 $0 [--dp4-cp4-ep16] [--dry-run]
   --dry-run : 只读模型 config.json、检查配置并打印命令，不加载 NPU 或创建运行文件。
 默认拓扑为 PP4 × TP4 / attention DP1 / CP4 zigzag / stage 内 EP4。
+PP4 模式默认每层常驻比例 0.6。
   --dp4-cp4-ep16 : PP1 / TP16 / attention DP4 × CP4 zigzag / EP16。
                    默认每层常驻比例 0.25，每个 DP 组实际 chunk 上限 16384。
 PREFILL_RESIDENT_RATIO 设置每层本地 routed experts 常驻比例，0 表示全卸载。
 DP4 模式下 CHUNKED_PREFILL_SIZE 是除以 DP 数之前的值。
-P_MOE_A2A_BACKEND=deepep 可使用 DeepEP normal；默认 ascend_ops。
+默认 P_MOE_A2A_BACKEND=deepep，使用 DeepEP normal；可设 ascend_ops。
 请求直发 P 的 /generate，设置 max_new_tokens=1、bootstrap_host=2.2.2.2、bootstrap_room=0。
 不启动 D / Router；真实 PD KV 传输不在这次独立 P 测试范围内。
 EOF
@@ -207,7 +208,7 @@ export SGLANG_TEST_FAKE_PREFILL_RADIX_CACHE=1
 
 command=("$PYTHON_BIN" -u -m sglang.launch_server
   --model-path "$MODEL_PATH" --served-model-name glm52-prefill-offload
-  --device npu --base-gpu-id 0 
+  --device npu --base-gpu-id 0
   --numa-node "${numa_nodes[@]}"
   --attention-backend ascend --quantization modelslim
   --load-format safetensors --dtype bfloat16 --trust-remote-code
@@ -270,7 +271,7 @@ assert ensure_acc_offload_ext("A3", install_dir=sys.argv[1])
 PY_EXT
 "$PYTHON_BIN" -m sglang.srt.offloading.moe.npu.native_acl --build-directory "$RUNTIME_DIR/native_acl"
 
-export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True SGLANG_SET_CPU_AFFINITY=1 
+export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True SGLANG_SET_CPU_AFFINITY=1
 export SGLANG_NUMA_BIND_V2=0
 export HCCL_BUFFSIZE=1024 HCCL_OP_EXPANSION_MODE=AIV
 if [[ $P_MOE_A2A_BACKEND == deepep ]]; then

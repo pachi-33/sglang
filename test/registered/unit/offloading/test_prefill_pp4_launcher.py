@@ -151,7 +151,7 @@ class TestPrefillPP4Launcher(unittest.TestCase):
             self.assertEqual(command[command.index(flag) + 1], value)
         self.assertIn("--enable-dp-lm-head", command)
 
-    def test_standalone_pp1_launcher_supports_both_attention_topologies(self):
+    def test_standalone_pp1_launcher_default_and_explicit_dp2_cp8(self):
         root = self.root / "standalone checkout"
         launcher = root / "scripts/moe_offload/serve_glm52_prefill_dp4_cp4_ep16.sh"
         launcher.parent.mkdir(parents=True)
@@ -160,8 +160,8 @@ class TestPrefillPP4Launcher(unittest.TestCase):
         (root / options).parent.mkdir(parents=True)
         shutil.copyfile(SCRIPT.parents[2] / options, root / options)
 
-        for dp, cp, args in ((4, 4, ()), (2, 8, ("--dp2-cp8",))):
-            with self.subTest(dp=dp, cp=cp):
+        for dp, cp, args in ((2, 8, ()), (2, 8, ("--dp2-cp8",))):
+            with self.subTest(dp=dp, cp=cp, args=args):
                 result = self._run(
                     *args,
                     launcher=launcher,
@@ -171,8 +171,8 @@ class TestPrefillPP4Launcher(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 config, _ = json.JSONDecoder().raw_decode(result.stdout)
-                self.assertEqual(config["prefill_resident_ratio"], 0.25)
-                self.assertIn("HBM slots/rank: 324", result.stdout)
+                self.assertEqual(config["prefill_resident_ratio"], 0.4)
+                self.assertIn("HBM slots/rank: 470", result.stdout)
                 self.assertIn("Chunk cap per attention DP group: 16384", result.stdout)
                 command = shlex.split(result.stdout.split("Command:", 1)[1])
                 for flag, value in {
