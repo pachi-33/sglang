@@ -19,6 +19,8 @@ export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7,8,
 P_NUMA_NODES=${P_NUMA_NODES:-"0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7"}
 read -r -a numa_nodes <<< "$P_NUMA_NODES"
 
+export SGLANG_PP_PREFILL_EARLY_RELEASE=1
+
 # ==================== 服务与单机通信 ====================
 SERVER_HOST=${SERVER_HOST:-0.0.0.0}
 SERVER_PORT=${SERVER_PORT:-30000}
