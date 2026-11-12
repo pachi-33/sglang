@@ -11,9 +11,13 @@ MODEL_PATH=${MODEL_PATH:-/home/weights/GLM-5.2-w8a8} # 本机 GLM-5.2 ModelSlim 
 EXECUTION_SLOTS=${EXECUTION_SLOTS:-""} # P 每 rank 权重槽位上限，留空自动计算
 CONTEXT_LENGTH=${CONTEXT_LENGTH:-180000}
 MAX_RUNNING_REQUESTS=${MAX_RUNNING_REQUESTS:-128}
-MEM_FRACTION_STATIC=${MEM_FRACTION_STATIC:-0.6}
-P_MOE_A2A_BACKEND=${P_MOE_A2A_BACKEND:-ascend_ops}
+MEM_FRACTION_STATIC=${MEM_FRACTION_STATIC:-0.8}
+P_MOE_A2A_BACKEND=${P_MOE_A2A_BACKEND:-deepep}
 export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
+
+# 逻辑 device 0/1 -> NUMA0，2/3 -> NUMA1，依此类推
+P_NUMA_NODES=${P_NUMA_NODES:-"0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7"}
+read -r -a numa_nodes <<< "$P_NUMA_NODES"
 
 # ==================== 服务与单机通信 ====================
 SERVER_HOST=${SERVER_HOST:-0.0.0.0}
@@ -70,7 +74,7 @@ else
   pp_size=4 tp_size=4 attn_dp_size=1
   export SGLANG_PP_LAYER_PARTITION=${SGLANG_PP_LAYER_PARTITION:-18,20,24,16}
   HOST_POOL_GIB=${HOST_POOL_GIB:-56}
-  PREFILL_RESIDENT_RATIO=${PREFILL_RESIDENT_RATIO:-0}
+  PREFILL_RESIDENT_RATIO=${PREFILL_RESIDENT_RATIO:-0.6}
   CHUNKED_PREFILL_SIZE=${CHUNKED_PREFILL_SIZE:-16384}
   MAX_PREFILL_TOKENS=${MAX_PREFILL_TOKENS:-$CHUNKED_PREFILL_SIZE}
   topology_args=()
@@ -203,7 +207,9 @@ export SGLANG_TEST_FAKE_PREFILL_RADIX_CACHE=1
 
 command=("$PYTHON_BIN" -u -m sglang.launch_server
   --model-path "$MODEL_PATH" --served-model-name glm52-prefill-offload
-  --device npu --base-gpu-id 0 --attention-backend ascend --quantization modelslim
+  --device npu --base-gpu-id 0 
+  --numa-node "${numa_nodes[@]}"
+  --attention-backend ascend --quantization modelslim
   --load-format safetensors --dtype bfloat16 --trust-remote-code
   --host "$SERVER_HOST" --port "$SERVER_PORT" --dist-init-addr "$P_IP:$DIST_PORT"
   --nnodes 1 --node-rank 0 --pp-size "$pp_size" --tp-size "$tp_size" --dp-size 1 --attn-dp-size "$attn_dp_size"
@@ -264,7 +270,8 @@ assert ensure_acc_offload_ext("A3", install_dir=sys.argv[1])
 PY_EXT
 "$PYTHON_BIN" -m sglang.srt.offloading.moe.npu.native_acl --build-directory "$RUNTIME_DIR/native_acl"
 
-export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True SGLANG_SET_CPU_AFFINITY=1
+export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True SGLANG_SET_CPU_AFFINITY=1 
+export SGLANG_NUMA_BIND_V2=0
 export HCCL_BUFFSIZE=1024 HCCL_OP_EXPANSION_MODE=AIV
 if [[ $P_MOE_A2A_BACKEND == deepep ]]; then
   export DEEPEP_HCCL_BUFFSIZE=${DEEPEP_HCCL_BUFFSIZE:-$HCCL_BUFFSIZE}

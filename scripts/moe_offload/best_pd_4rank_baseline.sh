@@ -25,13 +25,13 @@ export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 export STREAMS_PER_DEVICE=32
 # pd传输, IP设置为p节点首节点
 export ASCEND_MF_LOG_LEVEL=2
-export ASCEND_MF_STORE_URL="tcp://61.47.19.68:24707"
+export ASCEND_MF_STORE_URL="tcp://61.47.19.70:24707"
 export SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT=1200
 export SGLANG_DISAGGREGATION_WAITING_TIMEOUT=1200
 
 
 # p节点IP
-P_IP=('61.47.19.68' '61.47.19.69')
+P_IP=('61.47.19.70' '61.47.19.71')
 # D节点IP D节点首节点IP
 D_IP=('61.47.19.70' '61.47.19.71')
 
@@ -63,7 +63,7 @@ do
 
         # P节点
         python -m sglang.launch_server --model-path ${MODEL_PATH}  --disaggregation-mode prefill --host ${P_IP[$i]} \
-        --port 8000 --disaggregation-bootstrap-port 8998 --dist-init-addr 61.47.19.68:5000 --trust-remote-code --nnodes 2 --node-rank $i \
+        --port 8000 --disaggregation-bootstrap-port 8998 --dist-init-addr 61.47.19.70:5000 --trust-remote-code --nnodes 2 --node-rank $i \
         --mem-fraction-static 0.72 --attention-backend ascend --device npu --quantization modelslim \
         --tp-size 8 \
         --pp-size 4 \
@@ -102,11 +102,12 @@ do
         export SGLANG_NPU_USE_MULTI_STREAM=1
 
         python -m sglang.launch_server --model-path ${MODEL_PATH} --disaggregation-mode decode --host ${D_IP[$i]} \
-        --port 8003 --trust-remote-code --dist-init-addr 61.47.19.70:5000 --nnodes 2 --node-rank $i --tp-size 32 --dp-size 32 --enable-dp-attention --ep-size 32 \
+        --port 8003 --trust-remote-code --dist-init-addr 61.47.19.71:5000 --nnodes 2 --node-rank $i --tp-size 32 --dp-size 32 --enable-dp-attention --ep-size 32 \
         --mem-fraction-static 0.97 --max-running-requests 32 --attention-backend ascend --device npu --quantization modelslim \
         --served-model-name glm-5 --moe-a2a-backend deepep --deepep-mode low_latency \
         --cuda-graph-bs-decode 1 2 3 --disaggregation-transfer-backend ascend --watchdog-timeout 9000 --context-length 180000 \
-        --tokenizer-worker-num 4 --disable-shared-experts-fusion --dtype bfloat16  --load-balance-method round_robin
+        --tokenizer-worker-num 4 --disable-shared-experts-fusion --dtype bfloat16  --load-balance-method round_robin \
+        --speculative-algorithm NEXTN --speculative-num-steps 4 --speculative-eagle-topk 1 --speculative-num-draft-tokens 5 --speculative-draft-model-quantization unquant 
 
         NODE_RANK=$i
         break
