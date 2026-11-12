@@ -17,6 +17,20 @@
 
 跨 stage 的交接和各 stage 空档可能重复覆盖，不能相加当总损失。不同 stage 的包络受 rank 间偏差影响，交接差值可能为负；保留原值并标注，绝不强行归零。
 
+## 请求完成标记
+
+如果服务端提供 `_pp_prefill_completion_event` 钩子，新补丁会在原有 NPU 时间线旁增加每 rank 的 **Host completion** 轨道；旧服务端没有这个钩子时仍只记录原有 forward。只有 control start 到 finish 的窗口内才记录，不需要完整 profiler。
+
+| 标记 | 含义 |
+|---|---|
+| `result_processed` | 最后一个 prefill chunk 的 CPU 后处理已经返回，请求已进入待完成 KV 传输队列；中间 chunk 不记录 |
+| `release_ready` | 调度器已收到该请求的 PP 完成共识，本地请求仍在 inflight 队列；不表示资源已经释放 |
+| `response_enqueued` | 完成队列处理已返回，响应已经交给输出路径；**不表示 HTTP 已发完或客户端已收到** |
+
+这些是 Host 单调时钟的观察点，用同一组 Host→参考时钟锚点映射到全局时间轴，保留时钟误差。它们不是额外 NPU event，也不将 CPU 后处理时间冒充设备计算结束。比较同一 rid 的最后一个 NPU forward 结束、`result_processed`、`release_ready` 和 `response_enqueued`，可区分结果后处理与完成确认等待；HTTP 返回到下一条 POST 的间隔仍需客户端时间戳。
+
+完成标记可能晚于最后一个 forward。`summary.csv` 的占比和窗口仍只按 forward 计算，不把这些标记算作计算或扩展占比分母。中途开始采集也可能看到没有对应 forward 的请求标记，不能据此补造缺失的计算区间。
+
 ## 安装
 
 把整个目录同步到所有 P 节点，建议放在 SGLang 仓库 `tools/pp_chunk_trace`。在运行服务的同一个 Python 环境中：
@@ -115,6 +129,7 @@ python3 -m pp_chunk_trace.merge /path/to/collected/baseline \
 | `summary.csv` | 公共窗口、forward 并集、forward 外占比、填充/排空和中间空档 |
 | `chunks.csv` | 每个设备每个 forward 的起止、耗时和实际 token 数 |
 | `handoffs.csv` | 每次跨 stage 交接差值、时钟误差及完整性标记 |
+| `completions.csv` | 每 rank、每请求的 Host 完成标记、相对时间和时钟误差；旧服务端为空表 |
 | `warnings.json` | 缺 rank、缺 stage、截断、错误、时钟不确定性等 |
 
 用 Chrome tracing 或 Perfetto 打开 `trace.json`。纵轴按 `DP lane / PP rank` 分组，默认汇总轨道显示 `R2 C5 (16384 tokens)`；展开看各 CP/TP rank。横轴是统一相对时间。事件详情有原始 rid、token 范围、attempt 和 batch_id，不保存 prompt 内容。chunk 序号来自该请求真实调度过的 token 范围，不用固定 chunk size 除法猜测；重试同一范围保留序号并增加 attempt。
@@ -125,7 +140,7 @@ token 数表示 CP 切分前、该 attention-DP 请求组的真实逻辑 chunk �
 
 ## 开销与故障边界
 
-默认每 rank 预分配 128 对 timing events。可以在启动前用 `PP_CHUNK_TRACE_MAX_PENDING=256` 调整；容量用完时丢记录并在 finish 标出，不阻塞模型等待空槽。记录线程只在 end event 完成后读取时间并写本地 JSONL；事件未完成不复用。
+默认每 rank 预分配 128 对 timing events。可以在启动前用 `PP_CHUNK_TRACE_MAX_PENDING=256` 调整；容量用完时丢记录并在 finish 标出，不阻塞模型等待空槽。记录线程只在 end event 完成后读取设备时间并写本地 JSONL；事件未完成不复用。Host 完成标记使用独立有界队列，容量为 `PP_CHUNK_TRACE_MAX_PENDING × 8`，不等待未完成的 forward 事件；排满时丢弃并在 finish 标记采集不完整，不阻塞生产线程。Host 标记只入队，由记录线程写盘，不增加设备同步或逐条日志。
 
 主执行路径新增两个 event record、CPU 元数据快照和小型 PP 消息头，没有新增 collective、逐 chunk wait/synchronize、trace 专用全流排空或逐条打印。记录仍有实际开销，是否可接受需要在 NPU 上对照同负载不开/开补丁；CPU 检查不能证明开销百分比。
 

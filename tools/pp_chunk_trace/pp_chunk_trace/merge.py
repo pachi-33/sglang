@@ -129,6 +129,31 @@ class ClockMap:
         return result, error
 
 
+    def map_host(self, host_ns):
+        """Map a Host marker directly, without inventing a device timestamp."""
+        stamp = int(host_ns)
+        if any("host_ns" not in a for a in self.anchors):
+            raise TraceError(f"{self.worker_id}: completion markers require Host clock anchors")
+        anchors = sorted(self.anchors, key=lambda a: int(a["host_ns"]))
+        stamps = [int(a["host_ns"]) for a in anchors]
+        if len(set(stamps)) != len(stamps):
+            raise TraceError(f"{self.worker_id}: duplicate Host clock anchors")
+        if len(anchors) == 1:
+            a = anchors[0]
+            return int(a["reference_ns"]) + stamp - stamps[0], int(a["uncertainty_ns"])
+        if not stamps[0] <= stamp <= stamps[-1]:
+            _warn(self.warnings, f"{self.worker_id}: Host markers extend outside clock anchors; drift extrapolated")
+        index = min(max(bisect.bisect_right(stamps, stamp) - 1, 0), len(anchors) - 2)
+        left, right = anchors[index:index + 2]
+        delta = int(right["reference_ns"]) - int(left["reference_ns"])
+        if delta <= 0:
+            raise TraceError(f"{self.worker_id}: non-monotonic Host clock mapping")
+        fraction = (stamp - stamps[index]) / (stamps[index + 1] - stamps[index])
+        result = int(left["reference_ns"]) + round(fraction * delta)
+        error = round(abs(1 - fraction) * int(left["uncertainty_ns"]) + abs(fraction) * int(right["uncertainty_ns"]))
+        return result, error
+
+
 def _chunks(value):
     if not isinstance(value, list) or not value:
         raise TraceError("forward must have at least one request chunk")
@@ -172,6 +197,7 @@ def merge(inputs, output, run_id=None):
     warnings = []
     workers = _load(sorted(paths), run_id, warnings)
     rows, clock_ids, pp_sizes = [], set(), set()
+    completions = []
     stage_workers = defaultdict(set)
     expected, healthy = {}, {}
     for worker_id, worker in workers.items():
@@ -201,6 +227,15 @@ def merge(inputs, output, run_id=None):
             if kind in ("error", "dropped", "truncated"):
                 healthy[worker_id] = False
                 _warn(warnings, f"{worker_id}: {kind}: {_canonical(record)}")
+            if kind == "completion":
+                if record.get("event") not in ("result_processed", "release_ready", "response_enqueued"):
+                    raise TraceError(f"{worker_id}: unknown completion event")
+                if not isinstance(record.get("rid"), str) or type(record.get("host_ns")) is not int:
+                    raise TraceError(f"{worker_id}: malformed completion marker")
+                stamp, error = clock.map_host(record["host_ns"])
+                completions.append(dict(record, stamp_ns=stamp, uncertainty_ns=error,
+                                        rank=int(meta["rank"]), dp_rank=dp_rank,
+                                        pp_rank=pp_rank, worker_id=worker_id))
             if kind != "forward":
                 continue
             if record.get("status") != "ok" or "start_us" not in record or "end_us" not in record:
@@ -341,6 +376,26 @@ def merge(inputs, output, run_id=None):
                                duration_ms=(row["end_ns"] - row["start_ns"]) / 1e6,
                                token_count=sum(c["end"] - c["start"] for c in row["chunks"]),
                                request_chunks=_canonical(row["chunks"])))
+    completion_rows = []
+    completion_lanes = set()
+    completion_tid_base = max([r["rank"] for r in rows] + [m["rank"] for m in completions]) + 2
+    for marker in sorted(completions, key=lambda m: (m["stamp_ns"], m["rank"])):
+        dp, pp, rank = marker["dp_rank"], marker["pp_rank"], marker["rank"]
+        rid = marker["rid"]
+        rids.setdefault(rid, f"R{len(rids) + 1}")
+        # Allocate integer TIDs beyond every existing forward lane.
+        tid = completion_tid_base + rank
+        if (dp, pp, rank) not in completion_lanes:
+            completion_lanes.add((dp, pp, rank))
+            events.append({"ph": "M", "name": "thread_name", "pid": pid(dp, pp),
+                           "tid": tid, "args": {"name": f"rank {rank} / Host completion"}})
+        fields = {k: marker[k] for k in ("event", "rid", "rank", "dp_rank", "pp_rank", "uncertainty_ns", "host_ns")}
+        fields.update(measured="Host observation; response_enqueued is not HTTP completion")
+        events.append({"ph": "i", "s": "t", "cat": "pp_completion", "pid": pid(dp, pp),
+                       "tid": tid, "name": f"{rids[rid]} {marker['event']}",
+                       "ts": (marker["stamp_ns"] - origin) / 1000, "args": fields})
+        completion_rows.append(dict(fields, worker_id=marker["worker_id"],
+                                    time_ms=(marker["stamp_ns"] - origin) / 1e6))
     by_batch = defaultdict(dict)
     for span in spans:
         by_batch[(span["dp_rank"], span["batch_id"])][span["pp_rank"]] = span
@@ -379,8 +434,9 @@ def merge(inputs, output, run_id=None):
     (output / "warnings.json").write_text(json.dumps(warnings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     _csv(output / "summary.csv", summary, ["dp_rank", "pp_rank", "complete", "missing_batch_count", "forward_count", "global_window_ms", "forward_union_ms", "forward_fraction", "outside_forward_ms", "outside_forward_fraction", "fill_ms", "internal_gap_ms", "drain_ms"])
     _csv(output / "chunks.csv", chunk_rows, ["worker_id", "rank", "pp_rank", "dp_rank", "batch_id", "mb_id", "local_forward_seq", "start_ms", "end_ms", "duration_ms", "token_count", "request_chunks"])
+    _csv(output / "completions.csv", completion_rows, ["worker_id", "rank", "pp_rank", "dp_rank", "rid", "event", "time_ms", "host_ns", "uncertainty_ns", "measured"])
     _csv(output / "handoffs.csv", handoffs, ["dp_rank", "batch_id", "source_pp", "dest_pp", "handoff_ms", "uncertainty_ms", "status"])
-    return {"output": str(output), "forward_records": len(rows), "stage_spans": len(spans), "warnings": warnings}
+    return {"output": str(output), "forward_records": len(rows), "stage_spans": len(spans), "completion_markers": len(completions), "warnings": warnings}
 
 
 def main(argv=None):

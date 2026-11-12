@@ -182,6 +182,56 @@ class RecorderTests(unittest.TestCase):
         self.assertEqual(self.dm.event_syncs, 20)
         self.assertTrue(any(r.get("phase") == "capture_start" for r in self.records(recorder)))
 
+    def test_host_markers_drain_while_forward_is_pending_without_device_ops(self):
+        recorder = self.recorder()
+        recorder.instant("release_ready", ["startup"])
+        self.start(recorder)
+        stream = self.dm.Stream("npu:0")
+        token = recorder.begin(fields(), stream)
+        recorder.end(token)
+        device_ops = self.dm.event_syncs, self.dm.stream_syncs, self.dm.records
+        recorder.instant("release_ready", ["request"])
+        self.wait_for(lambda: any(r["type"] == "completion" for r in self.records(recorder)))
+        self.assertEqual((self.dm.event_syncs, self.dm.stream_syncs, self.dm.records), device_ops)
+        records = self.records(recorder)
+        self.assertEqual([r["rid"] for r in records if r["type"] == "completion"], ["request"])
+        self.assertFalse(any(r["type"] == "forward" for r in records))
+        self.finish(recorder)
+        recorder.instant("response_enqueued", ["late"])
+        result = merge([recorder.path], self.root / "merged")
+        self.assertEqual(result["completion_markers"], 1)
+        self.assertEqual([r["rid"] for r in self.records(recorder) if r["type"] == "completion"], ["request"])
+
+    def test_host_queue_is_bounded_and_reports_drops_without_synchronous_write(self):
+        recorder = self.recorder(capacity=1)
+        self.start(recorder)
+        # Hold the consumer at the start of its device drain. Producers continue
+        # to enqueue Host records; no NPU event or file write is used by instant.
+        entered, resume = threading.Event(), threading.Event()
+        original_drain = recorder._drain
+        def pause_drain():
+            entered.set()
+            resume.wait(1)
+            original_drain()
+        recorder._drain = pause_drain
+        recorder.wake.set()
+        self.assertTrue(entered.wait(1))
+        try:
+            device_ops = self.dm.event_syncs, self.dm.stream_syncs, self.dm.records
+            recorder.instant("response_enqueued", (f"r{i}" for i in range(11)))
+            self.assertEqual(len(recorder.cpu_pending), 8)
+            self.assertEqual(recorder.cpu_dropped, 3)
+            self.assertFalse(any(r["type"] == "completion" for r in self.records(recorder)))
+            self.assertEqual((self.dm.event_syncs, self.dm.stream_syncs, self.dm.records), device_ops)
+        finally:
+            resume.set()
+        result = self.finish(recorder)
+        self.assertTrue(result["errors"])
+        records = self.records(recorder)
+        self.assertEqual(len([r for r in records if r["type"] == "completion"]), 8)
+        self.assertEqual([r["count"] for r in records if r["type"] == "dropped"], [3])
+        self.assertFalse(records[-1]["complete"])
+
     def test_forward_boundaries_never_synchronize_or_write_pending_early(self):
         recorder = self.recorder()
         self.start(recorder)

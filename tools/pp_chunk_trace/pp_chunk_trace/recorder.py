@@ -48,6 +48,9 @@ class Recorder:
         self.file = self.path.open("x", encoding="utf-8")
         self.lock = threading.Lock()
         self.pending, self.free = deque(), []
+        self.cpu_pending = deque()
+        self.cpu_capacity = capacity * 8
+        self.cpu_dropped = 0
         self.active = 0
         self.armed = False
         self.dropped = 0
@@ -139,6 +142,31 @@ class Recorder:
             self.pending.append(token)
         self.wake.set()
 
+    def instant(self, event, rids):
+        """Enqueue bounded Host completion markers; no I/O or device operation."""
+        if event not in ("result_processed", "release_ready", "response_enqueued"):
+            raise ValueError("Unknown PP completion marker")
+        stamp = host_monotonic_ns()
+        with self.lock:
+            if not self.armed or self.stop_requested or self.closed or self.failure:
+                return
+            for rid in rids:
+                if len(self.cpu_pending) >= self.cpu_capacity:
+                    self.cpu_dropped += 1
+                    continue
+                self.cpu_pending.append(dict(type="completion", event=event,
+                                             rid=str(rid), host_ns=stamp))
+        self.wake.set()
+
+    def _drain_cpu(self):
+        # Independent of pending device events: ready Host notifications must
+        # not wait for an unrelated forward's timing event to complete.
+        with self.lock:
+            records = list(self.cpu_pending)
+            self.cpu_pending.clear()
+        for record in records:
+            self._write(record)
+
     def _record_failure(self, token, exc):
         # Keep events alive after a partial submission. Do not turn a tracing
         # failure into a model exception or recycle an event still in flight.
@@ -191,14 +219,17 @@ class Recorder:
                     self.calibrate("capture_start")
                     self.armed = True
                     self._write(dict(type="capture_start", host_ns=host_monotonic_ns()))
+                self._drain_cpu()
                 self._drain()
                 with self.lock:
-                    finish = self.stop_requested and not self.pending and self.active == 0
+                    finish = self.stop_requested and not self.pending and not self.cpu_pending and self.active == 0
                 if finish:
                     self.calibrate("end")
                     if self.dropped:
                         self._write(dict(type="dropped", count=self.dropped, reason="event capacity exhausted"))
-                    self._write(dict(type="session_end", complete=not self.failure and not self.dropped and not self.had_record_errors))
+                    if self.cpu_dropped:
+                        self._write(dict(type="dropped", count=self.cpu_dropped, reason="CPU completion capacity exhausted"))
+                    self._write(dict(type="session_end", complete=not self.failure and not self.dropped and not self.cpu_dropped and not self.had_record_errors))
                     return
         except Exception as exc:
             self.failure = repr(exc)

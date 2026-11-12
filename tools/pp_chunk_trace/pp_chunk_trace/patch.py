@@ -108,6 +108,9 @@ def _patch_class(cls, module, output, run_id, recorder_factory=Recorder):
     """Separated from compatibility checking for CPU-only contract tests."""
     names = ("init_pp_loop_state", "_pp_recv_proxy_tensors", "_pp_launch_batch",
              "run_batch", "_pp_send_proxy_to_next_stage")
+    completion_hook = "_pp_prefill_completion_event"
+    if hasattr(cls, completion_hook):
+        names += (completion_hook,)
     previous = {name: cls.__dict__.get(name, _MISSING) for name in names}
     originals = {name: getattr(cls, name) for name in names}
     instances = []
@@ -209,6 +212,27 @@ def _patch_class(cls, module, output, run_id, recorder_factory=Recorder):
             proxy.tensors = original
 
     wrappers = (initialize, receive, launch, run, send)
+    if completion_hook in originals:
+        @functools.wraps(originals[completion_hook])
+        def completion(self, event, reqs):
+            result = originals[completion_hook](self, event, reqs)
+            recorder = getattr(self, "_pp_trace_recorder", None)
+            if (recorder is not None and recorder.armed and not recorder.stop_requested
+                    and not recorder.closed and not recorder.failure):
+                try:
+                    if event == "result_processed":
+                        # Postprocessing also runs for intermediate chunks. Only
+                        # requests that entered the transfer queue are complete.
+                        inflight = {req.rid for req in self.disagg_prefill_inflight_queue}
+                        rids = (req.rid for req in reqs if req.rid in inflight)
+                    else:
+                        rids = (req.rid for req in reqs)
+                    recorder.instant(event, rids)
+                except Exception as exc:
+                    recorder.failure = repr(exc)
+                    logger.exception("PP completion trace failed; preserving scheduler result")
+            return result
+        wrappers += (completion,)
     for name, wrapper in zip(names, wrappers):
         setattr(cls, name, wrapper)
     _PATCHED[cls] = (previous, instances, dict(zip(names, wrappers)))

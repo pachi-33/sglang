@@ -54,6 +54,44 @@ class MergeTests(unittest.TestCase):
         with (self.output / name).open(newline="") as handle:
             return list(csv.DictReader(handle))
 
+    def test_completion_markers_use_host_clock_and_do_not_change_forward_summary(self):
+        # Local Host clock is 5 seconds behind the reference clock.
+        first = clock(device=0, reference=10_000_000_000)
+        first["host_ns"] = 5_000_000_000
+        last = clock(device=1000, reference=10_001_001_000)
+        last["host_ns"] = 5_001_000_000
+        records = [forward(), dict(type="completion", event="response_enqueued",
+                                    rid="request", host_ns=5_000_500_000)]
+        self.write("a.jsonl", meta(), records, anchors=[first, last])
+        result = self.run_merge()
+        self.assertEqual(result["completion_markers"], 1)
+        trace = json.loads((self.output / "trace.json").read_text())
+        marker = [e for e in trace["traceEvents"] if e.get("cat") == "pp_completion"][0]
+        self.assertEqual(marker["ph"], "i")
+        self.assertEqual(marker["s"], "t")
+        self.assertIsInstance(marker["tid"], int)
+        self.assertAlmostEqual(marker["ts"], 400.4)
+        self.assertIn("not HTTP completion", marker["args"]["measured"])
+        self.assertEqual(marker["args"]["rid"], "request")
+        self.assertEqual(len(self.read_csv("completions.csv")), 1)
+        self.assertAlmostEqual(float(self.read_csv("summary.csv")[0]["global_window_ms"]), .1001)
+
+    def test_host_clock_mapping_rejects_missing_anchor_and_marks_extrapolation(self):
+        warnings = []
+        mapping = ClockMap([clock(reference=0), clock(1000, 1_000_000)], "w", warnings)
+        self.assertEqual(mapping.map_host(500_000), (500_000, 100))
+        mapping.map_host(1_100_000)
+        self.assertTrue(any("Host markers" in w for w in warnings))
+        anchor = clock()
+        del anchor["host_ns"]
+        with self.assertRaisesRegex(TraceError, "Host clock anchors"):
+            ClockMap([anchor], "w", []).map_host(100)
+
+    def test_malformed_completion_is_rejected(self):
+        self.write("a.jsonl", meta(), [forward(), dict(type="completion", event="unknown", rid="r", host_ns=1)])
+        with self.assertRaisesRegex(TraceError, "unknown completion"):
+            self.run_merge()
+
     def test_pair_handoff_and_fill_drain(self):
         self.write("rank0.jsonl", meta(), [forward()])
         self.write("rank1.jsonl", meta(1, 1), [forward(start=250, end=400)])

@@ -739,6 +739,9 @@ class Envs:
     # Run PP tensor communication on a dedicated stream so asynchronous sends
     # do not fence the next forward through the scheduler stream.
     SGLANG_PP_COMM_OVERLAP = EnvBool(False)
+    # PP prefill: retire concluded requests and advance CPU control messages
+    # before waiting for unrelated microbatch outputs. Set identically on all ranks.
+    SGLANG_PP_PREFILL_EARLY_RELEASE = EnvBool(False)
     # PP rank 0 posts its output recv only after its own forward. Enable it if PP
     # hangs or stalls on kernels that need every SM (e.g. flashinfer MLA).
     SGLANG_ENABLE_PP_OUTPUT_RECV_AFTER_FORWARD = EnvBool(False)

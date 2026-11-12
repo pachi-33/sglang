@@ -243,7 +243,10 @@ class SchedulerPPMixin:
         ====================================================================
 
         Release Requests still use the two-pass PP consensus. Bootstrap uses
-        PPConsensusStore instead of the legacy two-round RID sync.
+        PPConsensusStore instead of the legacy two-round RID sync. With
+        SGLANG_PP_PREFILL_EARLY_RELEASE, the release/retire and request/transfer
+        control messages move together before batch scheduling and device waits;
+        the tensor exchange order below is unchanged.
 
         """
         self.init_pp_loop_state()
@@ -253,7 +256,12 @@ class SchedulerPPMixin:
         transferred_rids: Dict[str, bool] = {}
         release_rids: Optional[Dict[str, bool]] = None
         send_transfer_work = []
-        send_release_work = []
+        early_release = envs.SGLANG_PP_PREFILL_EARLY_RELEASE.get()
+        if early_release and not self.spec_algorithm.is_none():
+            raise ValueError(
+                "PP prefill early release currently requires speculative decoding disabled"
+            )
+        logger.info("PP prefill early release: %s", early_release)
 
         while True:
             server_is_idle = True
@@ -280,6 +288,22 @@ class SchedulerPPMixin:
                 transferred_rids = self._pp_pd_get_prefill_transferred_ids()
                 self._pp_commit_comm_work(send_transfer_work)
                 tmbs[mb_id] = transferred_rids
+
+                if early_release:
+                    # Progress the CPU control ring before any proxy/output receive
+                    # or device wait. Keep wire order release -> requests -> transfers.
+                    next_release_rids = self._pp_prefill_exchange_release(
+                        tmbs,
+                        next_first_rank_mb_id,
+                        next_mb_id,
+                        release_rids,
+                        transferred_rids,
+                    )
+                    if tmbs[next_mb_id] is not None:
+                        self._pp_prefill_retire_transfers(next_release_rids)
+                    send_transfer_work = self._pp_prefill_send_control(
+                        recv_reqs, transferred_rids
+                    )
 
                 self.process_prefill_chunk(
                     last_batch=self.last_batch, running_batch=self.running_batch
@@ -323,15 +347,14 @@ class SchedulerPPMixin:
                             next_mb_id,
                         )
                     )
-                send_release_work, release_rids = (
-                    self._pp_pd_send_consensus_release_ids(
-                        tmbs, next_first_rank_mb_id, release_rids, transferred_rids
+                if not early_release:
+                    next_release_rids = self._pp_prefill_exchange_release(
+                        tmbs,
+                        next_first_rank_mb_id,
+                        next_mb_id,
+                        release_rids,
+                        transferred_rids,
                     )
-                )
-
-                if tmbs[next_mb_id] is not None:
-                    next_release_rids = self._pp_recv_pyobj_from_prev_stage()
-                self._pp_commit_comm_work(send_release_work)
                 # post-process the coming microbatch
                 if self.mbs[next_mb_id] is not None:
                     d2h_event.synchronize()
@@ -339,19 +362,19 @@ class SchedulerPPMixin:
                         self.mbs[next_mb_id],
                         next_batch_result,
                     )
+                    self._pp_prefill_completion_event(
+                        "result_processed", self.mbs[next_mb_id].reqs
+                    )
                     self.last_mbs[next_mb_id] = self.mbs[next_mb_id]
 
-                if tmbs[next_mb_id] is not None:
-                    self.process_disagg_prefill_inflight_queue(next_release_rids)
-                if not self.pp_group.is_last_rank:
-                    self.send_req_work = self._pp_send_pyobj_to_next_stage(
-                        recv_reqs, async_send=True
+                if not early_release:
+                    if tmbs[next_mb_id] is not None:
+                        self._pp_prefill_retire_transfers(next_release_rids)
+                    send_transfer_work = self._pp_prefill_send_control(
+                        recv_reqs, transferred_rids
                     )
-                    send_transfer_work = self._pp_send_pyobj_to_next_stage(
-                        transferred_rids, async_send=True
-                    )
-                    if cur_batch:
-                        self._pp_send_proxy_to_next_stage(result)
+                if not self.pp_group.is_last_rank and cur_batch:
+                    self._pp_send_proxy_to_next_stage(result)
 
                 self.pp_outputs = next_pp_outputs
                 release_rids = next_release_rids
@@ -363,6 +386,62 @@ class SchedulerPPMixin:
                 self._sched_idled = True
                 if len(self.disagg_prefill_inflight_queue) == 0:
                     self.on_idle()
+
+    def _pp_prefill_exchange_release(
+        self: Scheduler,
+        tmbs: List[Optional[Dict[str, bool]]],
+        next_first_rank_mb_id: int,
+        next_mb_id: int,
+        release_rids: Optional[Dict[str, bool]],
+        transferred_rids: Dict[str, bool],
+    ) -> Optional[Dict[str, bool]]:
+        # All stages use the same phase ordering. Do not add these CPU messages
+        # to a background thread using the scheduler's existing process groups.
+        work, _ = self._pp_pd_send_consensus_release_ids(
+            tmbs, next_first_rank_mb_id, release_rids, transferred_rids
+        )
+        ready = None
+        if tmbs[next_mb_id] is not None:
+            ready = self._pp_recv_pyobj_from_prev_stage()
+        self._pp_commit_comm_work(work)
+        return ready
+
+    def _pp_prefill_send_control(
+        self: Scheduler, recv_reqs, transferred_rids: Dict[str, bool]
+    ) -> List[P2PWork]:
+        if self.pp_group.is_last_rank:
+            return []
+        self.send_req_work = self._pp_send_pyobj_to_next_stage(
+            recv_reqs, async_send=True
+        )
+        return self._pp_send_pyobj_to_next_stage(transferred_rids, async_send=True)
+
+    def _pp_prefill_retire_transfers(
+        self: Scheduler, release_rids: Optional[Dict[str, bool]]
+    ) -> None:
+        # None means PP consensus is unavailable, whereas {} means it completed
+        # with no releasable requests. Never bypass consensus by passing None
+        # to process_disagg_prefill_inflight_queue (its non-PP mode).
+        if release_rids is None:
+            return
+        self._pp_prefill_completion_event(
+            "release_ready",
+            [
+                req
+                for req in self.disagg_prefill_inflight_queue
+                if req.rid in release_rids
+            ],
+        )
+        done = self.process_disagg_prefill_inflight_queue(release_rids)
+        self._pp_prefill_completion_event("response_enqueued", done)
+
+    def _pp_prefill_completion_event(
+        self: Scheduler, event: str, reqs: List[Req]
+    ) -> None:
+        # Optional PP chunk trace hook. No clock reads, tensor operations or I/O
+        # when the tracing patch is absent. These are CPU observations, not
+        # device completion or HTTP-delivery timestamps.
+        pass
 
     @DynamicGradMode()
     def event_loop_pp_disagg_decode(self: Scheduler):

@@ -19,6 +19,7 @@ class FakeRecorder:
         self.begins = []
         self.ends = []
         self.finished = False
+        self.instants = []
 
     def begin(self, fields, stream):
         if not self.armed or self.stop_requested or self.closed or self.failure:
@@ -32,6 +33,9 @@ class FakeRecorder:
         if token is not None:
             self.dm.trace.append("trace_end")
             self.ends.append((token, failure))
+
+    def instant(self, event, rids):
+        self.instants.append((event, list(rids)))
 
     def request_finish(self):
         self.finished = True
@@ -99,10 +103,12 @@ class PatchTests(unittest.TestCase):
             patch.uninstall(module)
 
     def scheduler(self, pp_rank=0, dp_rank=0, attn_dp_rank=0,
-                  attn_dp_size=1, attn_tp_size=1, cp_size=4):
+                  attn_dp_size=1, attn_tp_size=1, cp_size=4, completion_hook=False):
         # Distinct classes model distinct worker processes without importing
         # real torch or mutating production classes in this Python process.
         cls = type(f"SchedulerPP{pp_rank}_{len(self.modules)}", (FakeMixin,), {})
+        if completion_hook:
+            cls._pp_prefill_completion_event = lambda self, event, reqs: "original-result"
         parallel = SimpleNamespace(
             pp_rank=pp_rank, pp_size=2, tp_rank=0, dp_rank=dp_rank,
             attn_dp_rank=attn_dp_rank, attn_dp_size=attn_dp_size,
@@ -120,6 +126,7 @@ class PatchTests(unittest.TestCase):
         self.modules.append(module)
         scheduler = cls()
         scheduler.initialized = 0
+        scheduler.disagg_prefill_inflight_queue = []
         scheduler.device = "npu:0"
         scheduler.device_module = SimpleNamespace(trace=[], current_stream=lambda: "forward")
         scheduler.spec_algorithm = SimpleNamespace(is_none=lambda: True)
@@ -145,6 +152,46 @@ class PatchTests(unittest.TestCase):
         self.assertNotIn(patch.WIRE_KEY, original)
         self.assertNotIn("__msg_type__", original)
         destination.incoming.append(SimpleNamespace(tensors=dict(source.sent[-1])))
+
+    def test_optional_completion_hook_filters_intermediate_chunks_and_uninstalls(self):
+        s, module = self.scheduler(completion_hook=True)
+        active = SimpleNamespace(rid="finished")
+        intermediate = SimpleNamespace(rid="middle")
+        s.disagg_prefill_inflight_queue = [active]
+        answer = s._pp_prefill_completion_event("result_processed", [active, intermediate])
+        self.assertEqual(answer, "original-result")
+        s._pp_prefill_completion_event("release_ready", [active])
+        s._pp_prefill_completion_event("response_enqueued", [active])
+        self.assertEqual(s._pp_trace_recorder.instants, [
+            ("result_processed", ["finished"]), ("release_ready", ["finished"]),
+            ("response_enqueued", ["finished"])])
+        patch.uninstall(module)
+        self.assertEqual(s._pp_prefill_completion_event("release_ready", [active]), "original-result")
+        self.assertEqual(len(s._pp_trace_recorder.instants), 3)
+
+    def test_old_scheduler_has_no_completion_hook_added(self):
+        s, module = self.scheduler()
+        self.assertFalse(hasattr(s, "_pp_prefill_completion_event"))
+        self.launch(s, batch(("r", 0, 128)))
+        self.assertEqual(len(s._pp_trace_recorder.begins), 1)
+
+    def test_completion_hook_skips_inactive_capture_without_reading_queue(self):
+        for attr, value in (("armed", False), ("stop_requested", True),
+                            ("closed", True), ("failure", "broken")):
+            s, _ = self.scheduler(completion_hook=True)
+            setattr(s._pp_trace_recorder, attr, value)
+            del s.disagg_prefill_inflight_queue
+            self.assertEqual(s._pp_prefill_completion_event("result_processed", None), "original-result")
+            self.assertEqual(s._pp_trace_recorder.instants, [])
+
+    def test_completion_record_failure_preserves_original_result(self):
+        s, _ = self.scheduler(completion_hook=True)
+        def fail(*args):
+            raise RuntimeError("queue broken")
+        s._pp_trace_recorder.instant = fail
+        with self.assertLogs(patch.logger, level="ERROR"):
+            self.assertEqual(s._pp_prefill_completion_event("release_ready", []), "original-result")
+        self.assertIn("queue broken", s._pp_trace_recorder.failure)
 
     def test_events_follow_input_dependency_and_wrap_model_only(self):
         s, _ = self.scheduler()
