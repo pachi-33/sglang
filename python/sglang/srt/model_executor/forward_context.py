@@ -26,11 +26,12 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional
 
 if TYPE_CHECKING:
     import torch
 
+    from sglang.srt.disaggregation.base.conn import BaseKVSender
     from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
     from sglang.srt.mem_cache.kv.router import KVLayerRouter
     from sglang.srt.mem_cache.memory_pool import KVCache, ReqToTokenPool
@@ -46,6 +47,15 @@ class ForwardContext:
     attn_backend: AttentionBackend
     # Resolve after batch preparation; captured calls retain the static buffer.
     moe_num_token_non_padded: Optional[Callable[[], Optional[torch.Tensor]]] = None
+    # PD disaggregation per-layer hooks. Populated by ModelRunner._forward_raw
+    # from ScheduleBatch.reqs[*].disagg_kv_sender / disagg_kv_receiver so the
+    # model forward loop can drive layerwise KV transfer without a direct
+    # dependency on the scheduler. None on non-disaggregation workers and on
+    # disaggregation workers that have not opted into layerwise transfer.
+    # ``disagg_kv_senders`` holds ALL layerwise-enabled senders in the batch
+    # (one per request) so that ``save_kv_layer`` dispatches every request's
+    # KV, not just the first request's.
+    disagg_kv_senders: Optional[List[BaseKVSender]] = None
 
 
 _current: Optional[ForwardContext] = None
@@ -86,6 +96,18 @@ def get_kv_layers() -> KVLayerRouter:
 
 def get_req_to_token_pool() -> ReqToTokenPool:
     return get_attn_backend().req_to_token_pool
+
+
+def get_disagg_kv_senders() -> List[BaseKVSender]:
+    """Return the active forward's PD KV senders (all layerwise-enabled
+    senders in the batch), or empty list when no forward context is active
+    or the forward is not a disaggregation prefill."""
+    ctx = _current
+    return (
+        ctx.disagg_kv_senders
+        if ctx is not None and ctx.disagg_kv_senders is not None
+        else []
+    )
 
 
 @contextmanager

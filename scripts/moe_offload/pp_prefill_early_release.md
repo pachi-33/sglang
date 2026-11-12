@@ -2,6 +2,29 @@
 
 本功能默认关闭。开启后，在原有 PP 释放共识交换结束时，立即处理已经确认完成的请求，不再等另一批结果的 D2H 同步和后处理。请求、激活、输出和释放确认的通信顺序保持不变。它不是后台持续轮询，也不保证去除全部流水线气泡。
 
+## PR #38309 的另外两个开关
+
+本分支合入了 [PR #38309](https://github.com/sgl-project/sglang/pull/38309)，来源提交为 `8cc6cf74ea75e456e743c96eea9d3a8b0abf5d79`。下面两个开关默认关闭，启动脚本没有自动启用它们：
+
+| 开关 | 行为 |
+| --- | --- |
+| `SGLANG_DISAGG_LAYERWISE=1` | 在支持的模型 forward 中，attention 写好一层 KV 后提交该层传输；最终的状态、元数据仍由结果后处理发送。 |
+| `SGLANG_PP_EARLY_RELEASE_KV=1` | 每次 PP 循环开头，用当前 stage 已汇总的传输状态收尾请求，不等待原来的全 PP 确认回传。对 PP0 来说，此时只有本 stage 的完成状态。 |
+
+这两个开关与本文原来的 `SGLANG_PP_PREFILL_EARLY_RELEASE` 不同。原开关保留全 PP 完成确认，仅调整确认之后的收尾顺序；PR 的 `SGLANG_PP_EARLY_RELEASE_KV` 会改变等待条件。下文关于“保留全 PP 共识”的说明，适用于 PR 的这个开关关闭时。
+
+PR 没有把尾 stage 的结果回传改成广播，也没有取消 `next_mb_id` 决定的结果处理顺序。真实 PD 中，P 的 HTTP 响应交给 router，客户端的生成结果来自 D；直接请求 P 的 fake benchmark 则把 P 的 HTTP 结束作为释放并发名额的时刻，两者不能等同。
+
+需要测试时，在所有 P rank 的启动环境中设置对应开关，例如：
+
+```bash
+export SGLANG_DISAGG_LAYERWISE=1
+export SGLANG_PP_EARLY_RELEASE_KV=1
+bash scripts/moe_offload/serve_glm52_prefill_pp4_cp4.sh
+```
+
+分层传输需要真实 decode 节点才能验证；fake sender 不会实际发送分层 KV。合入时保留了本分支的 PP 通信顺序修复、KV checksum、CP 索引处理和普通传输的异步索引拷贝。CPU 检查不能替代 NPU/HCCL 下的传输正确性与性能验证。
+
 ## 使用
 
 所有 P 节点、所有 PP/CP/TP rank 必须使用同一版代码和相同开关。重新启动 P 服务，例如在仓库根目录：

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Optional
 import torch
 from torch import nn
 
+from sglang.srt.disaggregation.layerwise_hooks import layerwise_save_kv_layer
 from sglang.srt.layers.attention.graph_utils import (
     _attention_on_real_rows,
     _zero_padded_tokens,
@@ -121,68 +122,72 @@ class RadixAttention(nn.Module):
         key_value_num_tokens: Optional[int] = None,
         **kwargs,
     ):
-        if k is not None:
-            assert v is not None
-            k = k.view(
-                -1,
-                self.tp_k_head_num,
-                self.v_head_dim if "k_rope" in kwargs else self.qk_head_dim,
+        try:
+            if k is not None:
+                assert v is not None
+                k = k.view(
+                    -1,
+                    self.tp_k_head_num,
+                    self.v_head_dim if "k_rope" in kwargs else self.qk_head_dim,
+                )
+                if "k_rope" not in kwargs:
+                    v = v.view(-1, self.tp_v_head_num, self.v_head_dim)
+            breakable_cg = is_in_breakable_cuda_graph()
+            full_cg = is_in_full_prefill_graph()
+            use_eager_attention = (
+                self.use_prefill_attention_wrapper
+                and is_in_prefill_graph_scope()
+                and forward_batch.forward_mode.is_extend()
+                and (breakable_cg or full_cg)
             )
-            if "k_rope" not in kwargs:
-                v = v.view(-1, self.tp_v_head_num, self.v_head_dim)
-        breakable_cg = is_in_breakable_cuda_graph()
-        full_cg = is_in_full_prefill_graph()
-        use_eager_attention = (
-            self.use_prefill_attention_wrapper
-            and is_in_prefill_graph_scope()
-            and forward_batch.forward_mode.is_extend()
-            and (breakable_cg or full_cg)
-        )
-        if use_eager_attention:
-            is_sparse = kwargs.get("idx_q") is not None
-            output, idx_output = allocate_attention_outputs(
-                self, q, v, kwargs.get("idx_q")
+            if use_eager_attention:
+                is_sparse = kwargs.get("idx_q") is not None
+                output, idx_output = allocate_attention_outputs(
+                    self, q, v, kwargs.get("idx_q")
+                )
+                return_lse = not is_sparse and bool(
+                    kwargs.get("return_lse") or forward_batch.mha_return_lse
+                )
+                lse = (
+                    q.new_empty((q.shape[0], self.tp_q_head_num), dtype=torch.float32)
+                    if return_lse
+                    else None
+                )
+                self._eager_attention(
+                    q,
+                    k,
+                    v,
+                    output,
+                    save_kv_cache,
+                    key_value_num_tokens,
+                    idx_output,
+                    lse,
+                    **kwargs,
+                )
+                if is_sparse:
+                    return idx_output, output
+                if return_lse:
+                    return output.view(-1, self.tp_q_head_num, self.v_head_dim), lse
+                return output
+            real_num_tokens = padded_extend_real_tokens(q, forward_batch)
+            if real_num_tokens is not None:
+                return _attention_on_real_rows(
+                    self,
+                    real_num_tokens,
+                    q,
+                    k,
+                    v,
+                    forward_batch,
+                    save_kv_cache,
+                    key_value_num_tokens=key_value_num_tokens,
+                    **kwargs,
+                )
+            return get_attn_backend().forward(
+                q, k, v, self, forward_batch, save_kv_cache, **kwargs
             )
-            return_lse = not is_sparse and bool(
-                kwargs.get("return_lse") or forward_batch.mha_return_lse
-            )
-            lse = (
-                q.new_empty((q.shape[0], self.tp_q_head_num), dtype=torch.float32)
-                if return_lse
-                else None
-            )
-            self._eager_attention(
-                q,
-                k,
-                v,
-                output,
-                save_kv_cache,
-                key_value_num_tokens,
-                idx_output,
-                lse,
-                **kwargs,
-            )
-            if is_sparse:
-                return idx_output, output
-            if return_lse:
-                return output.view(-1, self.tp_q_head_num, self.v_head_dim), lse
-            return output
-        real_num_tokens = padded_extend_real_tokens(q, forward_batch)
-        if real_num_tokens is not None:
-            return _attention_on_real_rows(
-                self,
-                real_num_tokens,
-                q,
-                k,
-                v,
-                forward_batch,
-                save_kv_cache,
-                key_value_num_tokens=key_value_num_tokens,
-                **kwargs,
-            )
-        return get_attn_backend().forward(
-            q, k, v, self, forward_batch, save_kv_cache, **kwargs
-        )
+        finally:
+            if save_kv_cache and self.attn_type != AttentionType.ENCODER_ONLY:
+                layerwise_save_kv_layer(self.layer_id)
 
     @eager_on_graph
     def _eager_attention(

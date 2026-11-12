@@ -742,6 +742,9 @@ class Envs:
     # PP prefill: retire confirmed requests before unrelated D2H/result processing.
     # Preserve CPU/device communication ordering. Set identically on all ranks.
     SGLANG_PP_PREFILL_EARLY_RELEASE = EnvBool(False)
+    # PR 38309: retire using this stage's accumulated transfer outcomes, before
+    # the full PP release round trip. This completes the prefill HTTP leg only.
+    SGLANG_PP_EARLY_RELEASE_KV = EnvBool(False)
     # PP rank 0 posts its output recv only after its own forward. Enable it if PP
     # hangs or stalls on kernels that need every SM (e.g. flashinfer MLA).
     SGLANG_ENABLE_PP_OUTPUT_RECV_AFTER_FORWARD = EnvBool(False)
@@ -815,6 +818,8 @@ class Envs:
     # (supports_deferred_decode_kv_release).
     SGLANG_DISAGGREGATION_DEFERRED_DECODE_KV_RELEASE = EnvBool(True)
     SGLANG_DISAGGREGATION_DEFERRED_DECODE_KV_RELEASE_TIMEOUT = EnvFloat(30.0)
+    # Send each attention layer's KV during forward on supported PD models.
+    SGLANG_DISAGG_LAYERWISE = EnvBool(False)
 
     # ===================================================================
     # Distributed and model-parallel runtime

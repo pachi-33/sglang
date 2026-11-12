@@ -1113,7 +1113,17 @@ class SchedulerDisaggregationPrefillMixin:
                 ):
                     req.disagg_kv_sender.mark_prefill_complete()
                 if not req.pending_bootstrap:
-                    self.send_kv_chunk(req, last_chunk=True)
+                    if (
+                        req.disagg_kv_sender is not None
+                        and req.disagg_kv_sender.is_layerwise_enabled
+                    ):
+                        # Layerwise mode: KV was already dispatched per-layer
+                        # during model.forward via save_kv_layer.  Only the
+                        # state/aux tail (Mamba/SWA/DSA/logits) still needs
+                        # the standard send path.
+                        self.send_kv_chunk(req, last_chunk=True, layerwise_kv_done=True)
+                    else:
+                        self.send_kv_chunk(req, last_chunk=True)
                 req.time_stats.set_prefill_transfer_queue_entry_time()
 
             else:
@@ -1165,7 +1175,15 @@ class SchedulerDisaggregationPrefillMixin:
                     assert req.metadata_buffer_index >= 0, (
                         f"Req {req.rid} does not have metadata buffer allocated"
                     )
-                    self.send_kv_chunk(req, last_chunk=False, end_idx=req.tmp_end_idx)
+                    # Skip early send in layerwise mode: KV is dispatched
+                    # per-layer during model.forward instead.
+                    if not (
+                        req.disagg_kv_sender
+                        and req.disagg_kv_sender.is_layerwise_enabled
+                    ):
+                        self.send_kv_chunk(
+                            req, last_chunk=False, end_idx=req.tmp_end_idx
+                        )
                 req.time_stats.set_last_chunked_prefill_finish_time()
 
         if auxiliary_output is not None:
@@ -1246,7 +1264,13 @@ class SchedulerDisaggregationPrefillMixin:
             if req.pending_bootstrap:
                 # Parked: prefill finished before bootstrap completed.
                 if self.handle_pending_bootstrap(req, poll):
-                    self.send_kv_chunk(req, last_chunk=True)
+                    if (
+                        req.disagg_kv_sender
+                        and req.disagg_kv_sender.is_layerwise_enabled
+                    ):
+                        self.send_kv_chunk(req, last_chunk=True, layerwise_kv_done=True)
+                    else:
+                        self.send_kv_chunk(req, last_chunk=True)
                     undone_reqs.append(req)
                 elif (
                     poll == KVPoll.Bootstrapping
@@ -1495,7 +1519,16 @@ class SchedulerDisaggregationPrefillMixin:
                     len(req.origin_input_ids),
                 )
             else:
-                self.send_kv_chunk(req)
+                if req.disagg_kv_sender and req.disagg_kv_sender.is_layerwise_enabled:
+                    # Layerwise mode: KV was already dispatched per-layer
+                    # during model.forward.  Skip the chunk send here;
+                    # the state/aux tail and completion signal are handled
+                    # by process_batch_result_disagg_prefill when the
+                    # request finishes its last chunk.  Calling send_state_only
+                    # here would prematurely signal KVPoll.Success.
+                    pass
+                else:
+                    self.send_kv_chunk(req)
 
             if self.chunked_req is not None:
                 running_batch.batch_is_full = False
@@ -1550,13 +1583,17 @@ class SchedulerDisaggregationPrefillMixin:
             ev = self.device_module.Event()
             ev.record(self.forward_stream)
             req.disagg_kv_sender._early_send_wait_event = ev
-        self.send_kv_chunk(req, last_chunk=False, end_idx=cached_end)
+        # Skip early prefix send in layerwise mode: KV is dispatched
+        # per-layer during model.forward instead.
+        if not (req.disagg_kv_sender and req.disagg_kv_sender.is_layerwise_enabled):
+            self.send_kv_chunk(req, last_chunk=False, end_idx=cached_end)
 
     def send_kv_chunk(
         self,
         req: Req,
         last_chunk: bool = False,
         end_idx: Optional[int] = None,
+        layerwise_kv_done: bool = False,
     ) -> None:
         computer: Optional[KvChecksumComputer] = self.kv_checksum_computer
         if last_chunk and computer is not None:
@@ -1577,16 +1614,26 @@ class SchedulerDisaggregationPrefillMixin:
                 digest = computer.compute(page_indices_gpu, state_indices)
                 signature = self.disagg_prefill_bootstrap_queue.kv_checksum_signature
             self.disagg_metadata_buffers.set_kv_checksum(req, digest, signature)
-        self._send_kv_chunk(req, last_chunk=last_chunk, end_idx=end_idx)
+        self._send_kv_chunk(
+            req,
+            last_chunk=last_chunk,
+            end_idx=end_idx,
+            layerwise_kv_done=layerwise_kv_done,
+        )
 
     def _send_kv_chunk(
         self: Scheduler,
         req: Req,
         last_chunk: bool = False,
         end_idx: Optional[int] = None,
+        layerwise_kv_done: bool = False,
     ) -> None:
         """
-        Send a prefilled chunk to the decode server
+        Send a prefilled chunk to the decode server.
+
+        When ``layerwise_kv_done`` is True the per-layer KV cache was already
+        dispatched during model.forward (layerwise PD transfer); only the
+        state/aux tail is sent here.
         """
         page_size = self.token_to_kv_pool_allocator.page_size
         start_idx = req.start_send_idx
@@ -1779,7 +1826,17 @@ class SchedulerDisaggregationPrefillMixin:
             ]
 
         transfer_chunk_tokens = req.disagg_kv_sender.get_max_transfer_tokens()
-        if self.enable_staging:
+        # Layerwise fallback: if the KV wasn't fully dispatched per-layer
+        # during model.forward (e.g. bootstrap hadn't completed in time),
+        # fall back to the full KV send path so no layer's cache is lost.
+        if (
+            layerwise_kv_done
+            and req.disagg_kv_sender is not None
+            and not req.disagg_kv_sender.layerwise_kv_fully_dispatched
+        ):
+            layerwise_kv_done = False
+
+        if self.enable_staging and not layerwise_kv_done:
             # One sender.send per grid slot; the sender's cumulative page
             # counter marks only the final sub-send of the final chunk as
             # is_last, routing aux/state correctly.
@@ -1797,59 +1854,83 @@ class SchedulerDisaggregationPrefillMixin:
         else:
             segments = [(start_idx, end_idx)]
 
-        for seg_start, seg_end in segments:
-            is_final_segment = seg_end == end_idx
-            raw_kv_indices = self.req_to_token_pool.req_to_token[
-                req.kv.req_pool_idx, seg_start:seg_end
+        if layerwise_kv_done:
+            # Per-layer writes already sent KV. Advance the normal sender's
+            # page count so the empty send still carries the final state/aux.
+            chunk_kv_indices = self.req_to_token_pool.req_to_token[
+                req.kv.req_pool_idx, start_idx:end_idx
             ]
-            # Unified memory: req_to_token holds VIRTUAL ids; the transfer needs
-            # physical ones. Per segment, since each is its own gather.
             if is_cp_sharded_padded():
-                raw_kv_indices = get_cp_sharded_padded_cache_transfer_indices(
-                    raw_kv_indices
+                chunk_kv_indices = get_cp_sharded_padded_cache_transfer_indices(
+                    chunk_kv_indices
                 )
-            kv_indices = (
+            chunk_kv_indices = (
                 self.token_to_kv_pool_allocator.translate_kv_indices_for_transfer(
-                    raw_kv_indices
+                    chunk_kv_indices
                 )
             )
+            chunk_page_indices = kv_to_page_indices(chunk_kv_indices, page_size)
             sender = req.disagg_kv_sender
-            indices_event = None
-            if getattr(sender, "supports_host_tensor_indices", False) and not (
-                sender.kv_mgr.enable_all_cp_ranks_for_transfer
-                and not get_parallel().enable_dsa_cache_layer_split
-            ):
-                # The schedule stream may wait on the in-flight forward; move the
-                # D2H wait to the transfer worker so scheduling can continue.
-                page_indices_dev = kv_indices[::page_size] // page_size
-                page_indices = torch.empty(
-                    page_indices_dev.shape,
-                    dtype=page_indices_dev.dtype,
-                    device="cpu",
-                    pin_memory=True,
+            sender.curr_idx += len(chunk_page_indices)
+            sender.send(
+                np.empty(0, dtype=np.int32),
+                state_indices if last_chunk else None,
+                num_kv_tokens=0,
+            )
+        else:
+            for seg_start, seg_end in segments:
+                is_final_segment = seg_end == end_idx
+                raw_kv_indices = self.req_to_token_pool.req_to_token[
+                    req.kv.req_pool_idx, seg_start:seg_end
+                ]
+                # Unified memory: req_to_token holds VIRTUAL ids; the transfer needs
+                # physical ones. Per segment, since each is its own gather.
+                if is_cp_sharded_padded():
+                    raw_kv_indices = get_cp_sharded_padded_cache_transfer_indices(
+                        raw_kv_indices
+                    )
+                kv_indices = (
+                    self.token_to_kv_pool_allocator.translate_kv_indices_for_transfer(
+                        raw_kv_indices
+                    )
                 )
-                page_indices.copy_(page_indices_dev, non_blocking=True)
-                indices_event = self.device_module.Event()
-                indices_event.record(self.device_module.current_stream())
-            else:
-                page_indices = kv_to_page_indices(kv_indices, page_size)
-            segment_is_last = last_chunk and is_final_segment
-            if not sender.should_send_kv_chunk(len(page_indices), segment_is_last):
-                continue
-            send_state_indices = state_indices if segment_is_last else None
-            if indices_event is not None:
-                sender.send(
-                    page_indices,
-                    send_state_indices,
-                    num_kv_tokens=seg_end - seg_start,
-                    indices_event=indices_event,
-                )
-            else:
-                sender.send(
-                    page_indices,
-                    send_state_indices,
-                    num_kv_tokens=seg_end - seg_start,
-                )
+                sender = req.disagg_kv_sender
+                indices_event = None
+                if getattr(sender, "supports_host_tensor_indices", False) and not (
+                    sender.kv_mgr.enable_all_cp_ranks_for_transfer
+                    and not get_parallel().enable_dsa_cache_layer_split
+                ):
+                    # The schedule stream may wait on the in-flight forward; move the
+                    # D2H wait to the transfer worker so scheduling can continue.
+                    page_indices_dev = kv_indices[::page_size] // page_size
+                    page_indices = torch.empty(
+                        page_indices_dev.shape,
+                        dtype=page_indices_dev.dtype,
+                        device="cpu",
+                        pin_memory=True,
+                    )
+                    page_indices.copy_(page_indices_dev, non_blocking=True)
+                    indices_event = self.device_module.Event()
+                    indices_event.record(self.device_module.current_stream())
+                else:
+                    page_indices = kv_to_page_indices(kv_indices, page_size)
+                segment_is_last = last_chunk and is_final_segment
+                if not sender.should_send_kv_chunk(len(page_indices), segment_is_last):
+                    continue
+                send_state_indices = state_indices if segment_is_last else None
+                if indices_event is not None:
+                    sender.send(
+                        page_indices,
+                        send_state_indices,
+                        num_kv_tokens=seg_end - seg_start,
+                        indices_event=indices_event,
+                    )
+                else:
+                    sender.send(
+                        page_indices,
+                        send_state_indices,
+                        num_kv_tokens=seg_end - seg_start,
+                    )
         req.start_send_idx = end_idx
         # A last chunk needs no entry: every `last_chunk=True` call site has
         # already put the request on `disagg_prefill_inflight_queue`.

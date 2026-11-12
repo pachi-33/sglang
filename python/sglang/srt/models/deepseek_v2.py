@@ -63,6 +63,10 @@ from sglang.srt.configs.model_config import (
     is_deepseek_dsa,
     is_glm_moe_dsa,
 )
+from sglang.srt.disaggregation.layerwise_hooks import (
+    layerwise_finalize_send,
+    layerwise_start_send,
+)
 from sglang.srt.distributed import divide
 from sglang.srt.environ import envs
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
@@ -2842,7 +2846,6 @@ class DeepseekV2DecoderLayer(nn.Module):
         else:
             topk_indices = None
         get_attn_tp_context().clear_attn_inputs()
-
         maybe_prefetch_next_full_attention_kv(
             forward_batch, next_full_attention_layer_id
         )
@@ -3189,6 +3192,7 @@ class DeepseekV2Model(nn.Module):
                 normal_end_layer = normal_start_layer = 0
         # Append-compatible, so the shared capture path below is unchanged.
         aux_hidden_states = AuxHiddenStatePacker(len(self.layers_to_capture))
+        layerwise_start_send(normal_end_layer - normal_start_layer)
         for i in range(normal_start_layer, normal_end_layer):
             # NOTE: torch dynamo does not support graph break in context manager
             ctx = (
@@ -3214,7 +3218,7 @@ class DeepseekV2Model(nn.Module):
                     ),
                 )
                 index_topk_share.update(topk_indices)
-
+        layerwise_finalize_send()
         if normal_end_layer != self.end_layer:
             hidden_states = model_forward_stages(
                 layers=self.layers[normal_end_layer : self.end_layer],

@@ -41,7 +41,7 @@ class _Flag:
         return self.value
 
 
-def _load_methods(early, parallel):
+def _load_methods(early, parallel, early_kv=False):
     tree = ast.parse(_source_path().read_text())
     cls = next(
         n
@@ -74,7 +74,10 @@ def _load_methods(early, parallel):
         type_ignores=[],
     )
     namespace = {
-        "envs": SimpleNamespace(SGLANG_PP_PREFILL_EARLY_RELEASE=_Flag(early)),
+        "envs": SimpleNamespace(
+            SGLANG_PP_PREFILL_EARLY_RELEASE=_Flag(early),
+            SGLANG_PP_EARLY_RELEASE_KV=_Flag(early_kv),
+        ),
         "get_parallel": lambda: parallel,
         "KVPoll": SimpleNamespace(Success="success", Failed="failed"),
         "logger": logging.getLogger(__name__),
@@ -94,7 +97,15 @@ class _Work:
 
 class FakeStage:
     def __init__(
-        self, early, pp_size, depth, rank=0, steps=12, wire=None, sparse=False
+        self,
+        early,
+        pp_size,
+        depth,
+        rank=0,
+        steps=12,
+        wire=None,
+        sparse=False,
+        early_kv=False,
     ):
         self.parallel = SimpleNamespace(pp_size=pp_size, pp_async_batch_depth=depth)
         self.pp_group = SimpleNamespace(
@@ -112,7 +123,7 @@ class FakeStage:
         self.disagg_prefill_inflight_queue = []
         self._release_send = False
         self.received_releases = []
-        methods = _load_methods(early, self.parallel)
+        methods = _load_methods(early, self.parallel, early_kv=early_kv)
         for name, method in methods.items():
             if name != "_pp_pd_get_prefill_transferred_ids":
                 setattr(self, name, MethodType(method, self))
@@ -180,7 +191,9 @@ class FakeStage:
         kind = (
             "release"
             if self._release_send
-            else "requests" if isinstance(value, list) else "transferred"
+            else "requests"
+            if isinstance(value, list)
+            else "transferred"
         )
         self.log(f"send_{kind}")
         ack = self.wire.send(self.rank, kind, value) if self.wire else None
@@ -410,7 +423,7 @@ class TestPPPrefillEarlyRelease(unittest.TestCase):
                             )
                         self.assertEqual(*sequences)
 
-    def _retirement_lifecycle_stage(self, early, depth=0, steps=8):
+    def _retirement_lifecycle_stage(self, early, depth=0, steps=8, early_kv=False):
         """Use the real retirement method with CPU-only resource/output spies."""
         source = _source_path().parents[1] / "disaggregation/prefill.py"
         tree = ast.parse(source.read_text())
@@ -427,7 +440,7 @@ class TestPPPrefillEarlyRelease(unittest.TestCase):
             and n.name == "process_disagg_prefill_inflight_queue"
         )
         method.decorator_list = []
-        stage = FakeStage(early, 4, depth, steps=steps)
+        stage = FakeStage(early, 4, depth, steps=steps, early_kv=early_kv)
         stage.released, stage.responded, stage.cleared, stage.metadata_freed = (
             [],
             [],
@@ -515,6 +528,74 @@ class TestPPPrefillEarlyRelease(unittest.TestCase):
         # Repeat the old release, including after it has already been retired.
         stage._pp_recv_pyobj_from_prev_stage = lambda: {"old": False}
         return stage
+
+    def test_pr_early_kv_retires_local_completion_once_without_full_pp_confirmation(
+        self,
+    ):
+        # PR 38309 deliberately permits local retirement before the full PP
+        # round trip. Pin that opt-in behavior and its interaction with the
+        # existing early-release flag: neither path may release a request twice.
+        for early in (False, True):
+            for early_kv in (False, True):
+                with self.subTest(early=early, early_kv=early_kv):
+                    stage = self._retirement_lifecycle_stage(
+                        early, steps=10, early_kv=early_kv
+                    )
+                    stage.disagg_prefill_inflight_queue.append(stage.new_req)
+                    stage._pp_pd_get_prefill_transferred_ids = lambda: {"old": False}
+                    stage._pp_recv_pyobj_from_prev_stage = lambda: {}
+                    stage.run()
+                    expected = ["old"] if early_kv else []
+                    self.assertEqual(stage.responded, expected)
+                    self.assertEqual(stage.released, expected)
+                    self.assertEqual(stage.cleared, expected)
+                    self.assertEqual(stage.metadata_freed, expected)
+                    self.assertIn(stage.new_req, stage.disagg_prefill_inflight_queue)
+                    self.assertIsNone(stage.new_req.finished_reason)
+
+    def test_layerwise_wait_is_reset_for_each_forward(self):
+        # A slot is reused for later forwards. Waiting twice must not drain
+        # twice, but the next forward must not inherit the earlier wait flag.
+        source = _source_path().parents[1] / "disaggregation/common/conn.py"
+        cls = next(
+            node
+            for node in ast.parse(source.read_text()).body
+            if isinstance(node, ast.ClassDef) and node.name == "CommonKVSender"
+        )
+        names = {"start_layerwise_send", "wait_layerwise_send_done"}
+        methods = [
+            node
+            for node in cls.body
+            if isinstance(node, ast.FunctionDef) and node.name in names
+        ]
+        namespace = {}
+        module = ast.Module(body=methods, type_ignores=[])
+        exec(compile(ast.fix_missing_locations(module), str(source), "exec"), namespace)
+        pending, completed = [], []
+
+        def drain():
+            completed.extend(pending)
+            pending.clear()
+
+        sender = SimpleNamespace(
+            _layerwise_enabled=True,
+            kv_mgr=SimpleNamespace(
+                init_layerwise=lambda: None, wait_layerwise_done=drain
+            ),
+        )
+        for name in names:
+            setattr(sender, name, MethodType(namespace[name], sender))
+        for request in ("request-1", "request-2"):
+            sender.start_layerwise_send(2)
+            pending.append(request)
+            sender.wait_layerwise_send_done()
+            self.assertFalse(pending)
+            # A later transfer must not be drained by a duplicate wait.
+            pending.append("unrelated")
+            sender.wait_layerwise_send_done()
+            self.assertEqual(pending, ["unrelated"])
+            pending.clear()
+        self.assertEqual(completed, ["request-1", "request-2"])
 
     def test_ready_transfer_responds_before_a_blocked_unrelated_d2h(self):
         # The D2H barrier stops the loop before the next result can be processed.

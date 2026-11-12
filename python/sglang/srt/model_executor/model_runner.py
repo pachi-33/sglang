@@ -2037,7 +2037,10 @@ class ModelRunner:
             )
         else:
             ctx_mgr = forward_context(
-                ForwardContext(attn_backend=self.attn_backend),
+                ForwardContext(
+                    attn_backend=self.attn_backend,
+                    disagg_kv_senders=forward_batch.disagg_kv_senders,
+                ),
                 forward_batch=forward_batch,
             )
         with (
