@@ -46,6 +46,20 @@ from uuid import uuid4
 import torch
 
 
+def grouped_matmul(x, weight, scale, token_scale, groups, group_list_type):
+    return torch.ops.npu.npu_grouped_matmul(
+        x=[x],
+        weight=[weight],
+        scale=[scale],
+        per_token_scale=[token_scale],
+        split_item=2,
+        group_type=0,
+        group_list_type=group_list_type,
+        group_list=groups,
+        output_dtype=torch.bfloat16,
+    )[0]
+
+
 @dataclass(frozen=True)
 class Config:
     experts: int = 8
@@ -162,17 +176,7 @@ class GmmComparison:
 
     def run(self, kind):
         weight, scale, groups = self.cases[kind]
-        return torch.ops.npu.npu_grouped_matmul(
-            x=[self.x],
-            weight=[weight],
-            scale=[scale],
-            per_token_scale=[self.token_scale],
-            split_item=2,
-            group_type=0,
-            group_list_type=kind,
-            group_list=groups,
-            output_dtype=torch.bfloat16,
-        )[0]
+        return grouped_matmul(self.x, weight, scale, self.token_scale, groups, kind)
 
     def output(self, kind):
         if kind not in self.outputs:
