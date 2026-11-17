@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "started_at": "2026-11-17T02:32:44.458646+00:00",
+  "status": "failed",
+  "python": "3.12.13",
+  "torch": "2.10.0+cpu",
+  "config": {
+    "experts": 8,
+    "tokens_per_expert": 128,
+    "k": 1024,
+    "n": 2048,
+    "slot_stride": 2,
+    "device": "npu:0",
+    "seed": 1234,
+    "warmup": 20,
+    "iterations": 100,
+    "rounds": 10,
+    "timing": "graph"
+  },
+  "correctness": {
+    "tests_run": 0,
+    "failures": [],
+    "errors": [
+      {
+        "test": "setUpClass (__main__.TestGmmGroupListTypes)",
+        "detail": "Traceback (most recent call last):\n  File \"/home/y00951466/pd_test/test_gmm/sglang/python/sglang/srt/offloading/moe/test/test_gmm_group_list_types.py\", line 296, in setUpClass\n    cls.comparison = GmmComparison(cls.config)\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/y00951466/pd_test/test_gmm/sglang/python/sglang/srt/offloading/moe/test/test_gmm_group_list_types.py\", line 153, in __init__\n    raise RuntimeError(\"Both cases require FRACTAL_NZ (format 29)\")\nRuntimeError: Both cases require FRACTAL_NZ (format 29)\n"
+      }
+    ],
+    "skipped": []
+  },
+  "benchmark": null,
+  "finished_at": "2026-11-17T02:32:48.093126+00:00",
+  "artifacts": {
+    "markdown": "gmm_experiment_20261117_023248_093391_6e098f9f.md",
+    "json": "gmm_experiment_20261117_023248_093391_6e098f9f.json"
+  }
+}

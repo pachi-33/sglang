@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "started_at": "2026-11-17T02:41:07.771365+00:00",
+  "status": "passed",
+  "python": "3.12.13",
+  "torch": "2.10.0+cpu",
+  "config": {
+    "experts": 8,
+    "tokens_per_expert": 128,
+    "k": 1024,
+    "n": 2048,
+    "slot_stride": 2,
+    "device": "npu:0",
+    "seed": 1234,
+    "warmup": 20,
+    "iterations": 100,
+    "rounds": 10,
+    "timing": "graph"
+  },
+  "correctness": {
+    "tests_run": 2,
+    "failures": [],
+    "errors": [],
+    "skipped": []
+  },
+  "benchmark": {
+    "metadata": {
+      "torch": "2.10.0+cpu",
+      "torch_npu": "2.10.0.post6",
+      "npu": "Ascend910_9362",
+      "config": {
+        "experts": 8,
+        "tokens_per_expert": 128,
+        "k": 1024,
+        "n": 2048,
+        "slot_stride": 2,
+        "device": "npu:0",
+        "seed": 1234,
+        "warmup": 20,
+        "iterations": 100,
+        "rounds": 10,
+        "timing": "graph"
+      },
+      "weight_shape_both": [
+        16,
+        1024,
+        2048
+      ],
+      "input_shape_both": [
+        1024,
+        1024
+      ],
+      "type1_active_slots": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "type2_active_slots": [
+        0,
+        2,
+        4,
+        6,
+        8,
+        10,
+        12,
+        14
+      ]
+    },
+    "cases": {
+      "type1_contiguous": {
+        "group_list_type": 1,
+        "median_us": 26.417499780654907,
+        "min_us": 26.296799182891846,
+        "max_us": 26.649799346923828,
+        "effective_tops": 162.58038541350277,
+        "round_mean_us": [
+          26.649799346923828,
+          26.54099941253662,
+          26.418399810791016,
+          26.4165997505188,
+          26.296799182891846,
+          26.368401050567627,
+          26.396799087524414,
+          26.50320053100586,
+          26.527400016784668,
+          26.380999088287354
+        ]
+      },
+      "type2_sparse_slots": {
+        "group_list_type": 2,
+        "median_us": 26.14140033721924,
+        "min_us": 25.912599563598633,
+        "max_us": 27.21560001373291,
+        "effective_tops": 164.29752196116945,
+        "round_mean_us": [
+          25.912599563598633,
+          26.155200004577637,
+          26.17300033569336,
+          26.161999702453613,
+          26.19379997253418,
+          26.056599617004395,
+          27.21560001373291,
+          25.964601039886475,
+          25.953800678253174,
+          26.12760066986084
+        ]
+      }
+    },
+    "latency_ratio_type2_over_type1": 0.9895486156627944
+  },
+  "finished_at": "2026-11-17T02:41:13.053852+00:00",
+  "artifacts": {
+    "markdown": "gmm_experiment_20261117_024113_054159_5ab9e6f3.md",
+    "json": "gmm_experiment_20261117_024113_054159_5ab9e6f3.json"
+  }
+}

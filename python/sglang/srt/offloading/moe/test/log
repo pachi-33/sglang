@@ -1,0 +1,17 @@
+root@node-61-47-19-69:/home/y00951466/pd_test/test_gmm/sglang# python /home/y00951466/pd_test/test_gmm/sglang/python/sglang/srt/offloading/moe/test/test_gmm_group_list_types.py
+[W1117 02:41:08.214594050 NPUCachingAllocator.cpp:202] Warning: The current CANN and HDK(driver) versions require processing for 32 padding size, with memory allocation. (function operator())
+test_type1_contiguous (__main__.TestGmmGroupListTypes.test_type1_contiguous) ... ok
+test_type2_sparse_slots (__main__.TestGmmGroupListTypes.test_type2_sparse_slots) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 5.053s
+
+OK
+{"torch": "2.10.0+cpu", "torch_npu": "2.10.0.post6", "npu": "Ascend910_9362", "config": {"experts": 8, "tokens_per_expert": 128, "k": 1024, "n": 2048, "slot_stride": 2, "device": "npu:0", "seed": 1234, "warmup": 20, "iterations": 100, "rounds": 10, "timing": "graph"}, "weight_shape_both": [16, 1024, 2048], "input_shape_both": [1024, 1024], "type1_active_slots": [0, 1, 2, 3, 4, 5, 6, 7], "type2_active_slots": [0, 2, 4, 6, 8, 10, 12, 14]}
+case                    median_us     min_us     max_us    effective_TOPS
+type1_contiguous            26.417     26.297     26.650           162.580
+type2_sparse_slots          26.141     25.913     27.216           164.298
+type2/type1 latency ratio: 0.9895 (> 1 means type2 is slower)
+{"round_mean_us": {"type1_contiguous": [26.649799346923828, 26.54099941253662, 26.418399810791016, 26.4165997505188, 26.296799182891846, 26.368401050567627, 26.396799087524414, 26.50320053100586, 26.527400016784668, 26.380999088287354], "type2_sparse_slots": [25.912599563598633, 26.155200004577637, 26.17300033569336, 26.161999702453613, 26.19379997253418, 26.056599617004395, 27.21560001373291, 25.964601039886475, 25.953800678253174, 26.12760066986084]}}
+Experiment report: /home/y00951466/pd_test/test_gmm/sglang/python/sglang/srt/offloading/moe/test/gmm_experiment_20261117_024113_054159_5ab9e6f3.md
+Raw results:       /home/y00951466/pd_test/test_gmm/sglang/python/sglang/srt/offloading/moe/test/gmm_experiment_20261117_024113_054159_5ab9e6f3.json
