@@ -62,6 +62,7 @@ class TestTwoNodePrefillLauncher(unittest.TestCase):
             RUNTIME_DIR=str(self.root / "runtime"),
             LOG_DIR=str(self.root / "logs"),
             HOST_POOL_GIB="",
+            ENABLE_MOE_OFFLOAD="",
             PREFILL_OFFLOAD_RATIO="",
             PREFILL_RESIDENT_RATIO="",
             EXECUTION_SLOTS="",
@@ -167,9 +168,89 @@ class TestTwoNodePrefillLauncher(unittest.TestCase):
         self.assertEqual(config["execution_slots"], 64)
         self.assertIn("cold H2D/layer/rank: 1.126831 GiB", result.stdout)
 
+    def test_resident_baseline_preserves_topology_without_offload_helper(self):
+        _, _, offload_command, offload_signature = self._success()
+        index = offload_command.index("--moe-offload-config")
+        del offload_command[index : index + 2]
+        (self.checkout / "python/sglang/srt/offloading/moe/npu/options.py").unlink()
+        signatures = []
+        for rank in (0, 1):
+            with self.subTest(rank=rank):
+                result, config, command, signature = self._success(
+                    ENABLE_MOE_OFFLOAD="0", NODE_RANK=str(rank)
+                )
+                offload_command[offload_command.index("--node-rank") + 1] = str(rank)
+                self.assertEqual(command, offload_command)
+                self.assertEqual(config, {"mode": "resident"})
+                self.assertIn("resident=32, cold=0, total=32", result.stdout)
+                self.assertIn("[480, 640, 768, 512]", result.stdout)
+                self.assertIn("cold H2D/layer/rank: 0.000000 GiB", result.stdout)
+                self.assertIn("no expert Host pool or offload extensions", result.stdout)
+                self.assertNotIn("offload.json", result.stdout)
+                self.assertNotEqual(signature, offload_signature)
+                signatures.append(signature)
+        self.assertEqual(signatures[0], signatures[1])
+
+    def test_resident_baseline_ignores_offload_only_settings(self):
+        baseline = self._success(ENABLE_MOE_OFFLOAD="0")
+        configured = self._success(
+            ENABLE_MOE_OFFLOAD="0",
+            PREFILL_OFFLOAD_RATIO="0",
+            PREFILL_RESIDENT_RATIO="1",
+            HOST_POOL_GIB="0",
+            EXECUTION_SLOTS="invalid",
+        )
+        self.assertEqual(configured[1:], baseline[1:])
+
+    def test_resident_startup_skips_offload_runtime_and_config(self):
+        # Replace only the Linux sysfs boundary so the launcher can run on macOS.
+        net = self.root / "net"
+        (net / "eth0").mkdir(parents=True)
+        self.launcher.write_text(
+            self.launcher.read_text().replace("/sys/class/net/", str(net) + "/")
+        )
+        for name in ("mkdir", "tee"):
+            (self.bin / name).symlink_to(shutil.which(name))
+        env_file = self.root / "ascend_env.sh"
+        env_file.write_text("# Mock Ascend environment; no accelerator dependencies.\n")
+        package = self.checkout / "python/sglang"
+        (package / "__init__.py").write_text("")
+        (package / "launch_server.py").write_text(
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "(Path(os.environ['LOG_DIR']) / 'captured_server.json').write_text(\n"
+            "    json.dumps({'argv': sys.argv[1:], 'env': dict(os.environ)}))\n"
+        )
+        (package / "srt/offloading/moe/npu/options.py").unlink()
+        env = {
+            **self.env,
+            "ENABLE_MOE_OFFLOAD": "0",
+            **{
+                name: str(env_file)
+                for name in ("CANN_ENV", "ATB_ENV", "CUSTOMIZE_ENV", "CUSTOM_TRANSFORMER_ENV")
+            },
+        }
+        result = subprocess.run(
+            [BASH, str(self.launcher)], env=env, text=True,
+            capture_output=True, timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        logs = self.root / "logs"
+        captured = json.loads((logs / "captured_server.json").read_text())
+        config = json.loads((logs / "launch_config.json").read_text())
+        self.assertFalse(config["common"]["moe_offload_enabled"])
+        self.assertEqual(config["common"]["host_gib"], 0)
+        self.assertNotIn("--moe-offload-config", captured["argv"])
+        self.assertFalse((logs / "offload.json").exists())
+        self.assertFalse((self.root / "runtime").exists())
+        self.assertNotIn(str(self.root / "runtime"), captured["env"]["PYTHONPATH"])
+        self.assertEqual(captured["env"]["ASCEND_MF_STORE_URL"], "tcp://192.0.2.10:24707")
+        self.assertEqual(captured["env"]["MF_CONFIG_STORE_URL"], "tcp://192.0.2.10:24707")
+
     def test_configuration_fingerprint_catches_common_setting_changes(self):
         base = self._success()[3]
         for changes in (
+            dict(ENABLE_MOE_OFFLOAD="0"),
             dict(PREFILL_OFFLOAD_RATIO="0.5"),
             dict(CHUNKED_PREFILL_SIZE="16384"),
             dict(CP_STRATEGY="zigzag"),
@@ -182,6 +263,7 @@ class TestTwoNodePrefillLauncher(unittest.TestCase):
 
     def test_rejects_bad_ratio_and_capacity_before_startup(self):
         for changes, message in (
+            (dict(ENABLE_MOE_OFFLOAD="2"), "ENABLE_MOE_OFFLOAD must be 0 or 1"),
             (dict(PREFILL_OFFLOAD_RATIO="0"), "PREFILL_OFFLOAD_RATIO must be"),
             (dict(PREFILL_OFFLOAD_RATIO="1.01"), "PREFILL_OFFLOAD_RATIO must be"),
             (dict(PREFILL_OFFLOAD_RATIO="nan"), "PREFILL_OFFLOAD_RATIO must be"),

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A3 双机各 16 die，PP4 / TP8 / CP8 / EP8，仅 Prefill 权重卸载。
+# A3 双机各 16 die，PP4 / TP8 / CP8 / EP8，支持 Prefill 卸载与全 HBM 基线。
 # 两机分别执行本脚本；不依赖其他启动脚本。先激活 torch_npu / SGLang 环境。
 set -eo pipefail
 
@@ -15,8 +15,10 @@ DIST_PORT=${DIST_PORT:-5000}
 BOOTSTRAP_PORT=${BOOTSTRAP_PORT:-8998}
 MF_STORE_PORT=${MF_STORE_PORT:-24707}
 
-# 两个比例只设置一个。都不设置时卸载 75%，每层常驻 25%。
-# OFFLOAD=1 表示全卸载；OFFLOAD=0 请运行原全 HBM 基线。
+# 设为 0 跑相同拓扑的全 HBM 基线，忽略下方比例、Host 池和 execution slots。
+ENABLE_MOE_OFFLOAD=${ENABLE_MOE_OFFLOAD:-1}
+# 开启卸载时两个比例只设置一个。都不设置时卸载 75%，每层常驻 25%。
+# PREFILL_OFFLOAD_RATIO=1 表示全卸载；关闭卸载请设置 ENABLE_MOE_OFFLOAD=0。
 PREFILL_OFFLOAD_RATIO=${PREFILL_OFFLOAD_RATIO:-}
 PREFILL_RESIDENT_RATIO=${PREFILL_RESIDENT_RATIO:-}
 HOST_POOL_GIB=${HOST_POOL_GIB:-32} # 每进程预留，两机各 16 个进程
@@ -47,6 +49,9 @@ Usage: P0_IP=61.47.19.69 P1_IP=61.47.19.70 NODE_RANK=0 bash $0 [--dry-run]
 固定双机 PP4 / TP8 / attention DP1 / CP8 / EP8，每机两个完整 PP stage。
 默认 interleave、DeepEP normal INT8、chunk=4096；CP_STRATEGY=zigzag 可做对照。
 P_MOE_A2A_BACKEND=ascend_ops 可选择 alltoallv。
+ENABLE_MOE_OFFLOAD=0 跑相同 PP4/CP8/EP8 的全 HBM 基线，默认 1 开启卸载。
+关闭时忽略 PREFILL_OFFLOAD_RATIO、PREFILL_RESIDENT_RATIO、HOST_POOL_GIB、EXECUTION_SLOTS，
+不生成 offload.json、不分配专家 Host 池、不构建卸载扩展；PD KV 传输仍使用 Ascend/MemFabric。
 PREFILL_OFFLOAD_RATIO=0.75 表示卸载 75%；也可单独设置 PREFILL_RESIDENT_RATIO=0.25。
 常驻专家取整后打印实际比例；只调整 routed experts，不卸载 attention/shared expert。
 HOST_POOL_GIB 默认 32 GiB/进程，即每机预留 512 GiB，加载和系统还需要额外内存。
@@ -70,6 +75,7 @@ done
 [[ -n $COMM_IFACE && $COMM_IFACE != lo ]] || fail "COMM_IFACE must name a non-loopback communication interface"
 [[ $CP_STRATEGY == interleave || $CP_STRATEGY == zigzag ]] || fail "CP_STRATEGY must be interleave or zigzag"
 [[ $FAKE_PREFILL_TEST == 0 || $FAKE_PREFILL_TEST == 1 ]] || fail "FAKE_PREFILL_TEST must be 0 or 1"
+[[ $ENABLE_MOE_OFFLOAD == 0 || $ENABLE_MOE_OFFLOAD == 1 ]] || fail "ENABLE_MOE_OFFLOAD must be 0 or 1"
 [[ ${ENABLE_MTP:-0} == 0 ]] || fail "This prefill-only test requires ENABLE_MTP=0"
 [[ -f $MODEL_PATH/config.json ]] || fail "Set MODEL_PATH to a local GLM-5.2 ModelSlim W8A8 checkpoint"
 if [[ $NODE_RANK == 0 ]]; then LOCAL_HOST_IP=$P0_IP; else LOCAL_HOST_IP=$P1_IP; fi
@@ -91,13 +97,13 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 SGLANG_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 export PYTHONDONTWRITEBYTECODE=1
 
-# Preflight imports only the standard library and the host-only ratio/slot helper.
+# Preflight uses the standard library; only offload mode loads the ratio/slot helper.
 "$PYTHON_BIN" - "$MODEL_PATH" "$SGLANG_ROOT" "$NODE_RANK" "$P0_IP" "$P1_IP" \
   "$HOST_POOL_GIB" "$EXECUTION_SLOTS" "$PREFILL_OFFLOAD_RATIO" "$PREFILL_RESIDENT_RATIO" \
   "$SGLANG_PP_LAYER_PARTITION" "$ASCEND_RT_VISIBLE_DEVICES" "$CONTEXT_LENGTH" \
   "$CHUNKED_PREFILL_SIZE" "$MAX_PREFILL_TOKENS" "$MAX_RUNNING_REQUESTS" "$MEM_FRACTION_STATIC" \
   "$SERVER_PORT" "$DIST_PORT" "$BOOTSTRAP_PORT" "$MF_STORE_PORT" "$CP_STRATEGY" \
-  "$P_MOE_A2A_BACKEND" "$FAKE_PREFILL_TEST" "$RUNTIME_DIR" "$LOG_DIR" "$DRY_RUN" <<'PY_CONFIG'
+  "$P_MOE_A2A_BACKEND" "$FAKE_PREFILL_TEST" "$RUNTIME_DIR" "$LOG_DIR" "$DRY_RUN" "$ENABLE_MOE_OFFLOAD" <<'PY_CONFIG'
 import hashlib
 import ipaddress
 import json
@@ -110,8 +116,9 @@ from runpy import run_path
 
 (model, root, node_rank, p0, p1, host, slots, offload, resident_ratio, partition,
  devices, context, chunk, prefill, requests, fraction, server_port, dist_port,
- bootstrap_port, store_port, cp, backend, fake, runtime, logs, dry) = sys.argv[1:]
+ bootstrap_port, store_port, cp, backend, fake, runtime, logs, dry, enable_offload) = sys.argv[1:]
 rank, ep = int(node_rank), 8
+offload_enabled = enable_offload == "1"
 for address in (p0, p1):
     ip = ipaddress.IPv4Address(address)
     if ip.is_loopback or ip.is_unspecified or ip.is_multicast or str(ip) == "255.255.255.255":
@@ -127,7 +134,7 @@ visible = devices.split(",")
 if (len(visible) != 16 or not all(d.isdecimal() for d in visible)
         or len(set(map(int, visible))) != 16):
     raise ValueError("Expose 16 distinct A3 NPU devices on each node")
-for name, value in (("HOST_POOL_GIB", host), ("CONTEXT_LENGTH", context),
+for name, value in (("CONTEXT_LENGTH", context),
                     ("CHUNKED_PREFILL_SIZE", chunk), ("MAX_PREFILL_TOKENS", prefill),
                     ("MAX_RUNNING_REQUESTS", requests)):
     if not value.isdecimal() or int(value) <= 0:
@@ -153,60 +160,74 @@ counts = [sum(i >= first and i % frequency == 0 for i in range(start, end))
           for start, end in zip(bounds, bounds[1:])]
 if not all(counts):
     raise ValueError("Each PP stage must contain at least one routed MoE layer")
-options = run_path(str(Path(root) / "python/sglang/srt/offloading/moe/npu/options.py"))
-if offload and resident_ratio:
-    raise ValueError("Set only one of PREFILL_OFFLOAD_RATIO and PREFILL_RESIDENT_RATIO")
-if not offload and not resident_ratio:
-    offload = "0.75"
-if offload:
-    value = Decimal(offload)
-    if not value.is_finite() or not 0 < value <= 1:
-        raise ValueError("PREFILL_OFFLOAD_RATIO must be in (0, 1]; use the resident baseline for 0")
-    resident_ratio = float(Decimal(1) - value)
-ratio = options["parse_prefill_resident_ratio"](float(resident_ratio))
-if slots and (not slots.isdecimal() or int(slots) <= 0):
-    raise ValueError("EXECUTION_SLOTS must be a positive integer")
-slot_budget = int(slots) if slots else None
 local_experts = experts // ep
-layouts = [options["prefill_weight_slots"](local_experts, n, ratio, slot_budget) for n in counts]
+if offload_enabled:
+    if not host.isdecimal() or int(host) <= 0:
+        raise ValueError("HOST_POOL_GIB must be a positive integer")
+    options = run_path(str(Path(root) / "python/sglang/srt/offloading/moe/npu/options.py"))
+    if offload and resident_ratio:
+        raise ValueError("Set only one of PREFILL_OFFLOAD_RATIO and PREFILL_RESIDENT_RATIO")
+    if not offload and not resident_ratio:
+        offload = "0.75"
+    if offload:
+        value = Decimal(offload)
+        if not value.is_finite() or not 0 < value <= 1:
+            raise ValueError("PREFILL_OFFLOAD_RATIO must be in (0, 1]; set ENABLE_MOE_OFFLOAD=0 for the resident baseline")
+        resident_ratio = float(Decimal(1) - value)
+    ratio = options["parse_prefill_resident_ratio"](float(resident_ratio))
+    if slots and (not slots.isdecimal() or int(slots) <= 0):
+        raise ValueError("EXECUTION_SLOTS must be a positive integer")
+    slot_budget = int(slots) if slots else None
+    layouts = [options["prefill_weight_slots"](local_experts, n, ratio, slot_budget) for n in counts]
+    output = {
+        "mode": "prefill_only", "cache_ratio": 0, "host_pool_gib": int(host),
+        "prefill_resident_ratio": ratio,
+        "native_extension_directory": str(Path(runtime) / "native_acl"),
+    }
+    if slot_budget is not None:
+        output["execution_slots"] = slot_budget
+    elif not layouts[0][0]:
+        output["execution_slots"] = layouts[0][1]
+else:
+    ratio, slot_budget = 1.0, None
+    layouts = [(local_experts, n * local_experts) for n in counts]
+    output = {"mode": "resident"}
 resident = layouts[0][0]
-output = {
-    "mode": "prefill_only", "cache_ratio": 0, "host_pool_gib": int(host),
-    "prefill_resident_ratio": ratio,
-    "native_extension_directory": str(Path(runtime) / "native_acl"),
-}
-if slot_budget is not None:
-    output["execution_slots"] = slot_budget
-elif not resident:
-    output["execution_slots"] = layouts[0][1]
 print(json.dumps(output, indent=2))
 print(f"Node {rank}: PP stages {[2 * rank, 2 * rank + 1]}; stage routed layers: {counts}")
 print(f"Experts/rank/layer: resident={resident}, cold={local_experts - resident}, total={local_experts}")
 print(f"Effective offload ratio: {(local_experts - resident) / local_experts:.6f}; requested resident ratio: {ratio}")
-print(f"HBM slots/rank by stage: {[n for _, n in layouts]} (resident prefix + two cold banks)")
+layout_kind = "resident prefix + two cold banks" if offload_enabled else "all routed experts resident"
+print(f"HBM slots/rank by stage: {[n for _, n in layouts]} ({layout_kind})")
 hidden, intermediate = cfg.get("hidden_size"), cfg.get("moe_intermediate_size")
 if type(hidden) is int and hidden > 0 and type(intermediate) is int and intermediate > 0:
     # Current symmetric W8A8: BF16 scales, FP32 offsets; Host keeps FP32 scale extents.
     n = 2 * intermediate + hidden
     expert_bytes = 3 * hidden * intermediate + 6 * n
-    host_bytes = 3 * hidden * intermediate + 8 * n
-    host_gib = [host_bytes * local_experts * count / 1024**3 for count in counts]
     print(f"Estimated cold H2D/layer/rank: {expert_bytes * (local_experts - resident) / 1024**3:.6f} GiB")
     print(f"Estimated expert HBM GiB/rank by stage: {[round(expert_bytes * n / 1024**3, 4) for _, n in layouts]}")
-    print(f"Estimated Host data GiB/rank by stage: {[round(x, 4) for x in host_gib]}; resident copies remain on Host")
-    if max(host_gib) >= int(host):
-        raise ValueError("HOST_POOL_GIB leaves no room for the largest stage's weights and metadata")
-print(f"Host pool reservation: {host} GiB/rank, {16 * int(host)} GiB/node; allow extra RAM for loading and OS")
+    if offload_enabled:
+        host_bytes = 3 * hidden * intermediate + 8 * n
+        host_gib = [host_bytes * local_experts * count / 1024**3 for count in counts]
+        print(f"Estimated Host data GiB/rank by stage: {[round(x, 4) for x in host_gib]}; resident copies remain on Host")
+        if max(host_gib) >= int(host):
+            raise ValueError("HOST_POOL_GIB leaves no room for the largest stage's weights and metadata")
+if offload_enabled:
+    print(f"Host pool reservation: {host} GiB/rank, {16 * int(host)} GiB/node; allow extra RAM for loading and OS")
+else:
+    print("MoE offload disabled: resident-weight baseline, no expert Host pool or offload extensions")
 common = dict(model_config=cfg, pp_partition=parts, nnodes=2, pp=4, tp=8, ep=8,
               cp=cp, backend=backend, resident_ratio=ratio, slots=slot_budget,
-              host_gib=int(host), context=int(context), chunk=int(chunk),
+              moe_offload_enabled=offload_enabled, host_gib=int(host) if offload_enabled else 0,
+              context=int(context), chunk=int(chunk),
               prefill=int(prefill), requests=int(requests), fraction=float(fraction),
               p0=p0, p1=p1, ports=list(map(int, ports)), fake=int(fake))
 signature = hashlib.sha256(json.dumps(common, sort_keys=True).encode()).hexdigest()
 print(f"Common configuration SHA256 (compare both nodes): {signature}")
 if dry == "0":
     Path(logs).mkdir(parents=True, exist_ok=True)
-    (Path(logs) / "offload.json").write_text(json.dumps(output, indent=2) + "\n")
+    if offload_enabled:
+        (Path(logs) / "offload.json").write_text(json.dumps(output, indent=2) + "\n")
     (Path(logs) / "launch_config.json").write_text(
         json.dumps(dict(common=common, signature=signature, node_rank=rank), indent=2) + "\n")
 PY_CONFIG
@@ -228,7 +249,10 @@ command=("$PYTHON_BIN" -u -m sglang.launch_server
   --context-length "$CONTEXT_LENGTH" --mem-fraction-static "$MEM_FRACTION_STATIC"
   --chunked-prefill-size "$CHUNKED_PREFILL_SIZE" --max-prefill-tokens "$MAX_PREFILL_TOKENS"
   --max-running-requests "$MAX_RUNNING_REQUESTS"
-  --moe-offload-config "$LOG_DIR/offload.json" --watchdog-timeout 1200)
+  --watchdog-timeout 1200)
+if [[ $ENABLE_MOE_OFFLOAD == 1 ]]; then
+  command+=(--moe-offload-config "$LOG_DIR/offload.json")
+fi
 
 export PYTHONPATH="$SGLANG_ROOT/python${PYTHONPATH:+:$PYTHONPATH}"
 export SGLANG_HOST_IP="$LOCAL_HOST_IP"
@@ -244,7 +268,7 @@ printf '\n'
 if [[ $DRY_RUN == 1 ]]; then exit 0; fi
 
 [[ -d /sys/class/net/$COMM_IFACE ]] || fail "Communication interface does not exist: $COMM_IFACE"
-mkdir -p "$RUNTIME_DIR/python" "$RUNTIME_DIR/native_acl" "$LOG_DIR"
+mkdir -p "$LOG_DIR"
 exec > >(tee "$LOG_DIR/server.log") 2>&1
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY ASCEND_LAUNCH_BLOCKING
 for env_file in "$CANN_ENV" "$ATB_ENV" "$CUSTOMIZE_ENV" "$CUSTOM_TRANSFORMER_ENV"; do
@@ -254,7 +278,9 @@ done
 
 # Build a node-local runtime, as in the existing single-node offload launchers.
 # After upgrading CANN / torch_npu / MemFabric, choose a fresh RUNTIME_DIR.
-"$PYTHON_BIN" - "$RUNTIME_DIR/python" <<'PY_BUILD'
+if [[ $ENABLE_MOE_OFFLOAD == 1 ]]; then
+  mkdir -p "$RUNTIME_DIR/python" "$RUNTIME_DIR/native_acl"
+  "$PYTHON_BIN" - "$RUNTIME_DIR/python" <<'PY_BUILD'
 import importlib.util
 import shutil
 import sys
@@ -265,18 +291,19 @@ target = Path(sys.argv[1]) / "memfabric_hybrid"
 if not target.exists():
     shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__"))
 PY_BUILD
-export PYTHONPATH="$SGLANG_ROOT/python:$RUNTIME_DIR/python${PYTHONPATH:+:$PYTHONPATH}"
-export LD_LIBRARY_PATH="$RUNTIME_DIR/python/memfabric_hybrid/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export TORCH_EXTENSIONS_DIR="$RUNTIME_DIR/torch_extensions"
-export MAX_JOBS=${MAX_JOBS:-4}
-"$PYTHON_BIN" - "$RUNTIME_DIR/python/memfabric_hybrid/lib" <<'PY_EXT'
+  export PYTHONPATH="$SGLANG_ROOT/python:$RUNTIME_DIR/python${PYTHONPATH:+:$PYTHONPATH}"
+  export LD_LIBRARY_PATH="$RUNTIME_DIR/python/memfabric_hybrid/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export TORCH_EXTENSIONS_DIR="$RUNTIME_DIR/torch_extensions"
+  export MAX_JOBS=${MAX_JOBS:-4}
+  "$PYTHON_BIN" - "$RUNTIME_DIR/python/memfabric_hybrid/lib" <<'PY_EXT'
 import sys
 from memfabric_hybrid._acc_offload_build import ensure_acc_offload_ext
 
 if not ensure_acc_offload_ext("A3", install_dir=sys.argv[1]):
     raise RuntimeError("Failed to prepare the A3 MemFabric offload extension")
 PY_EXT
-"$PYTHON_BIN" -m sglang.srt.offloading.moe.npu.native_acl --build-directory "$RUNTIME_DIR/native_acl"
+  "$PYTHON_BIN" -m sglang.srt.offloading.moe.npu.native_acl --build-directory "$RUNTIME_DIR/native_acl"
+fi
 
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True SGLANG_SET_CPU_AFFINITY=1
 export HCCL_BUFFSIZE=${HCCL_BUFFSIZE:-1200}
