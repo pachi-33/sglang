@@ -140,6 +140,8 @@ class GmmComparison:
         self.config = config
         self.torch_npu_version = torch_npu.__version__
         torch.npu.set_device(config.device)
+        # Standalone runs bypass SGLang's NPU backend initialization.
+        torch.npu.config.allow_internal_format = True
         host = build_host_inputs(config)
         self.x = host["x"].to(config.device)
         self.token_scale = host["token_scale"].to(config.device)
