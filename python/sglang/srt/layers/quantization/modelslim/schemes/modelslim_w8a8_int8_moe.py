@@ -5,9 +5,6 @@ from typing import Any, Dict
 
 import torch
 
-from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
-    NPUW8A8Int8MoEMethod,
-)
 from sglang.srt.layers.quantization.modelslim.schemes import ModelSlimMoEScheme
 from sglang.srt.utils import set_weight_attrs
 
@@ -33,6 +30,10 @@ class ModelSlimW8A8Int8MoE(ModelSlimMoEScheme):
         quant_config: Dict[str, Any],
         weight_prefix: str,  # "w13" or "w2"
     ) -> None:
+        from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
+            NPUW8A8Int8MoEMethod,
+        )
+
         self.quant_config = quant_config
         self.kernel = NPUW8A8Int8MoEMethod()
         self.weight_prefix = weight_prefix

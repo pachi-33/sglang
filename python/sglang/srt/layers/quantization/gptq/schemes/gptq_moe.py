@@ -5,9 +5,6 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
-    NPUWNA16Int4MoEMethod,
-)
 from sglang.srt.layers.linear import set_weight_attrs
 from sglang.srt.layers.moe.moe_runner import MoeRunner, MoeRunnerConfig
 from sglang.srt.layers.moe.utils import MoeRunnerBackend, get_moe_runner_backend
@@ -135,6 +132,10 @@ class GPTQMoEAscendScheme(GPTQMoESchemeBase):
         **extra_weight_attrs,
     ):
         self.moe_runner_config = moe_runner_config
+        from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
+            NPUWNA16Int4MoEMethod,
+        )
+
         layer.w13_kernel = NPUWNA16Int4MoEMethod()
         layer.w2_kernel = NPUWNA16Int4MoEMethod()
         moe_runner_config.layer = layer

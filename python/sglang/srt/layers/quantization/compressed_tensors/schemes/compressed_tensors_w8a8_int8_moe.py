@@ -6,9 +6,6 @@ from typing import TYPE_CHECKING
 import torch
 from compressed_tensors.quantization import QuantizationStrategy
 
-from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
-    NPUW8A8Int8MoEMethod,
-)
 from sglang.srt.layers.moe.moe_runner import MoeRunner, MoeRunnerConfig
 from sglang.srt.layers.moe.utils import MoeRunnerBackend, get_moe_runner_backend
 from sglang.srt.layers.quantization.compressed_tensors.schemes import (
@@ -29,6 +26,10 @@ logger = logging.getLogger(__name__)
 
 class NPUCompressedTensorsW8A8Int8DynamicMoE(CompressedTensorsMoEScheme):
     def __init__(self, weight_quant, input_quant):
+        from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
+            NPUW8A8Int8MoEMethod,
+        )
+
         self.weight_quant = weight_quant
         self.input_quant = input_quant
         self.w13_kernel = NPUW8A8Int8MoEMethod()

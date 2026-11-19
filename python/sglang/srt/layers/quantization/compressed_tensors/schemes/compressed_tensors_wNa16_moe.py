@@ -11,9 +11,6 @@ from compressed_tensors import CompressionFormat
 from sglang.srt.hardware_backend.gpu.quantization.gptq_kernels import (
     gptq_marlin_moe_repack,
 )
-from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
-    NPUWNA16Int4MoEMethod,
-)
 from sglang.srt.layers.moe.moe_runner import MoeRunner, MoeRunnerConfig
 from sglang.srt.layers.moe.utils import MoeRunnerBackend, get_moe_runner_backend
 from sglang.srt.layers.quantization.compressed_tensors.schemes import (
@@ -566,6 +563,10 @@ class CompressedTensorsWNA16TritonMoE(CompressedTensorsWNA16MoE):
 
 class NPUCompressedTensorsW4A16Int4DynamicMoE(CompressedTensorsMoEScheme):
     def __init__(self, quantization_config) -> None:
+        from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
+            NPUWNA16Int4MoEMethod,
+        )
+
         self.pack_factor = 8  # weight dtype is int4,  but use int32 to create
         target = (
             "MoEGMM" if "MoEGMM" in quantization_config.target_scheme_map else "Linear"

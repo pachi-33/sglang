@@ -5,11 +5,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
-    NPUW4A8MXFP4MoEMethod,
-)
 from sglang.srt.layers.moe.moe_runner import MoeRunner, MoeRunnerConfig
-from sglang.srt.layers.moe.moe_runner.ascend import AscendQuantInfo
 from sglang.srt.layers.moe.utils import MoeRunnerBackend, get_moe_runner_backend
 from sglang.srt.layers.quantization.compressed_tensors.schemes import (
     CompressedTensorsMoEScheme,
@@ -37,6 +33,10 @@ class NPUCompressedTensorsW4A8mxfp4MoE(CompressedTensorsMoEScheme):
     """
 
     def __init__(self):
+        from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
+            NPUW4A8MXFP4MoEMethod,
+        )
+
         self.group_size = 32
         self.w13_kernel = NPUW4A8MXFP4MoEMethod()
         self.w2_kernel = NPUW4A8MXFP4MoEMethod()
@@ -145,6 +145,8 @@ class NPUCompressedTensorsW4A8mxfp4MoE(CompressedTensorsMoEScheme):
         layer: torch.nn.Module,
         dispatch_output: StandardDispatchOutput,
     ) -> CombineInput:
+        from sglang.srt.layers.moe.moe_runner.ascend import AscendQuantInfo
+
         quant_info = AscendQuantInfo(
             w13_weight=layer.w13_weight,
             w2_weight=layer.w2_weight,

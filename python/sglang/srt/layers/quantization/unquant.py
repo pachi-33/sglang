@@ -58,10 +58,6 @@ if TYPE_CHECKING:
         StandardDispatchOutput,
     )
 
-from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
-    NPUUnquantMoEMethod,
-)
-
 _is_cpu_amx_available = cpu_has_amx_support()
 _is_cuda = is_cuda()
 _is_hip = is_hip()
@@ -1204,6 +1200,10 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, BaseFusedOp):
         elif self.use_triton_kernels:
             backend = MoeRunnerBackend.TRITON_KERNELS
         elif _is_npu:
+            from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
+                NPUUnquantMoEMethod,
+            )
+
             layer.w13_kernel = NPUUnquantMoEMethod()
             layer.w2_kernel = NPUUnquantMoEMethod()
             moe_runner_config.layer = layer

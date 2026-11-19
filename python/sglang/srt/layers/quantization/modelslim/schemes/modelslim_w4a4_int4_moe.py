@@ -6,9 +6,6 @@ from typing import Any, Dict
 import torch
 
 from sglang.srt.environ import envs
-from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
-    NPUW4A4Int4MoEMethod,
-)
 from sglang.srt.layers.quantization.modelslim.schemes import ModelSlimMoEScheme
 from sglang.srt.utils import set_weight_attrs
 
@@ -35,6 +32,10 @@ class ModelSlimW4A4Int4MoE(ModelSlimMoEScheme):
         weight_prefix: str,  # "w13" or "w2"
         group_size: int = 0,
     ) -> None:
+        from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
+            NPUW4A4Int4MoEMethod,
+        )
+
         self.quant_config = quant_config
         self.kernel = NPUW4A4Int4MoEMethod()
         self.weight_prefix = weight_prefix

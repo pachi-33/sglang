@@ -12,7 +12,6 @@ from typing import Any, Dict
 
 import torch
 
-from sglang.srt.hardware_backend.npu.quantization.moe_methods import NPUMXFP8MoEMethod
 from sglang.srt.layers.quantization.modelslim.schemes import ModelSlimMoEScheme
 from sglang.srt.utils import set_weight_attrs
 
@@ -45,6 +44,10 @@ class ModelSlimMXFP8MoEScheme(ModelSlimMoEScheme):
         quant_config: Dict[str, Any],
         weight_prefix: str,  # "w13" or "w2"
     ) -> None:
+        from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
+            NPUMXFP8MoEMethod,
+        )
+
         if weight_prefix not in ("w13", "w2"):
             raise ValueError(
                 f"weight_prefix must be 'w13' or 'w2', got '{weight_prefix}'"

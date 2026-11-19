@@ -12,9 +12,6 @@ import torch
 from gguf import GGMLQuantizationType as WeightType
 from torch.nn.parameter import Parameter, UninitializedParameter
 
-from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
-    NPUUnquantMoEMethod,
-)
 from sglang.srt.hardware_backend.npu.utils import npu_format_cast
 from sglang.srt.layers.linear import LinearBase
 from sglang.srt.layers.moe.moe_runner import MoeRunner, MoeRunnerConfig
@@ -854,6 +851,10 @@ class GGUFMoEAscendMethod(FusedMoEMethodBase):
     """MoE method for GGUF on Ascend NPU."""
 
     def __init__(self, quant_config: GGUFConfig):
+        from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
+            NPUUnquantMoEMethod,
+        )
+
         self.quant_config = quant_config
         self.w13_kernel = NPUUnquantMoEMethod()
         self.w2_kernel = NPUUnquantMoEMethod()

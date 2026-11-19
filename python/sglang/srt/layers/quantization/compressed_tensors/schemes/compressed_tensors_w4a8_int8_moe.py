@@ -5,9 +5,6 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
-    NPUW4A8Int8MoEMethod,
-)
 from sglang.srt.layers.moe.moe_runner import MoeRunner, MoeRunnerConfig
 from sglang.srt.layers.moe.utils import MoeRunnerBackend, get_moe_runner_backend
 from sglang.srt.layers.quantization.compressed_tensors.schemes import (
@@ -30,6 +27,10 @@ logger = logging.getLogger(__name__)
 class NPUCompressedTensorsW4A8Int8DynamicMoE(CompressedTensorsMoEScheme):
     ### TODO: Get rid of code duplication with python/sglang/srt/modelslim/modelslim_moe.py @OrangeRedeng @TamirBaydasov
     def __init__(self, quantization_config) -> None:
+        from sglang.srt.hardware_backend.npu.quantization.moe_methods import (
+            NPUW4A8Int8MoEMethod,
+        )
+
         self.group_size = 0
         self.is_per_channel_weight = self.group_size == 0
         self.tp_size = 1
