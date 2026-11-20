@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 在已激活 torch_npu 的 A3 环境中运行单机 EP16 测试。
-# bash scripts/moe_offload/run_glm52_prefill_dfc_h2d.sh --mode both --tokens-per-rank 128 512
+# bash scripts/moe_offload/run_glm52_prefill_dfc_h2d.sh --profile --mode both --tokens-per-rank 128 512
 set -eo pipefail
 
 # 测试默认值。可直接修改或用环境变量覆盖，命令行参数优先。
@@ -9,8 +9,8 @@ mode=${DFC_MODE:-overlap}                      # --mode，baseline / overlap / b
 tokens_per_rank="${TOKENS_PER_RANK:-128}"       # --tokens-per-rank，每个 rank 的输入 token 数，多组用空格分隔
 ep_load="${EP_LOAD:-balanced}"                 # --ep-load，balanced / 3to1 / 7to1，多组用空格分隔
 warmup=${DFC_WARMUP:-0}                        # --warmup，每组预热轮数
-iterations=${DFC_ITERATIONS:-1}                # --iterations，每组测量轮数
-profile=${DFC_PROFILE:-0}                      # --profile，0 关闭，1 采集首个测量轮次
+iterations=${DFC_ITERATIONS:-1}                # --iterations，每组预热后的执行轮数
+profile=${DFC_PROFILE:-0}                      # --profile，1 时每个 rank 连续采集所有 workload 和轮次
 output_dir=${DFC_OUTPUT_DIR:-/tmp/glm52-dfc}   # --output，结果根目录
 native_dir=${SGLANG_MOE_NATIVE_EXTENSION_DIR:-} # --native-extension-dir，留空时在 runtime_dir/native_acl 构建
 

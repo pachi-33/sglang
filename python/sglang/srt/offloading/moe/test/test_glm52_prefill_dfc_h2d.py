@@ -4,7 +4,7 @@ From the checkout (in the Ascend deployment environment):
     torchrun --standalone --nproc-per-node=16 \
         python/sglang/srt/offloading/moe/test/test_glm52_prefill_dfc_h2d.py \
         --native-extension-dir /path/to/native_acl --output /tmp/glm52-dfc \
-        --backend ascend_ops --mode overlap --tokens-per-rank 128 --ep-load balanced
+        --backend ascend_ops --mode overlap --tokens-per-rank 128 --ep-load balanced --profile
 
 Each rank generates its input activations, top-8 routes, and expert weights.
 Baseline runs routed layer 3. Overlap also prefetches layer 4's cold experts
@@ -12,9 +12,11 @@ on a separate stream. Use --mode both to compare them with identical inputs.
 Token counts are input rows per rank before dispatch. EP loads balanced,
 3to1, and 7to1 send 50%, 75%, and 87.5% of routed rows to ranks 0–7.
 
-By default each rank runs one forward. Set --warmup and --iterations for
-repeated measurements. --profile captures the first measured forward of each
-selected workload and mode. That sample is timed with profiling enabled.
+By default each rank runs one forward. With --profile, each rank records one
+continuous CPU and NPU trace after weight initialization. It covers all selected
+backends, workloads, warmup forwards, and iterations. For each workload,
+--mode both runs the baseline forwards first, then the overlap forwards.
+The trace paths are listed in rank order in summary.json.
 """
 
 from __future__ import annotations
@@ -28,7 +30,6 @@ from contextlib import ExitStack, nullcontext
 from datetime import timedelta
 from itertools import product
 from pathlib import Path
-from statistics import median
 from types import SimpleNamespace
 
 EP = 16
@@ -83,7 +84,7 @@ class ExpertWeights:
         self.keepalive = []
         self.copy_bytes = 0
 
-        # Initialize the current layer's resident weights and cold bank before timing.
+        # Initialize the current layer's resident weights and cold bank before profiling.
         # Random INT8 bytes fill NZ storage. Scales and offsets use their ND layout.
         rng = torch.Generator(device="cpu").manual_seed(1000 + rank)
         slots_used = list(range(self.resident)) + list(range(self.cold_base, self.cold_base + cold))
@@ -135,10 +136,9 @@ class ExpertWeights:
         # Last-in, first-out: drain queued copies even on exceptions, then free host memory.
         cleanup.callback(torch.npu.synchronize, device)
 
-    def submit(self, scope):
-        for name, plan in zip(("W13", "W2"), self.plans, strict=True):
-            with scope("prefetch/" + name):
-                self.ops.materialize_into(plan, self.next_bank, self.stream)
+    def submit(self):
+        for plan in self.plans:
+            self.ops.materialize_into(plan, self.next_bank, self.stream)
 
     def ffn(self, core, inputs):
         from sglang.srt.layers.moe.moe_runner.ascend import AscendRunnerOutput
@@ -247,10 +247,7 @@ class RoutedLayer:
             {"dispatcher_output_dtype": "int8", "normal_dispatcher_output_dtype": "int8"}
         )
         self.compute = torch.npu.current_stream(weights.device)
-
-        # 初始化event
         self.compute_ready = torch.npu.Event()
-        self.dfc_events = [torch.npu.Event(enable_timing=True) for _ in range(4)]
 
     def set_workload(self, tokens, ep_load, rank):
         import torch
@@ -266,40 +263,18 @@ class RoutedLayer:
         probs = torch.rand((tokens, TOP_K), generator=gen, device="cpu").softmax(dim=1) * 2.5
         self.topk = StandardTopKOutput(probs.to(device), ids.to(device, torch.int32), None)
 
-        self.weights.error.zero_()
-
-    def run(self, overlap, profile=False):
-        import torch
-
+    def run(self, overlap):
         w = self.weights
-        scope = torch.profiler.record_function if profile else nullcontext
-        begin, dispatched, calculated, combined = self.dfc_events
         if overlap:
             self.compute_ready.record(self.compute)
             w.stream.wait_event(self.compute_ready)
-            w.submit(scope)
-        begin.record(self.compute)
+            w.submit()
         state = {}
-        with scope("DFC/dispatch"):
-            routing = self.dispatcher.dispatch(self.hidden, self.topk)
-            inputs = self.pre(routing, w.quant, self.config, state)
-        dispatched.record(self.compute)
-        with scope("DFC/ffn"):
-            result = w.ffn(self.core, inputs)
-        calculated.record(self.compute)
-        with scope("DFC/combine"):
-            combine_input = self.post(result, w.quant, self.config, state)
-            output = self.dispatcher.combine(combine_input)
-        combined.record(self.compute)
-        torch.npu.synchronize(w.device)
-        w.keepalive.clear()
-        stats = {
-            "dispatch_ms": begin.elapsed_time(dispatched),
-            "ffn_ms": dispatched.elapsed_time(calculated),
-            "combine_ms": calculated.elapsed_time(combined),
-            "dfc_ms": begin.elapsed_time(combined),
-        }
-        return output, stats
+        routing = self.dispatcher.dispatch(self.hidden, self.topk)
+        inputs = self.pre(routing, w.quant, self.config, state)
+        result = w.ffn(self.core, inputs)
+        combine_input = self.post(result, w.quant, self.config, state)
+        return self.dispatcher.combine(combine_input)
 
 
 def profile_context(folder):
@@ -325,56 +300,20 @@ def profile_trace_path(folder):
     return str(paths[0])
 
 
-def run_workload(layer, options, case_dir, control, rank):
-    import torch.distributed as dist
+def run_workloads(backend, weights, options, rank):
+    import torch
 
-    rank_dir = case_dir / f"rank{rank:02d}"
-    rank_dir.mkdir(parents=True, exist_ok=False)
-    samples = {mode: [] for mode in options.modes}
-    profiles = {}
-    received = {}
-    for _ in range(options.warmup):
-        for mode in options.modes:
-            dist.barrier(group=control)
-            layer.run(mode == "overlap")
-
-    for i in range(options.iterations):
-        mode_order = options.modes if i % 2 == 0 else reversed(options.modes)
-        for mode in mode_order:
-            trace_dir = rank_dir / mode if options.profile and i == 0 else None
-            with profile_context(trace_dir):
-                dist.barrier(group=control)
-                _, stats = layer.run(mode == "overlap", profile=trace_dir is not None)
-            samples[mode].append(stats)
-            if trace_dir is not None:
-                profiles[mode] = {"path": profile_trace_path(trace_dir)}
-            if i == options.iterations - 1:
-                received[mode] = layer.weights.counts.cpu().tolist()
-
-    if layer.weights.error.item():
-        raise RuntimeError(f"Dispatch returned invalid expert token counts on rank {rank}")
-    report = dict(rank=rank, samples=samples, profiles=profiles, received_expert_counts=received)
-    (rank_dir / "metrics.json").write_text(json.dumps(report, indent=2) + "\n")
-    return report
-
-
-def aggregate(reports):
-    modes = {}
-    for mode in reports[0]["samples"]:
-        iterations = list(zip(*(r["samples"][mode] for r in reports), strict=True))
-        modes[mode] = {
-            key: median(max(r[key] for r in iteration) for iteration in iterations)
-            for key in iterations[0][0]
-        }
-    result = {
-        "median_of_per_iteration_slowest_rank_ms": modes,
-        "received_expert_tokens_by_rank": {
-            mode: [sum(r["received_expert_counts"][mode]) for r in reports] for mode in modes
-        },
-    }
-    if "baseline" in modes and "overlap" in modes:
-        result["additional_dfc_ms"] = modes["overlap"]["dfc_ms"] - modes["baseline"]["dfc_ms"]
-    return result
+    with ExitStack() as stack:
+        backend_context(stack, backend, rank, weights.device)
+        layer = RoutedLayer(backend, weights, rank)
+        for tokens, load in product(options.tokens_per_rank, options.ep_load):
+            layer.set_workload(tokens, load, rank)
+            for mode in options.modes:
+                for _ in range(options.warmup + options.iterations):
+                    layer.run(mode == "overlap")
+            # Finish this workload's copies before releasing tickets or starting the next baseline.
+            torch.npu.synchronize(weights.device)
+            weights.keepalive.clear()
 
 
 def run_ep16(options):
@@ -397,7 +336,7 @@ def run_ep16(options):
         from tempfile import mkdtemp
 
         rank = dist.get_rank()
-        # The control group keeps barriers and result collection off NPU streams.
+        # Share output paths on the host.
         control = dist.new_group(backend="gloo", timeout=timedelta(minutes=20))
         location = [None]
         if rank == 0:
@@ -406,42 +345,32 @@ def run_ep16(options):
             print(f"Output: {location[0]}", flush=True)
         dist.broadcast_object_list(location, src=0, group=control)
         root = Path(location[0])
-        results = []
+        trace_dir = root / f"rank{rank:02d}" if options.profile else None
         with ExitStack() as cleanup, torch.inference_mode():
             w = ExpertWeights(
                 device, options.native_extension_dir, rank, cleanup,
                 prefetch="overlap" in options.modes,
             )
             backends = BACKENDS if options.backend == "both" else (options.backend,)
-            for backend in backends:
-                with ExitStack() as stack:
-                    backend_context(stack, backend, rank, device)
-                    layer = RoutedLayer(backend, w, rank)
-                    for tokens, load in product(options.tokens_per_rank, options.ep_load):
-                        layer.set_workload(tokens, load, rank)
-                        torch.npu.synchronize(device)
-                        case_dir = root / backend / f"tokens-{tokens}" / load
-                        local_report = run_workload(layer, options, case_dir, control, rank)
-                        reports = [None] * EP if rank == 0 else None
-                        dist.gather_object(local_report, reports, dst=0, group=control)
-                        if rank == 0:
-                            result = dict(
-                                backend=backend, tokens_per_rank=tokens, global_input_tokens=EP * tokens,
-                                ep_load=load, **aggregate(reports),
-                            )
-                            results.append(result)
-                            print(json.dumps(result), flush=True)
-                    del layer
+            with profile_context(trace_dir):
+                for backend in backends:
+                    run_workloads(backend, w, options, rank)
+            if w.error.item():
+                raise RuntimeError(f"Dispatch returned invalid expert token counts on rank {rank}")
+
+            trace_paths = [None] * EP if rank == 0 and options.profile else None
+            if options.profile:
+                dist.gather_object(profile_trace_path(trace_dir), trace_paths, dst=0, group=control)
             if rank == 0:
                 summary = dict(
                     torch=str(torch.__version__), torch_npu=str(torch_npu.__version__),
                     ep=EP, hidden=HIDDEN, intermediate=INTERMEDIATE, top_k=TOP_K, experts=EXPERTS,
-                    tokens_per_rank=options.tokens_per_rank, ep_loads=options.ep_load,
+                    backends=backends, tokens_per_rank=options.tokens_per_rank, ep_loads=options.ep_load,
                     modes=options.modes, warmup=options.warmup, iterations=options.iterations,
                     profile_enabled=options.profile, resident_per_rank=w.resident,
                     cold_per_rank=LOCAL - w.resident, pool_slots=len(w.groups),
                     bytes_prefetched_per_rank=w.copy_bytes, native_acl=dict(w.native.api_info()),
-                    results=results,
+                    trace_paths=trace_paths,
                 )
                 (root / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     finally:
@@ -468,10 +397,10 @@ def parse_options(argv=None):
     )
     parser.add_argument(
         "--profile", action="store_true",
-        help="capture the first measured forward per mode and rank (default: off)",
+        help="record one continuous CPU and NPU trace per rank across all workloads (default: off)",
     )
     parser.add_argument("--warmup", type=int, default=0, help="warmup forwards per mode (default: 0)")
-    parser.add_argument("--iterations", type=int, default=1, help="measured forwards per mode (default: 1)")
+    parser.add_argument("--iterations", type=int, default=1, help="forwards per mode after warmup (default: 1)")
     parser.add_argument("--output", type=Path, default=Path("/tmp/glm52-dfc"))
     parser.add_argument("--native-extension-dir", default=os.environ.get("SGLANG_MOE_NATIVE_EXTENSION_DIR"),
                         help="directory containing the deployed _sglang_moe_acl extension")
