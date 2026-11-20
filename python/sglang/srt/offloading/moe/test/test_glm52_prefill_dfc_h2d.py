@@ -7,8 +7,9 @@ From the checkout (in the Ascend deployment environment):
         --backend ascend_ops --mode overlap --tokens-per-rank 128 --ep-load balanced --profile
 
 Each rank generates its input activations, top-8 routes, and expert weights.
-Baseline runs routed layer 3. Overlap also prefetches layer 4's cold experts
-on a separate stream. Use --mode both to compare them with identical inputs.
+Baseline runs routed layer 3. In overlap mode, all ranks meet at a Gloo barrier
+before each prefetch of layer 4's cold experts on a separate stream.
+Use --mode both to compare them with identical inputs.
 Token counts are input rows per rank before dispatch. EP loads balanced,
 3to1, and 7to1 send 50%, 75%, and 87.5% of routed rows to ranks 0–7.
 
@@ -39,7 +40,7 @@ TOP_K = 8
 HIDDEN = 6144
 INTERMEDIATE = 2048
 ROUTED_LAYERS = 78 - 3
-RESIDENT_RATIO = 0.2
+RESIDENT_RATIO = 0
 MODES = ("baseline", "overlap")
 BACKENDS = ("deepep", "ascend_ops")
 # Number of this token's eight routes sent to EP ranks 0 through 7.
@@ -61,7 +62,7 @@ def route_ids(row, lane, source_rank, ep_load="balanced"):
 
 
 class ExpertWeights:
-    def __init__(self, device, native_dir, rank, cleanup, *, prefetch):
+    def __init__(self, device, native_dir, rank, cleanup, *, prefetch, control_group):
         import torch
         from sglang.srt.offloading.moe.npu.native_acl import AclHostTransferOps, get_native_acl
         from sglang.srt.offloading.moe.npu.options import prefill_weight_slots
@@ -71,6 +72,7 @@ class ExpertWeights:
         from sglang.srt.offloading.moe.storage import HostMemoryCapability
 
         self.device = device
+        self.control_group = control_group
         self.native = get_native_acl(native_dir)
         fmt = NpuV4W8A8Format(HIDDEN, INTERMEDIATE, device, native_acl=self.native)
         self.resident, slots = prefill_weight_slots(LOCAL, ROUTED_LAYERS, RESIDENT_RATIO, None)
@@ -137,6 +139,9 @@ class ExpertWeights:
         cleanup.callback(torch.npu.synchronize, device)
 
     def submit(self):
+        import torch.distributed as dist
+
+        dist.barrier(group=self.control_group)
         for plan in self.plans:
             self.ops.materialize_into(plan, self.next_bank, self.stream)
 
@@ -350,7 +355,7 @@ def run_ep16(options):
         from tempfile import mkdtemp
 
         rank = dist.get_rank()
-        # Share output paths on the host.
+        # Coordinate prefetch, profiling, and output paths on the host.
         control = dist.new_group(backend="gloo", timeout=timedelta(minutes=20))
         location = [None]
         if rank == 0:
@@ -363,7 +368,7 @@ def run_ep16(options):
         with ExitStack() as cleanup, torch.inference_mode():
             w = ExpertWeights(
                 device, options.native_extension_dir, rank, cleanup,
-                prefetch="overlap" in options.modes,
+                prefetch="overlap" in options.modes, control_group=control,
             )
             backends = BACKENDS if options.backend == "both" else (options.backend,)
             run_workloads(backends, w, options, rank, trace_dir, control)
