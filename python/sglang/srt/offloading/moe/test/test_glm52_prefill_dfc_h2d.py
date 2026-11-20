@@ -7,8 +7,8 @@ From the checkout (in the Ascend deployment environment):
         --backend ascend_ops --mode overlap --tokens-per-rank 128 --ep-load balanced --profile
 
 Each rank generates its input activations, top-8 routes, and expert weights.
-Baseline runs routed layer 3. In overlap mode, all ranks meet at a Gloo barrier
-before each prefetch of layer 4's cold experts on a separate stream.
+All ranks meet at a Gloo barrier at the start of every forward. Both modes run
+routed layer 3. Overlap also prefetches layer 4's cold experts on a separate stream.
 Use --mode both to compare them with identical inputs.
 Token counts are input rows per rank before dispatch. EP loads balanced,
 3to1, and 7to1 send 50%, 75%, and 87.5% of routed rows to ranks 0–7.
@@ -139,9 +139,6 @@ class ExpertWeights:
         cleanup.callback(torch.npu.synchronize, device)
 
     def submit(self):
-        import torch.distributed as dist
-
-        dist.barrier(group=self.control_group)
         for plan in self.plans:
             self.ops.materialize_into(plan, self.next_bank, self.stream)
 
@@ -270,7 +267,10 @@ class RoutedLayer:
         self.topk = StandardTopKOutput(probs.to(device), ids.to(device, torch.int32), None)
 
     def run(self, overlap):
+        import torch.distributed as dist
+
         w = self.weights
+        dist.barrier(group=w.control_group)
         if overlap:
             self.compute_ready.record(self.compute)
             w.stream.wait_event(self.compute_ready)
@@ -355,7 +355,7 @@ def run_ep16(options):
         from tempfile import mkdtemp
 
         rank = dist.get_rank()
-        # Coordinate prefetch, profiling, and output paths on the host.
+        # Coordinate forward starts, profiling, and output paths on the host.
         control = dist.new_group(backend="gloo", timeout=timedelta(minutes=20))
         location = [None]
         if rank == 0:
