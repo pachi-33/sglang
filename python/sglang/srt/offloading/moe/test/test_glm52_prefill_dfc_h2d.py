@@ -12,11 +12,11 @@ on a separate stream. Use --mode both to compare them with identical inputs.
 Token counts are input rows per rank before dispatch. EP loads balanced,
 3to1, and 7to1 send 50%, 75%, and 87.5% of routed rows to ranks 0–7.
 
-By default each rank runs one forward. With --profile, each rank records one
-continuous CPU and NPU trace after weight initialization. It covers all selected
-backends, workloads, warmup forwards, and iterations. For each workload,
---mode both runs the baseline forwards first, then the overlap forwards.
-The trace paths are listed in rank order in summary.json.
+By default each rank runs one warmup and one measured forward. With --profile,
+all ranks finish warming up every selected backend, workload, and mode before
+recording the measured iterations in one continuous CPU and NPU trace per rank.
+For each workload, --mode both records the baseline forwards first, then the
+overlap forwards. The trace paths are listed in rank order in summary.json.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import ctypes
 import json
 import os
 import sys
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack
 from datetime import timedelta
 from itertools import product
 from pathlib import Path
@@ -158,7 +158,7 @@ class ExpertWeights:
         ))
 
 
-def backend_context(stack, backend, rank, device):
+def prepare_backend_layer(stack, backend, weights, rank):
     import torch.distributed as dist
     from sglang.srt.layers.dp_attention import set_is_extend_in_batch
     from sglang.srt.layers.moe.utils import initialize_moe_config
@@ -176,14 +176,15 @@ def backend_context(stack, backend, rank, device):
         deepep_mode="normal" if backend == "deepep" else "auto",
         deepep_dispatcher_output_dtype="int8",
     )
-    placement = SpawnRanks(world_rank=rank, gpu_id=device.index)
+    placement = SpawnRanks(world_rank=rank, gpu_id=weights.device.index)
     ctx = create_context(args, role="test", ranks=placement)
-    stack.enter_context(use_context(ctx))
     group = SimpleNamespace(device_group=dist.group.WORLD, world_size=EP,
                             rank_in_group=rank, barrier=dist.barrier)
-    stack.enter_context(get_parallel().override(tp_group=group, moe_ep_group=group))
-    initialize_moe_config()
-    set_is_extend_in_batch(True)
+    with use_context(ctx):
+        stack.enter_context(get_parallel().override(tp_group=group, moe_ep_group=group))
+        initialize_moe_config()
+        set_is_extend_in_batch(True)
+        return ctx, RoutedLayer(backend, weights, rank)
 
 
 class RoutedLayer:
@@ -278,9 +279,6 @@ class RoutedLayer:
 
 
 def profile_context(folder):
-    if folder is None:
-        return nullcontext()
-
     from torch_npu import profiler as prof
 
     folder.mkdir(parents=True, exist_ok=False)
@@ -300,20 +298,36 @@ def profile_trace_path(folder):
     return str(paths[0])
 
 
-def run_workloads(backend, weights, options, rank):
+def run_iterations(layers, options, rank, iterations):
     import torch
+    from sglang.srt.runtime_context import use_context
+
+    for ctx, layer in layers:
+        with use_context(ctx):
+            for tokens, load in product(options.tokens_per_rank, options.ep_load):
+                layer.set_workload(tokens, load, rank)
+                for mode in options.modes:
+                    for _ in range(iterations):
+                        layer.run(mode == "overlap")
+                # Drain compute and H2D before releasing tickets or switching workloads.
+                torch.npu.synchronize(layer.weights.device)
+                layer.weights.keepalive.clear()
+
+
+def run_workloads(backends, weights, options, rank, trace_dir, control):
+    import torch.distributed as dist
 
     with ExitStack() as stack:
-        backend_context(stack, backend, rank, weights.device)
-        layer = RoutedLayer(backend, weights, rank)
-        for tokens, load in product(options.tokens_per_rank, options.ep_load):
-            layer.set_workload(tokens, load, rank)
-            for mode in options.modes:
-                for _ in range(options.warmup + options.iterations):
-                    layer.run(mode == "overlap")
-            # Finish this workload's copies before releasing tickets or starting the next baseline.
-            torch.npu.synchronize(weights.device)
-            weights.keepalive.clear()
+        layers = [prepare_backend_layer(stack, backend, weights, rank) for backend in backends]
+        if trace_dir is None:
+            run_iterations(layers, options, rank, options.warmup + options.iterations)
+            return
+
+        if options.warmup:
+            run_iterations(layers, options, rank, options.warmup)
+            dist.barrier(group=control)
+        with profile_context(trace_dir):
+            run_iterations(layers, options, rank, options.iterations)
 
 
 def run_ep16(options):
@@ -352,9 +366,7 @@ def run_ep16(options):
                 prefetch="overlap" in options.modes,
             )
             backends = BACKENDS if options.backend == "both" else (options.backend,)
-            with profile_context(trace_dir):
-                for backend in backends:
-                    run_workloads(backend, w, options, rank)
+            run_workloads(backends, w, options, rank, trace_dir, control)
             if w.error.item():
                 raise RuntimeError(f"Dispatch returned invalid expert token counts on rank {rank}")
 
@@ -397,9 +409,9 @@ def parse_options(argv=None):
     )
     parser.add_argument(
         "--profile", action="store_true",
-        help="record one continuous CPU and NPU trace per rank across all workloads (default: off)",
+        help="record measured iterations across all workloads in one CPU and NPU trace per rank",
     )
-    parser.add_argument("--warmup", type=int, default=0, help="warmup forwards per mode (default: 0)")
+    parser.add_argument("--warmup", type=int, default=1, help="forwards per mode before profiling (default: 1)")
     parser.add_argument("--iterations", type=int, default=1, help="forwards per mode after warmup (default: 1)")
     parser.add_argument("--output", type=Path, default=Path("/tmp/glm52-dfc"))
     parser.add_argument("--native-extension-dir", default=os.environ.get("SGLANG_MOE_NATIVE_EXTENSION_DIR"),

@@ -8,9 +8,9 @@ backend=${P_MOE_A2A_BACKEND:-ascend_ops}       # --backend，ascend_ops / deepep
 mode=${DFC_MODE:-overlap}                      # --mode，baseline / overlap / both
 tokens_per_rank="${TOKENS_PER_RANK:-128}"       # --tokens-per-rank，每个 rank 的输入 token 数，多组用空格分隔
 ep_load="${EP_LOAD:-balanced}"                 # --ep-load，balanced / 3to1 / 7to1，多组用空格分隔
-warmup=${DFC_WARMUP:-0}                        # --warmup，每组预热轮数
+warmup=${DFC_WARMUP:-1}                        # --warmup，每组在采集前执行的预热轮数
 iterations=${DFC_ITERATIONS:-1}                # --iterations，每组预热后的执行轮数
-profile=${DFC_PROFILE:-0}                      # --profile，1 时每个 rank 连续采集所有 workload 和轮次
+profile=${DFC_PROFILE:-0}                      # --profile，1 时每个 rank 连续采集所有 workload 的正式轮次
 output_dir=${DFC_OUTPUT_DIR:-/tmp/glm52-dfc}   # --output，结果根目录
 native_dir=${SGLANG_MOE_NATIVE_EXTENSION_DIR:-} # --native-extension-dir，留空时在 runtime_dir/native_acl 构建
 
