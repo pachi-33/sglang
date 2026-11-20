@@ -5,7 +5,7 @@ set -eo pipefail
 
 # 测试默认值。可直接修改或用环境变量覆盖，命令行参数优先。
 backend=${P_MOE_A2A_BACKEND:-ascend_ops}       # --backend，ascend_ops / deepep / both
-mode=${DFC_MODE:-overlap}                      # --mode，baseline / overlap / both
+mode=${DFC_MODE:-baseline}                      # --mode，baseline / overlap / both
 tokens_per_rank="${TOKENS_PER_RANK:-128}"       # --tokens-per-rank，每个 rank 的输入 token 数，多组用空格分隔
 ep_load="${EP_LOAD:-balanced}"                 # --ep-load，balanced / 3to1 / 7to1，多组用空格分隔
 warmup=${DFC_WARMUP:-1}                        # --warmup，每组在采集前执行的预热轮数
@@ -17,6 +17,7 @@ native_dir=${SGLANG_MOE_NATIVE_EXTENSION_DIR:-} # --native-extension-dir，留�
 # 启动与构建
 python_bin=${PYTHON_BIN:-python3}
 runtime_dir=${RUNTIME_DIR:-/tmp/sglang-glm52-prefill-pp4-cp4-runtime}
+rdzv_endpoint=${RDZV_ENDPOINT:-127.0.0.1:29500}
 dry_run=0                                     # --dry-run，默认执行，传入后只打印命令
 max_build_jobs=4                              # MAX_JOBS 未设置时使用的编译并发数
 ascend_env_files=(
@@ -80,7 +81,12 @@ if [[ -z $native_dir ]]; then
   native_dir="$runtime_dir/native_acl"
   build=("$python_bin" -m sglang.srt.offloading.moe.npu.native_acl --build-directory "$native_dir")
 fi
-launch=("$python_bin" -m torch.distributed.run --standalone --nproc-per-node=16
+launch=("$python_bin" -m torch.distributed.run
+  --nnodes=1
+  --nproc-per-node=16
+  --rdzv-backend=static
+  --rdzv-endpoint="$rdzv_endpoint"
+  --rdzv-id="glm52-dfc-$$"
   "$benchmark" --native-extension-dir "$native_dir" --backend "$backend")
 
 # 在调用者省略选项时补上默认值，保留 argparse 对多值选项和参数校验的处理。
