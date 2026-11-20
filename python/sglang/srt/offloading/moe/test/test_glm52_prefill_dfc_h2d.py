@@ -40,7 +40,7 @@ TOP_K = 8
 HIDDEN = 6144
 INTERMEDIATE = 2048
 ROUTED_LAYERS = 78 - 3
-RESIDENT_RATIO = 0.2
+RESIDENT_RATIO = 0
 MODES = ("baseline", "overlap")
 BACKENDS = ("deepep", "ascend_ops")
 # Number of this token's eight routes sent to EP ranks 0 through 7.
