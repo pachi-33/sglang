@@ -33,7 +33,7 @@ from itertools import product
 from pathlib import Path
 from types import SimpleNamespace
 
-EP = 16
+EP = int(os.environ.get("DFC_EP", "16"))
 EXPERTS = 256
 LOCAL = EXPERTS // EP
 TOP_K = 8
@@ -405,6 +405,9 @@ def parse_options(argv=None):
         help="run DFC alone, with next-layer H2D, or both (default: overlap)",
     )
     parser.add_argument(
+        "--ep", type=int, default=int(os.environ.get("DFC_EP", "16")),
+        help="expert-parallel size, must equal torchrun nproc-per-node (default: 16)")
+    parser.add_argument(
         "--tokens-per-rank", nargs="+", type=int, default=(128,), metavar="N",
         help="input tokens per source rank before routing (default: 128)",
     )
@@ -426,6 +429,10 @@ def parse_options(argv=None):
         parser.error("--tokens-per-rank and --iterations must be positive")
     if opts.warmup < 0:
         parser.error("--warmup must be nonnegative")
+    globals()["EP"] = opts.ep
+    globals()["LOCAL"] = EXPERTS // opts.ep
+    if EXPERTS % opts.ep:
+        parser.error("--ep must divide EXPERTS=256")
     opts.modes = MODES if opts.mode == "both" else (opts.mode,)
     opts.tokens_per_rank = tuple(dict.fromkeys(opts.tokens_per_rank))
     opts.ep_load = tuple(dict.fromkeys(opts.ep_load))

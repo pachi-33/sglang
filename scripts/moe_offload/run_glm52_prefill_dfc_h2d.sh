@@ -8,6 +8,7 @@ backend=${P_MOE_A2A_BACKEND:-ascend_ops}       # --backend，ascend_ops / deepep
 mode=${DFC_MODE:-baseline}                      # --mode，baseline / overlap / both
 tokens_per_rank="${TOKENS_PER_RANK:-128}"       # --tokens-per-rank，每个 rank 的输入 token 数，多组用空格分隔
 ep_load="${EP_LOAD:-balanced}"                 # --ep-load，balanced / 3to1 / 7to1，多组用空格分隔
+ep=${DFC_EP:-16}                                # EP 并行度，须整除 256，决定 nproc-per-node
 warmup=${DFC_WARMUP:-1}                        # --warmup，每组在采集前执行的预热轮数
 iterations=${DFC_ITERATIONS:-1}                # --iterations，每组预热后的执行轮数
 profile=${DFC_PROFILE:-0}                      # --profile，1 时每个 rank 连续采集所有 workload 的正式轮次
@@ -30,7 +31,7 @@ ascend_env_files=(
 # NPU 和通信默认值在 Ascend 环境脚本加载后生效。
 configure_npu_env() {
   local comm_iface=${COMM_IFACE:-lo}
-  export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
+  export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-$(seq -s, 0 $((ep - 1)))}
   export PYTORCH_NPU_ALLOC_CONF=${PYTORCH_NPU_ALLOC_CONF:-expandable_segments:True}
   export HCCL_SOCKET_IFNAME=${HCCL_SOCKET_IFNAME:-$comm_iface}
   export GLOO_SOCKET_IFNAME=${GLOO_SOCKET_IFNAME:-$comm_iface}
@@ -83,7 +84,7 @@ if [[ -z $native_dir ]]; then
 fi
 launch=("$python_bin" -m torch.distributed.run
   --nnodes=1
-  --nproc-per-node=16
+  --nproc-per-node="$ep"
   --rdzv-backend=static
   --rdzv-endpoint="$rdzv_endpoint"
   --rdzv-id="glm52-dfc-$$"
@@ -104,6 +105,7 @@ read -r -a loads <<< "$ep_load"
 add_default --mode "$mode"
 add_default --tokens-per-rank "${token_counts[@]}"
 add_default --ep-load "${loads[@]}"
+add_default --ep "$ep"
 add_default --warmup "$warmup"
 add_default --iterations "$iterations"
 add_default --output "$output_dir"
