@@ -158,6 +158,7 @@ from sglang.srt.utils import (
     numa_utils,
     set_ulimit,
 )
+from sglang.srt.utils.device import FLASHINFER_BACKEND_MIN_VERSION
 from sglang.srt.utils.foundry_adapter import activate_foundry
 from sglang.srt.utils.msgspec_utils import msgspec_to_builtins
 from sglang.srt.utils.network import (
@@ -1972,7 +1973,7 @@ def _set_envs_and_config(server_args: ServerArgs):
         ):
             assert_pkg_version(
                 "flashinfer_python",
-                "0.7.4",
+                FLASHINFER_BACKEND_MIN_VERSION,
                 "Please uninstall the old version and "
                 "reinstall the latest version by following the instructions "
                 "at https://docs.flashinfer.ai/installation.html.",

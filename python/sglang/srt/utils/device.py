@@ -389,6 +389,9 @@ def xpu_has_xmx_support():
     return False
 
 
+FLASHINFER_BACKEND_MIN_VERSION = "0.7.4"
+
+
 @lru_cache(maxsize=1)
 def is_flashinfer_available():
     """
@@ -397,7 +400,13 @@ def is_flashinfer_available():
     """
     if not get_bool_env_var("SGLANG_IS_FLASHINFER_AVAILABLE", default="true"):
         return False
-    return importlib.util.find_spec("flashinfer") is not None and is_cuda()
+    return (
+        is_cuda()
+        and importlib.util.find_spec("flashinfer") is not None
+        and check_pkg_version_at_least(
+            "flashinfer-python", FLASHINFER_BACKEND_MIN_VERSION
+        )
+    )
 
 
 def is_nvidia_cublas_version_ge_12_9():

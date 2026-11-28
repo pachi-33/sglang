@@ -21,7 +21,7 @@ SGLANG_BUILD_RUST_EXTS=none python -m pip install --no-build-isolation -e ./pyth
 python -m pip check
 ```
 
-The locally built kernel has the version `0.4.11+cu126`. The Python package uses FlashInfer 0.6.18.post1 with cuDNN frontend 1.28.0. Newer frontend releases pull in the CUDA 13 CUTLASS DSL on Linux. The base dependencies omit the upstream DeepEP, DeepGEMM, DeepSeek recipe, FA3 and FlashMLA wheels. The Qwen AWQ pipeline uses SGLang's Torch native attention backend.
+The locally built kernel has the version `0.4.11+cu126`. The Python package uses FlashInfer 0.6.18.post1 with cuDNN frontend 1.28.0. Newer frontend releases pull in the CUDA 13 CUTLASS DSL on Linux. The base dependencies omit the upstream DeepEP, DeepGEMM, DeepSeek recipe, FA3 and FlashMLA wheels. Automatic backend selection checks the same FlashInfer minimum version as engine startup. The Qwen AWQ pipeline uses SGLang's Torch native attention backend.
 
 ## Run PP=4 in the guest
 
@@ -32,7 +32,6 @@ python -m pip install --target "$CONDA_PREFIX/opt/nccl-vgpu" 'nvidia-nccl-cu12==
 export LD_PRELOAD="$CONDA_PREFIX/opt/nccl-vgpu/nvidia/nccl/lib/libnccl.so.2${LD_PRELOAD:+:$LD_PRELOAD}"
 export NCCL_CUMEM_ENABLE=0 NCCL_CUMEM_HOST_ENABLE=0 NCCL_NVLS_ENABLE=0
 export NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 NCCL_SOCKET_IFNAME=lo
-export SGLANG_IS_FLASHINFER_AVAILABLE=false
 ```
 
 After `conda activate sglang-cu126` in `pp-lab`, set `MODEL_DIR` to the directory containing the Qwen2.5-0.5B-Instruct-AWQ checkpoint and run
